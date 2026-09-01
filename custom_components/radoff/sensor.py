@@ -139,7 +139,14 @@ class RadoffSensor(CoordinatorEntity, SensorEntity):
     @callback
     def _handle_coordinator_update(self) -> None:
         """Update sensor with latest data from coordinator."""
-        _LOGGER.debug("Device: %s", self.device)
+        # Metadata only: sensor key and device id (UUID, allowed at DEBUG per
+        # S-03 policy), never the Device repr - it embeds every RadoffSensor
+        # value for this device (see card S-03, sensor.py finding).
+        _LOGGER.debug(
+            "Refreshing sensor %s for device %s",
+            self.sensor_key,
+            self.device.device_id,
+        )
         self.device = self.coordinator_context.get_device_by_id(
             self.device.device_type, self.device.device_id
         )
