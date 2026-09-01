@@ -43,6 +43,24 @@ Select the device you want to add.
 ### Dev
 If you want to test out the integration just open it in 
 [![Open in Dev Containers](https://img.shields.io/static/v1?label=Dev%20Containers&message=Open&color=blue&logo=visualstudiocode)](https://vscode.dev/redirect?url=vscode://ms-vscode-remote.remote-containers/cloneInVolume?url=https://github.com/raelix/ha-radoff-integration)
+
+`scripts/develop` runs Home Assistant against the local dev harness at
+`.devcontainer/config/`, which is where you configure a real Radoff device
+while developing.
+
+**Warning — that directory contains cleartext credentials.** On first run, HA
+writes `.devcontainer/config/.storage/core.config_entries` there, which holds
+the Radoff username/password and Cognito tokens for whatever account you use
+to test the integration, plus the local HA instance's own auth tokens and
+SQLite database. Only `.devcontainer/config/configuration.yaml` is tracked in
+git (`.gitignore` excludes everything else under that path) — never force-add
+anything else in `.devcontainer/config/`, and never run `git add -A` /
+`git add -f` there. If you think credentials from this harness may have been
+committed at some point, stop and rotate them (Radoff account password, HA
+local user, and revoke HA refresh tokens) before doing anything else; do not
+rely on removing the files from the working tree, since that does not remove
+them from git history.
+
 ### Warnings
 
 Please do not use this against the real Radoff APIs as they are not intended to be exposed so I'm not responsible for any wrong use of this repository.
