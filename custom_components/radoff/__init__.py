@@ -7,7 +7,6 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from homeassistant.const import CONF_CLIENT_ID, Platform
-from homeassistant.exceptions import ConfigEntryNotReady
 
 from .const import CONF_INDEX, CONF_POOL_ID, CONF_POOL_REGION, DOMAIN
 from .coordinator import RadoffCoordinator
@@ -88,10 +87,11 @@ async def async_setup_entry(hass: HomeAssistant, config_entry: ConfigEntry) -> b
 
     coordinator = RadoffCoordinator(hass, config_entry)
 
+    # `async_config_entry_first_refresh` already raises `ConfigEntryNotReady`
+    # itself when the first refresh fails (see card S-06, C20): the extra
+    # `if not coordinator.api.connected: raise ConfigEntryNotReady` that used
+    # to follow this call was unreachable and has been removed.
     await coordinator.async_config_entry_first_refresh()
-
-    if not coordinator.api.connected:
-        raise ConfigEntryNotReady
 
     cancel_update_listener = config_entry.add_update_listener(_async_update_listener)
 
@@ -99,7 +99,7 @@ async def async_setup_entry(hass: HomeAssistant, config_entry: ConfigEntry) -> b
         coordinator, cancel_update_listener
     )
 
-    await hass.config_entries.async_forward_entry_setups(config_entry, ["sensor"])
+    await hass.config_entries.async_forward_entry_setups(config_entry, PLATFORMS)
 
     return True
 
@@ -122,11 +122,21 @@ async def async_remove_config_entry_device(
 
 async def async_unload_entry(hass: HomeAssistant, config_entry: ConfigEntry) -> bool:
     """Unload a config entry."""
-    hass.data[DOMAIN][config_entry.entry_id].cancel_update_listener()
-
-    unload_ok = await hass.config_entries.async_forward_entry_unload(
-        config_entry, "sensor"
+    unload_ok = await hass.config_entries.async_unload_platforms(
+        config_entry, PLATFORMS
     )
-    hass.data.pop(DOMAIN, None)
+
+    if unload_ok:
+        # Pop only this entry's own data (C3): with `single_config_entry:
+        # false`, `hass.data.pop(DOMAIN, None)` used to remove the *whole*
+        # domain dict, taking down every other configured entry with it.
+        runtime_data: RuntimeData = hass.data[DOMAIN].pop(config_entry.entry_id)
+        runtime_data.cancel_update_listener()
+
+        # Only remove the domain key itself once no entry is left under it,
+        # so a second config entry configured for this integration is
+        # untouched by unloading the first one.
+        if not hass.data[DOMAIN]:
+            hass.data.pop(DOMAIN)
 
     return unload_ok

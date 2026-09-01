@@ -3,7 +3,6 @@
 import logging
 from dataclasses import dataclass
 from datetime import timedelta
-from typing import Any
 
 import requests
 from homeassistant.config_entries import ConfigEntry
@@ -19,7 +18,7 @@ _LOGGER = logging.getLogger(__name__)
 
 
 @dataclass
-class APIData(dict[str, Any]):
+class APIData:
     """Class to hold api data."""
 
     controller_name: str
@@ -107,10 +106,9 @@ class RadoffCoordinator(DataUpdateCoordinator):
     def get_device_by_id(self, device_type: str, device_id: str) -> Device | None:
         """Return device by device id."""
         _LOGGER.debug("Radoff get_device_by_id")
-        try:
-            for device in self.data.devices:
-                if device.device_type == device_type and device.device_id == device_id:
-                    return device
-        except IndexError:
-            return None
+        # A `for` loop over a list cannot raise IndexError (see card S-06,
+        # C17): the previous `except IndexError` here was dead code.
+        for device in self.data.devices:
+            if device.device_type == device_type and device.device_id == device_id:
+                return device
         return None

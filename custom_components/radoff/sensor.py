@@ -147,9 +147,18 @@ class RadoffSensor(CoordinatorEntity, SensorEntity):
             self.sensor_key,
             self.device.device_id,
         )
-        self.device = self.coordinator_context.get_device_by_id(
+        # `get_device_by_id` can return None (device gone from this poll's
+        # payload: offline, transient error, filtered out - see card S-06,
+        # C1). Only replace `self.device` when a match is found, so the
+        # entity keeps serving its last known device rather than crashing
+        # with an AttributeError on the next `native_value`/`device_info`
+        # access. Proper availability handling is S-07; this is the minimal
+        # guard for the hot path.
+        device = self.coordinator_context.get_device_by_id(
             self.device.device_type, self.device.device_id
         )
+        if device is not None:
+            self.device = device
         self.async_write_ha_state()
 
     @property
@@ -170,14 +179,21 @@ class RadoffSensor(CoordinatorEntity, SensorEntity):
         return f"{self.sensor_key}_index"
 
     @property
-    def native_value(self) -> int | float:
+    def native_value(self) -> int | float | None:
         """Return the state of the entity."""
-        val = None
+        # `.get()` instead of `[...]` (see card S-06, C2): a single poll can
+        # legitimately be missing a property (e.g. a physical sensor hasn't
+        # produced a valid sample yet). Returning None here makes the entity
+        # report no value for this cycle instead of raising KeyError; full
+        # availability semantics land in S-07.
+        sensor = self.device.sensors.get(self.sensor_key)
+        if sensor is None:
+            return None
 
         if self._normalize_fn is not None:
-            val = float(self._normalize_fn(self.device.sensors[self.sensor_key].value))
+            val = float(self._normalize_fn(sensor.value))
         else:
-            raw_val = self.device.sensors[self.sensor_key].value
+            raw_val = sensor.value
             val = int(raw_val) if isinstance(raw_val, int) else float(raw_val)
 
         if self._is_index:
