@@ -1,66 +1,117 @@
 # Radoff integration for Home Assistant
-Install this repository using HACS
 
-### Limitations
-Currently supported devices:
-- Now+
+Official Home Assistant integration for Radoff air quality devices. It connects
+to your Radoff cloud account and exposes your devices' readings as Home
+Assistant sensor entities.
 
-> Unfortunately I don't have any other Radoff device but I would be glad to extend this integration.
+> **Placeholder notice:** the GitHub organization/repository this integration
+> will live under has not been finalized yet. All links in this document
+> currently point to `https://github.com/radoff/ha-radoff-integration` as a
+> placeholder and will be corrected when the repository transfer (tracked
+> separately) is completed.
+
+## What this integration does
+
+The integration authenticates against the Radoff cloud API with your Radoff
+account credentials, then polls your account's devices on a fixed 60 second
+interval and creates one Home Assistant sensor entity per measured property
+per device.
+
+This is a **cloud polling** integration (`iot_class: cloud_polling`): it does
+not talk to your Radoff device directly or over the local network, so it only
+works while both Home Assistant and the device have internet access.
+
+## Supported devices
+
+Currently supported, in this release:
+
+- **Radoff Now+**
+
+**Not yet supported:** Radoff Now (legacy) and Radoff Sense. Devices of these
+types are not detected by this version of the integration. Support for both
+is planned and tracked in the roadmap for a future release (see the `L`
+milestone in the project's internal planning); this README will be updated
+once they land.
 
 ## Installation
 
-You can install it using HACS or manually.
+### With HACS (recommended)
 
-### With HACS
+[![Open your Home Assistant instance and open a repository inside the Home Assistant Community Store.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=radoff&category=integration&repository=ha-radoff-integration)
 
-[![Open your Home Assistant instance and open a repository inside the Home Assistant Community Store.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=raelix&category=integration&repository=ha-radoff-integration)
+More information about HACS [here](https://hacs.xyz/).
 
-More informations about HACS [here](https://hacs.xyz/).
+### Manually
 
-#### Manually
-
-Clone this repository and copy `custom_components/radoff` to your Home Assistant config durectory (ex : `config/custom_components/radoff`)
-
-Restart Home Assistant.
+Clone this repository and copy `custom_components/radoff` into your Home
+Assistant config directory (for example `config/custom_components/radoff`),
+then restart Home Assistant.
 
 ## Configuration
 
-Once your Home Assistant has restarted, go to `Settings -> Devices & Services -> Add an  integration`.
+Once Home Assistant has restarted, go to **Settings → Devices & Services →
+Add Integration**, search for `Radoff` and select it.
 
-Search for `radoff` and select the `Radoff` integration.
+The setup form asks for two fields:
 
-Enter your Radoff credentials.
+- `username` - the email address of your Radoff account (the same one used
+  in the Radoff mobile app)
+- `password` - the password of that account
 
-If connection is working, you should have a list of devices configured on your account.
+If your account has access to more than one Radoff domain (tenant), you will
+see one additional step asking you to pick which domain to use; if it only
+has access to one, the integration entry is created immediately after
+authentication succeeds. There is no device-selection step: every Now+ device
+visible on the selected domain is added automatically.
 
-Select the device you want to add.
+## Entities produced
 
-### Required parameters
+For every Now+ device found on your account, the integration creates one
+sensor entity per measured property, currently: temperature, humidity,
+pressure, CO₂ (eCO₂), TVOC, PM1, PM2.5, PM10, and an air quality index.
 
-- ```username```
-- ```password```
+If the "Generate index" option is enabled for the config entry (enabled by
+default), an additional qualitative `*_index` sensor (e.g. Excellent, Good,
+...) is created alongside each of the applicable measurements.
 
-### Dev
-If you want to test out the integration just open it in 
-[![Open in Dev Containers](https://img.shields.io/static/v1?label=Dev%20Containers&message=Open&color=blue&logo=visualstudiocode)](https://vscode.dev/redirect?url=vscode://ms-vscode-remote.remote-containers/cloneInVolume?url=https://github.com/raelix/ha-radoff-integration)
+Devices are polled every 60 seconds; this interval is currently fixed and not
+configurable from the UI.
 
-`scripts/develop` runs Home Assistant against the local dev harness at
-`.devcontainer/config/`, which is where you configure a real Radoff device
-while developing.
+## Known limitations
 
-**Warning — that directory contains cleartext credentials.** On first run, HA
-writes `.devcontainer/config/.storage/core.config_entries` there, which holds
-the Radoff username/password and Cognito tokens for whatever account you use
-to test the integration, plus the local HA instance's own auth tokens and
-SQLite database. Only `.devcontainer/config/configuration.yaml` is tracked in
-git (`.gitignore` excludes everything else under that path) — never force-add
-anything else in `.devcontainer/config/`, and never run `git add -A` /
-`git add -f` there. If you think credentials from this harness may have been
-committed at some point, stop and rotate them (Radoff account password, HA
-local user, and revoke HA refresh tokens) before doing anything else; do not
-rely on removing the files from the working tree, since that does not remove
-them from git history.
+- **Device coverage**: only Now+ is supported today; Now (legacy) and Sense
+  are not detected (see "Supported devices" above).
+- **Polling interval**: fixed at 60 seconds, not yet exposed as an option.
+- **Re-authentication**: if your Radoff account password changes, the
+  integration will stop updating without a visible re-authentication prompt.
+  Removing and re-adding the integration is currently the way to recover.
+- **Availability**: entities do not yet reflect the freshness of the
+  underlying device data; a device that has stopped reporting to Radoff may
+  continue to show its last known values.
 
-### Warnings
+## Getting support
 
-Please do not use this against the real Radoff APIs as they are not intended to be exposed so I'm not responsible for any wrong use of this repository.
+If something isn't working, please open an issue on this repository's issue
+tracker rather than emailing logs around. Before opening an issue:
+
+1. In Home Assistant, go to **Settings → Devices & Services → Radoff**, open
+   the integration, and download the diagnostics file (⋮ menu → **Download
+   diagnostics**).
+2. Attach that diagnostics file to the issue instead of pasting raw logs.
+   Diagnostics are redacted of credentials and tokens before download; raw
+   debug logs are not, and may contain data that should not be shared
+   publicly.
+3. Describe what you expected to happen and what happened instead, including
+   your Radoff device model.
+
+## Contributing
+
+Contributions are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for how to
+set up the development environment, run lint and tests, and the branching and
+versioning conventions used in this repository.
+
+## License
+
+This project is licensed under the MIT License - see [LICENSE](LICENSE) for
+details, including attribution to the `integration_blueprint` template this
+repository was originally scaffolded from.

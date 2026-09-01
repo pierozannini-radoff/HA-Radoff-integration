@@ -1,6 +1,6 @@
 MIT License
 
-Copyright (c) 2019 - 2024  Joakim Sørensen @ludeeus
+Copyright (c) 2026 Radoff S.p.A.
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
@@ -19,3 +19,15 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
+---
+
+Attribution
+
+This repository was originally scaffolded from the `integration_blueprint`
+template by Joakim Sørensen (@ludeeus) - https://github.com/ludeeus/integration-blueprint,
+also released under the MIT License. Portions of the project layout, developer
+tooling (`scripts/`, `.devcontainer.json`, `.ruff.toml`) and CI workflow
+structure originate from that template. The attribution above applies to those
+portions; the copyright notice for the Radoff-authored integration code that
+was added on top is held by Radoff S.p.A. as stated at the top of this file.

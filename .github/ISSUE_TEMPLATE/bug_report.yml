@@ -1,0 +1,72 @@
+name: Bug report
+description: Report a problem with the Radoff integration
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting a bug. Please attach a **diagnostics file**
+        rather than pasting raw Home Assistant logs - diagnostics are
+        redacted of credentials and tokens before download, raw logs are not.
+
+        To download diagnostics: **Settings → Devices & Services → Radoff**,
+        open the integration, then use the ⋮ menu → **Download diagnostics**.
+
+  - type: input
+    id: ha_version
+    attributes:
+      label: Home Assistant version
+      placeholder: e.g. 2026.8.1
+    validations:
+      required: true
+
+  - type: input
+    id: integration_version
+    attributes:
+      label: Radoff integration version
+      description: See Settings → Devices & Services → Radoff, or manifest.json in your installation
+      placeholder: e.g. 0.1.0
+    validations:
+      required: true
+
+  - type: dropdown
+    id: device_model
+    attributes:
+      label: Radoff device model
+      options:
+        - Now+
+        - Now (legacy)
+        - Sense
+        - Not sure / other
+    validations:
+      required: true
+
+  - type: textarea
+    id: what_happened
+    attributes:
+      label: What happened?
+      description: What did you expect to happen, and what happened instead?
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. ...
+        2. ...
+        3. ...
+    validations:
+      required: false
+
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Diagnostics file
+      description: >-
+        Drag and drop the diagnostics JSON file you downloaded here. Please do
+        not paste raw debug logs instead - they are not redacted and may
+        contain account or session data.
+    validations:
+      required: false
