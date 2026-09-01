@@ -1,21 +1,21 @@
 """Class which represent the Radoff API."""
 
 import base64
+import json
+import logging
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from enum import StrEnum
-import json
-import logging
+from http import HTTPStatus
 from numbers import Number
 from typing import Any
 
-from pycognito.aws_srp import AWSSRP
 import requests
-from requests.adapters import HTTPAdapter, Retry
-import time
-
 from homeassistant.components.sensor import DEVICE_CLASS_UNITS, SensorDeviceClass
 from homeassistant.const import UnitOfPressure, UnitOfTemperature
+from pycognito.aws_srp import AWSSRP
+from requests.adapters import HTTPAdapter, Retry
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -50,29 +50,29 @@ MAPPING: dict[str, dict[str, dict[str, Any]]] = {
         "tvoc": {
             "deviceClass": SensorDeviceClass.VOLATILE_ORGANIC_COMPOUNDS,
             "friendlyName": "VOC",
-            "unit": list(
-                DEVICE_CLASS_UNITS[SensorDeviceClass.VOLATILE_ORGANIC_COMPOUNDS]
-            )[0],
+            "unit": next(
+                iter(DEVICE_CLASS_UNITS[SensorDeviceClass.VOLATILE_ORGANIC_COMPOUNDS])
+            ),
         },
         "eco2": {
             "deviceClass": SensorDeviceClass.CO2,
             "friendlyName": "Co2",
-            "unit": list(DEVICE_CLASS_UNITS[SensorDeviceClass.CO2])[0],
+            "unit": next(iter(DEVICE_CLASS_UNITS[SensorDeviceClass.CO2])),
         },
         "pm10": {
             "deviceClass": SensorDeviceClass.PM10,
             "friendlyName": "PM10",
-            "unit": list(DEVICE_CLASS_UNITS[SensorDeviceClass.PM10])[0],
+            "unit": next(iter(DEVICE_CLASS_UNITS[SensorDeviceClass.PM10])),
         },
         "pm25": {
             "deviceClass": SensorDeviceClass.PM25,
             "friendlyName": "PM2.5",
-            "unit": list(DEVICE_CLASS_UNITS[SensorDeviceClass.PM25])[0],
+            "unit": next(iter(DEVICE_CLASS_UNITS[SensorDeviceClass.PM25])),
         },
         "pm1": {
             "deviceClass": SensorDeviceClass.PM1,
             "friendlyName": "PM1",
-            "unit": list(DEVICE_CLASS_UNITS[SensorDeviceClass.PM1])[0],
+            "unit": next(iter(DEVICE_CLASS_UNITS[SensorDeviceClass.PM1])),
         },
         "internal_temperature": {
             "deviceClass": SensorDeviceClass.TEMPERATURE,
@@ -83,7 +83,7 @@ MAPPING: dict[str, dict[str, dict[str, Any]]] = {
         "relative_humidity": {
             "deviceClass": SensorDeviceClass.HUMIDITY,
             "friendlyName": "Humidity",
-            "unit": list(DEVICE_CLASS_UNITS[SensorDeviceClass.HUMIDITY])[0],
+            "unit": next(iter(DEVICE_CLASS_UNITS[SensorDeviceClass.HUMIDITY])),
         },
         "pressure": {
             "deviceClass": SensorDeviceClass.PRESSURE,
@@ -112,7 +112,7 @@ class API:
     BASE_DOMAIN = "https://api.iot.radoff.life/api/v1/core"
     DEFAULT_TIMEOUT = (10, 30)
 
-    def __init__(
+    def __init__(  # noqa: PLR0913
         self,
         username: str,
         password: str,
@@ -121,7 +121,8 @@ class API:
         pool_region: str,
         domain_id: str = "",
     ) -> None:
-        """Initialise.
+        """
+        Initialise.
 
         `domain_id` is the tenant domain already chosen for this account (persisted
         in the config entry after the config flow's discovery/selection step). It is
@@ -140,7 +141,7 @@ class API:
         self.session = self._create_session()
 
     def _create_session(self) -> requests.Session:
-        """Create a requests session"""
+        """Create a requests session."""
         session = requests.Session()
 
         retry_strategy = Retry(
@@ -172,7 +173,8 @@ class API:
         return "cloud_poller"
 
     def connect(self) -> bool:
-        """Connect to api.
+        """
+        Connect to api.
 
         Only performs Cognito authentication. Domain resolution is no longer done
         here: the domain to use is either already known (persisted `domain_id`,
@@ -198,7 +200,8 @@ class API:
 
                 self.connected = True
             return True
-        raise APIAuthError("Error connecting to api. Invalid authentication data.")
+        msg = "Error connecting to api. Invalid authentication data."
+        raise APIAuthError(msg)
 
     def disconnect(self) -> bool:
         """Disconnect from api."""
@@ -219,7 +222,8 @@ class API:
         return True
 
     def list_domains(self, bearer_token: str | None = None) -> list[dict[str, Any]]:
-        """Return every domain the authenticated user has access to, unfiltered.
+        """
+        Return every domain the authenticated user has access to, unfiltered.
 
         No `parentDomainId` filtering is applied here anymore (see S-01): the
         caller (config flow) decides what to do with 1, more than 1, or 0 domains.
@@ -253,21 +257,21 @@ class API:
             timeout=self.DEFAULT_TIMEOUT,
         )
 
-        if response.status_code != 200:
+        if response.status_code != HTTPStatus.OK:
             _LOGGER.error(
                 "Failed to get domains: status=%d, response=%s",
                 response.status_code,
                 response.text[:200],
             )
-            raise APIConnectionError(
-                f"Unable to retrieve the domain list (HTTP {response.status_code})."
-            )
+            msg = f"Unable to retrieve the domain list (HTTP {response.status_code})."
+            raise APIConnectionError(msg)
 
         resp_json = response.json()
         return resp_json.get("domains", [])
 
     def _extract_domain_claims(self, id_token: str) -> list[str]:
-        """Extract candidate domain ids from the "d_<uuid>" claims of an IdToken.
+        """
+        Extract candidate domain ids from the "d_<uuid>" claims of an IdToken.
 
         These are public (unsigned-read) claims of the caller's own Cognito
         IdToken; no signature verification is performed or needed, as this is
@@ -330,7 +334,7 @@ class API:
                 )
         return device_list
 
-    def _get_data(self, device_id: str):
+    def _get_data(self, device_id: str) -> dict[str, RadoffSensor]:
         sensors: dict[str, RadoffSensor] = {}
 
         url = f"{self.BASE_DOMAIN}/data/devices/{device_id}"
@@ -353,10 +357,7 @@ class API:
                 for obj in result["data"][k]:
                     pn = obj["propertyName"]
 
-                    if "value" in obj:
-                        av = obj["value"]
-                    else:
-                        av = obj["aggregationValue"]
+                    av = obj["value"] if "value" in obj else obj["aggregationValue"]
 
                     if pn in v:
                         obj_map = v[pn]
@@ -372,12 +373,13 @@ class API:
 
         return sensors
 
-    def _get_bearer_token(self):
+    def _get_bearer_token(self) -> str:
         if self.tokens is not None and "IdToken" in self.tokens:
             return self.tokens["IdToken"]
-        raise BearerTokenNotFoundError("Error retrieving bearer token.")
+        msg = "Error retrieving bearer token."
+        raise BearerTokenNotFoundError(msg)
 
-    def _get_headers(self, bearer_token: str, x_domain: str):
+    def _get_headers(self, bearer_token: str, x_domain: str) -> dict[str, str]:
         return {
             "user-agent": "Dart/3.5 (dart:io)",
             "x-domain": x_domain,
@@ -387,44 +389,51 @@ class API:
             "content-type": "application/json",
         }
 
-    def _check_response_status(self, response: requests.Response, url: str = ""):
+    def _check_response_status(
+        self, response: requests.Response, url: str = ""
+    ) -> bool:
         """Check response status."""
-        if response.status_code == 200:
+        if response.status_code == HTTPStatus.OK:
             return True
 
         _LOGGER.warning(
             "API request failed: status=%d, url=%s, response=%s",
             response.status_code,
             url or response.url,
-            response.text[:200]
+            response.text[:200],
         )
 
-        if response.status_code == 401:
-            _LOGGER.info("Authentication token invalid (401), will reconnect on next request")
+        if response.status_code == HTTPStatus.UNAUTHORIZED:
+            _LOGGER.info(
+                "Authentication token invalid (401), will reconnect on next request"
+            )
             self.disconnect()
-            raise APIAuthError(
-                f"Authentication failed (HTTP 401 Unauthorized). Token may be expired."
-            )
+            msg = "Authentication failed (HTTP 401 Unauthorized). Token may be expired."
+            raise APIAuthError(msg)
 
-        elif response.status_code == 403:
-            raise APIAuthError(
-                f"Access forbidden (HTTP 403). Check account permissions."
-            )
+        if response.status_code == HTTPStatus.FORBIDDEN:
+            msg = "Access forbidden (HTTP 403). Check account permissions."
+            raise APIAuthError(msg)
 
-        elif response.status_code == 429:
-            raise APIAuthError(
-                f"API rate limit exceeded (HTTP 429). Please increase polling interval above 60 seconds."
+        if response.status_code == HTTPStatus.TOO_MANY_REQUESTS:
+            msg = (
+                "API rate limit exceeded (HTTP 429). "
+                "Please increase polling interval above 60 seconds."
             )
+            raise APIAuthError(msg)
 
-        elif response.status_code >= 500:
-            raise APIAuthError(
-                f"Radoff API server error (HTTP {response.status_code}). This is usually temporary - will retry automatically."
+        if response.status_code >= HTTPStatus.INTERNAL_SERVER_ERROR:
+            msg = (
+                f"Radoff API server error (HTTP {response.status_code}). "
+                "This is usually temporary - will retry automatically."
             )
+            raise APIAuthError(msg)
 
-        else:
-            raise APIAuthError(
-                f"API request failed with HTTP {response.status_code}: {response.text[:100]}"
-            )
+        msg = (
+            f"API request failed with HTTP {response.status_code}: "
+            f"{response.text[:100]}"
+        )
+        raise APIAuthError(msg)
 
 
 class APIAuthError(Exception):

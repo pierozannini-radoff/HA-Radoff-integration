@@ -1,10 +1,11 @@
 """Class which represent the Radoff Coordinator."""
 
+import logging
 from dataclasses import dataclass
 from datetime import timedelta
-import logging
 from typing import Any
 
+import requests
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import (
     CONF_CLIENT_ID,
@@ -12,9 +13,9 @@ from homeassistant.const import (
     CONF_SCAN_INTERVAL,
     CONF_USERNAME,
 )
-from homeassistant.core import DOMAIN as HOMEASSISTANT_DOMAIN, HomeAssistant
+from homeassistant.core import DOMAIN as HOMEASSISTANT_DOMAIN
+from homeassistant.core import HomeAssistant
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
-import requests
 
 from .api import API, APIAuthError, Device
 from .const import (
@@ -44,7 +45,6 @@ class RadoffCoordinator(DataUpdateCoordinator):
 
     def __init__(self, hass: HomeAssistant, config_entry: ConfigEntry) -> None:
         """Initialize coordinator."""
-
         self.client_id = config_entry.data[CONF_CLIENT_ID]
         self.username = config_entry.data[CONF_USERNAME]
         self.password = config_entry.data[CONF_PASSWORD]
@@ -74,12 +74,10 @@ class RadoffCoordinator(DataUpdateCoordinator):
             domain_id=self.domain_id,
         )
 
-    async def async_update_data(self):
+    async def async_update_data(self) -> APIData:
         """Fetch data from API endpoint."""
-
         _LOGGER.debug("Radoff async_update_data starting")
         try:
-
             if not self.api.connected:
                 _LOGGER.info("API not connected, attempting to connect...")
                 await self.hass.async_add_executor_job(self.api.connect)
@@ -95,24 +93,29 @@ class RadoffCoordinator(DataUpdateCoordinator):
             )
 
         except APIAuthError as err:
-            _LOGGER.error("Authentication error: %s", err)
-            raise UpdateFailed(f"Authentication error: {err}") from err
+            _LOGGER.exception("Authentication error")
+            msg = f"Authentication error: {err}"
+            raise UpdateFailed(msg) from err
 
         except requests.exceptions.Timeout as err:
-            _LOGGER.error("Request timeout after %s seconds: %s", self.api.DEFAULT_TIMEOUT, err)
-            raise UpdateFailed(f"Request timeout: {err}") from err
+            _LOGGER.exception(
+                "Request timeout after %s seconds", self.api.DEFAULT_TIMEOUT
+            )
+            msg = f"Request timeout: {err}"
+            raise UpdateFailed(msg) from err
 
         except requests.exceptions.ConnectionError as err:
-            _LOGGER.error("Connection error: %s", err)
-            raise UpdateFailed(f"Connection error: {err}") from err
+            _LOGGER.exception("Connection error")
+            msg = f"Connection error: {err}"
+            raise UpdateFailed(msg) from err
 
         except Exception as err:
-            _LOGGER.error("Unexpected error: %s", err, exc_info=True)
-            raise UpdateFailed(f"Unexpected error: {err}") from err
+            _LOGGER.exception("Unexpected error")
+            msg = f"Unexpected error: {err}"
+            raise UpdateFailed(msg) from err
 
     def get_device_by_id(self, device_type: str, device_id: str) -> Device | None:
         """Return device by device id."""
-
         _LOGGER.debug("Radoff get_device_by_id")
         try:
             for device in self.data.devices:

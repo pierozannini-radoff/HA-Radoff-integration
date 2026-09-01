@@ -16,6 +16,12 @@ ignore = [
     "ISC001", # incompatible with formatter
 ]
 
+[lint.per-file-ignores]
+# Manual API probe script, not shipped code: it lives outside custom_components/,
+# is run by hand against the real backend, and printing to stdout is its purpose.
+# Narrow this list if the script is ever promoted to a maintained dev tool.
+"probe_domain_discovery.py" = ["ALL"]
+
 [lint.flake8-pytest-style]
 fixture-parentheses = false
 

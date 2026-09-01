@@ -23,76 +23,38 @@ from .coordinator import RadoffCoordinator
 
 _LOGGER = logging.getLogger(__name__)
 
+FIVE_LEVELS = ("excellent", "good", "medium", "poor", "terrible")
+THREE_LEVELS = ("excellent", "good", "terrible")
+
+
+def _threshold_index(
+    thresholds: tuple[float, ...], levels: tuple[str, ...]
+) -> Callable[[Number], str]:
+    """
+    Build the index function of a property from its thresholds.
+
+    The first threshold the value is lower than or equal to selects the level of
+    the same position. `levels` holds exactly one entry more than `thresholds`:
+    the last one is returned when no threshold matches.
+    """
+
+    def _index(val: Number) -> str:
+        for threshold, level in zip(thresholds, levels, strict=False):
+            if val <= threshold:
+                return level
+        return levels[-1]
+
+    return _index
+
+
 INDEX_MAPPING: dict[str, dict[str, Any]] = {
-    "tvoc": {
-        "index": lambda val: "excellent"
-        if val <= 100
-        else "good"
-        if val <= 200
-        else "medium"
-        if val <= 300
-        else "poor"
-        if val <= 400
-        else "terrible"
-    },
-    "eco2": {
-        "index": lambda val: "excellent"
-        if val <= 500
-        else "good"
-        if val <= 1000
-        else "medium"
-        if val <= 1500
-        else "poor"
-        if val <= 2000
-        else "terrible"
-    },
-    "pm10": {
-        "index": lambda val: "excellent"
-        if val <= 20
-        else "good"
-        if val <= 30
-        else "medium"
-        if val <= 40
-        else "poor"
-        if val <= 50
-        else "terrible"
-    },
-    "pm25": {
-        "index": lambda val: "excellent"
-        if val <= 16
-        else "good"
-        if val <= 21
-        else "medium"
-        if val <= 26
-        else "poor"
-        if val <= 32
-        else "terrible"
-    },
-    "pm1": {
-        "index": lambda val: "excellent"
-        if val <= 6
-        else "good"
-        if val <= 9
-        else "medium"
-        if val <= 12
-        else "poor"
-        if val <= 15
-        else "terrible"
-    },
-    "internal_temperature": {
-        "index": lambda val: "excellent"
-        if val <= 18
-        else "good"
-        if val <= 27
-        else "terrible"
-    },
-    "relative_humidity": {
-        "index": lambda val: "excellent"
-        if val <= 40
-        else "good"
-        if val <= 60
-        else "terrible"
-    },
+    "tvoc": {"index": _threshold_index((100, 200, 300, 400), FIVE_LEVELS)},
+    "eco2": {"index": _threshold_index((500, 1000, 1500, 2000), FIVE_LEVELS)},
+    "pm10": {"index": _threshold_index((20, 30, 40, 50), FIVE_LEVELS)},
+    "pm25": {"index": _threshold_index((16, 21, 26, 32), FIVE_LEVELS)},
+    "pm1": {"index": _threshold_index((6, 9, 12, 15), FIVE_LEVELS)},
+    "internal_temperature": {"index": _threshold_index((18, 27), THREE_LEVELS)},
+    "relative_humidity": {"index": _threshold_index((40, 60), THREE_LEVELS)},
 }
 
 
@@ -111,7 +73,7 @@ async def async_setup_entry(
     sensors = []
     for device in coordinator.data.devices:
         for sensor in device.sensors.values():
-            sensors.append(  # noqa: PERF401
+            sensors.append(
                 RadoffSensor(
                     sensor_key=sensor.name,
                     coordinator_context=coordinator,
@@ -126,7 +88,7 @@ async def async_setup_entry(
             )
             if coordinator.data.generate_index and sensor.name in INDEX_MAPPING:
                 index_obj = INDEX_MAPPING[sensor.name]
-                sensors.append(  # noqa: PERF401
+                sensors.append(
                     RadoffSensor(
                         sensor_key=sensor.name,
                         coordinator_context=coordinator,
@@ -149,7 +111,7 @@ class RadoffSensor(CoordinatorEntity, SensorEntity):
 
     _attr_has_entity_name = True
 
-    def __init__(
+    def __init__(  # noqa: PLR0913
         self,
         sensor_key: str,
         device: Device,
@@ -158,11 +120,11 @@ class RadoffSensor(CoordinatorEntity, SensorEntity):
         friendly_name: str,
         normalize_fn: Callable[[Number], float | int],
         unit: type[StrEnum] | str | None,
-        is_index: bool | None,
         index_fn: Callable[[Number], str] | None,
+        *,
+        is_index: bool | None = None,
     ) -> None:
         """Initialize the sensor."""
-
         super().__init__(coordinator_context, context=sensor_key)
         self.device = device
         self.sensor_key = sensor_key
@@ -191,16 +153,14 @@ class RadoffSensor(CoordinatorEntity, SensorEntity):
             name=self.device.name,
             manufacturer="Radoff",
             model=self.device.device_type,
-            # model_id=self.device.device_id,
         )
 
     @property
-    def translation_key(self):
+    def translation_key(self) -> str:
         """Return the translation key to translate the entity's name and states."""
         if not self._is_index:
             return self.sensor_key
-        else:
-            return f"{self.sensor_key}_index"
+        return f"{self.sensor_key}_index"
 
     @property
     def native_value(self) -> int | float:
@@ -215,8 +175,7 @@ class RadoffSensor(CoordinatorEntity, SensorEntity):
 
         if self._is_index:
             return self._index_fn(val)
-        else:
-            return val
+        return val
 
     @property
     def native_unit_of_measurement(self) -> str | None:
@@ -233,7 +192,8 @@ class RadoffSensor(CoordinatorEntity, SensorEntity):
     @property
     def unique_id(self) -> str:
         """Return unique id."""
+        sensor_name = self.device.sensors[self.sensor_key].name
+        unique_id = f"{DOMAIN}-{self.device.device_id}-{sensor_name}"
         if not self._is_index:
-            return f"{DOMAIN}-{self.device.device_id}-{self.device.sensors[self.sensor_key].name}"
-        else:
-            return f"{DOMAIN}-{self.device.device_id}-{self.device.sensors[self.sensor_key].name}-index"
+            return unique_id
+        return f"{unique_id}-index"

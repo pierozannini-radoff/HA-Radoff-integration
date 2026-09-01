@@ -3,13 +3,11 @@
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import voluptuous as vol
-
 from homeassistant.config_entries import ConfigFlow, ConfigFlowResult
 from homeassistant.const import CONF_CLIENT_ID, CONF_PASSWORD, CONF_USERNAME
-from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
 
 from .api import API
@@ -23,6 +21,9 @@ from .const import (
     DEFAULT_POOL_REGION,
     DOMAIN,
 )
+
+if TYPE_CHECKING:
+    from homeassistant.core import HomeAssistant
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -41,7 +42,6 @@ STEP_USER_DATA_SCHEMA = vol.Schema(
 
 async def validate_input(hass: HomeAssistant, data: dict[str, Any]) -> dict[str, Any]:
     """Validate the user input allows us to connect, and discover the user's domains."""
-
     api = API(
         username=data[CONF_USERNAME],
         password=data[CONF_PASSWORD],
@@ -51,10 +51,10 @@ async def validate_input(hass: HomeAssistant, data: dict[str, Any]) -> dict[str,
     )
 
     if not await hass.async_add_executor_job(api.connect):
-        raise InvalidAuth
+        raise InvalidAuthError
 
     if not api.connected:
-        raise InvalidAuth
+        raise InvalidAuthError
 
     domains = await hass.async_add_executor_job(api.list_domains)
 
@@ -80,9 +80,9 @@ class ConfigPatternFlow(ConfigFlow, domain=DOMAIN):
         if user_input is not None:
             try:
                 info = await validate_input(self.hass, user_input)
-            except CannotConnect:
+            except CannotConnectError:
                 errors["base"] = "cannot_connect"
-            except InvalidAuth:
+            except InvalidAuthError:
                 errors["base"] = "invalid_auth"
             except Exception:
                 _LOGGER.exception("Unexpected exception")
@@ -133,9 +133,9 @@ class ConfigPatternFlow(ConfigFlow, domain=DOMAIN):
         return self.async_create_entry(title="Radoff", data=data)
 
 
-class CannotConnect(HomeAssistantError):
+class CannotConnectError(HomeAssistantError):
     """Error to indicate we cannot connect."""
 
 
-class InvalidAuth(HomeAssistantError):
+class InvalidAuthError(HomeAssistantError):
     """Error to indicate there is invalid auth."""
