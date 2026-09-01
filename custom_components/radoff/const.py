@@ -1,5 +1,11 @@
 """Constants for the radoff integration."""
 
+import json
+import logging
+from pathlib import Path
+
+_LOGGER = logging.getLogger(__name__)
+
 DOMAIN = "radoff"
 CONF_POOL_ID = "pool_id"
 CONF_POOL_REGION = "pool_region"
@@ -28,3 +34,39 @@ CONF_DOMAIN_ID = "domain_id"
 DEFAULT_POOL_ID = "eu-west-1_zD4CSIZ6i"
 DEFAULT_POOL_REGION = "eu-west-1"
 DEFAULT_CLIENT_ID = "61ckd0c4qoq0ov7mmphrj7kstj"
+
+
+def _load_manifest() -> dict[str, str]:
+    """
+    Read `manifest.json` next to this file.
+
+    The integration version lives in exactly one place - `manifest.json`,
+    bumped at release time (see card S-19) - so nothing else hardcodes it.
+    A read failure here is only expected in an unpacked/dev checkout that is
+    missing the file; degrade to a clearly-fallback value instead of crashing
+    the whole integration over a User-Agent string (see card S-03).
+    """
+    manifest_path = Path(__file__).with_name("manifest.json")
+    try:
+        return json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        _LOGGER.warning("Unable to read manifest.json to build the User-Agent")
+        return {}
+
+
+_MANIFEST = _load_manifest()
+
+# Version and documentation URL used to build USER_AGENT below. Both come
+# from manifest.json so they can never drift from what HACS/HA itself report
+# for this integration.
+INTEGRATION_VERSION = _MANIFEST.get("version", "0.0.0")
+INTEGRATION_DOCUMENTATION_URL = _MANIFEST.get(
+    "documentation", "https://github.com/radoff/ha-radoff-integration"
+)
+
+# Identifies our own traffic to the Radoff API instead of impersonating the
+# official mobile app (see card S-03). Backend-side recognition of this
+# prefix for segmentation/rate-limiting is tracked separately in T-02.
+USER_AGENT = (
+    f"HomeAssistant-Radoff/{INTEGRATION_VERSION} (+{INTEGRATION_DOCUMENTATION_URL})"
+)

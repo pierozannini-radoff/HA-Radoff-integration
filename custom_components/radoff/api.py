@@ -10,6 +10,7 @@ from enum import StrEnum
 from http import HTTPStatus
 from numbers import Number
 from typing import Any
+from urllib.parse import urlsplit
 
 import requests
 from homeassistant.components.sensor import DEVICE_CLASS_UNITS, SensorDeviceClass
@@ -17,11 +18,36 @@ from homeassistant.const import UnitOfPressure, UnitOfTemperature
 from pycognito.aws_srp import AWSSRP
 from requests.adapters import HTTPAdapter, Retry
 
-from .const import DEFAULT_CLIENT_ID, DEFAULT_POOL_ID, DEFAULT_POOL_REGION
+from .const import DEFAULT_CLIENT_ID, DEFAULT_POOL_ID, DEFAULT_POOL_REGION, USER_AGENT
 
 _LOGGER = logging.getLogger(__name__)
 
 DEVICE_TYPES = ["Now+"]
+
+
+def _safe_url(url: str) -> str:
+    """
+    Return `url` without its query string or fragment, safe to log.
+
+    Query strings on these endpoints do not currently carry tokens, but
+    stripping them keeps the log line safe even if that changes (see S-03/S6).
+    """
+    return urlsplit(url)._replace(query="", fragment="").geturl()
+
+
+def _get_request_id(response: requests.Response) -> str | None:
+    """
+    Return a backend request id from the response headers, if present.
+
+    The exact header name used by the Radoff backend has not been confirmed
+    with the API team (tracked in T-02); this checks the header names commonly
+    used by AWS-fronted APIs and returns None rather than guessing further.
+    """
+    for header in ("x-request-id", "x-amzn-requestid", "x-amz-request-id"):
+        value = response.headers.get(header)
+        if value:
+            return value
+    return None
 
 
 @dataclass
@@ -268,9 +294,10 @@ class API:
 
         if response.status_code != HTTPStatus.OK:
             _LOGGER.error(
-                "Failed to get domains: status=%d, response=%s",
+                "Failed to get domains: status=%d, url=%s, request_id=%s",
                 response.status_code,
-                response.text[:200],
+                _safe_url(url),
+                _get_request_id(response) or "n/a",
             )
             msg = f"Unable to retrieve the domain list (HTTP {response.status_code})."
             raise APIConnectionError(msg)
@@ -358,12 +385,20 @@ class API:
         self._check_response_status(response=response, url=url)
 
         result = response.json()
+        data = result.get("data", {})
 
-        _LOGGER.debug("Radoff poll data are: %s", result["data"])
+        # Metadata only: bucket names and a count of readings, never the
+        # sensor values themselves or the raw payload (see S-03/S5).
+        _LOGGER.debug(
+            "device %s: %d readings, keys %s",
+            device_id,
+            sum(len(v) for v in data.values() if isinstance(v, list)),
+            sorted(data.keys()),
+        )
 
         for k, v in MAPPING.items():
-            if k in result["data"]:
-                for obj in result["data"][k]:
+            if k in data:
+                for obj in data[k]:
                     pn = obj["propertyName"]
 
                     av = obj["value"] if "value" in obj else obj["aggregationValue"]
@@ -390,10 +425,9 @@ class API:
 
     def _get_headers(self, bearer_token: str, x_domain: str) -> dict[str, str]:
         return {
-            "user-agent": "Dart/3.5 (dart:io)",
+            "user-agent": USER_AGENT,
             "x-domain": x_domain,
             "accept-encoding": "gzip",
-            "host": "api.iot.radoff.life",
             "authorization": "Bearer " + bearer_token,
             "content-type": "application/json",
         }
@@ -405,16 +439,21 @@ class API:
         if response.status_code == HTTPStatus.OK:
             return True
 
+        safe_url = _safe_url(url or response.url)
+        request_id = _get_request_id(response)
+
         _LOGGER.warning(
-            "API request failed: status=%d, url=%s, response=%s",
+            "API request failed: status=%d, url=%s, request_id=%s",
             response.status_code,
-            url or response.url,
-            response.text[:200],
+            safe_url,
+            request_id or "n/a",
         )
 
         if response.status_code == HTTPStatus.UNAUTHORIZED:
-            _LOGGER.info(
-                "Authentication token invalid (401), will reconnect on next request"
+            _LOGGER.debug(
+                "Authentication token invalid (401) for domain %s, "
+                "will reconnect on next request",
+                self.domain,
             )
             self.disconnect()
             msg = "Authentication failed (HTTP 401 Unauthorized). Token may be expired."
@@ -427,7 +466,7 @@ class API:
         if response.status_code == HTTPStatus.TOO_MANY_REQUESTS:
             msg = (
                 "API rate limit exceeded (HTTP 429). "
-                "Please increase polling interval above 60 seconds."
+                "Please increase your polling interval in the integration options."
             )
             raise APIAuthError(msg)
 
@@ -438,10 +477,7 @@ class API:
             )
             raise APIAuthError(msg)
 
-        msg = (
-            f"API request failed with HTTP {response.status_code}: "
-            f"{response.text[:100]}"
-        )
+        msg = f"API request failed with HTTP {response.status_code}."
         raise APIAuthError(msg)
 
 
