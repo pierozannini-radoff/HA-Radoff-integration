@@ -102,6 +102,13 @@
           "password": "Password",
           "generate_index": "Generates Index Entities"
         }
+      },
+      "domain": {
+        "title": "Select domain",
+        "description": "Your Radoff account has access to more than one domain. Select the one Home Assistant should use.",
+        "data": {
+          "domain_id": "Domain"
+        }
       }
     },
     "error": {
@@ -110,7 +117,8 @@
       "unknown": "[%key:common::config_flow::error::unknown%]"
     },
     "abort": {
-      "already_configured": "[%key:common::config_flow::abort::already_configured_device%]"
+      "already_configured": "[%key:common::config_flow::abort::already_configured_device%]",
+      "no_domains": "This account has no domain available. Please contact Radoff support before retrying."
     }
   }
 }

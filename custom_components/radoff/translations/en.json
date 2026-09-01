@@ -1,7 +1,8 @@
 {
   "config": {
     "abort": {
-      "already_configured": "Device is already configured"
+      "already_configured": "Device is already configured",
+      "no_domains": "This account has no domain available. Please contact Radoff support before retrying."
     },
     "error": {
       "cannot_connect": "Failed to connect",
@@ -17,6 +18,13 @@
           "pool_region": "Pool Region",
           "username": "Username",
           "generate_index": "Generates Index Entities"
+        }
+      },
+      "domain": {
+        "title": "Select domain",
+        "description": "Your Radoff account has access to more than one domain. Select the one Home Assistant should use.",
+        "data": {
+          "domain_id": "Domain"
         }
       }
     }

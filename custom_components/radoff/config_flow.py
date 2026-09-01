@@ -14,13 +14,14 @@ from homeassistant.exceptions import HomeAssistantError
 
 from .api import API
 from .const import (
+    CONF_DOMAIN_ID,
+    CONF_INDEX,
     CONF_POOL_ID,
     CONF_POOL_REGION,
     DEFAULT_CLIENT_ID,
     DEFAULT_POOL_ID,
     DEFAULT_POOL_REGION,
     DOMAIN,
-    CONF_INDEX,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -39,7 +40,7 @@ STEP_USER_DATA_SCHEMA = vol.Schema(
 
 
 async def validate_input(hass: HomeAssistant, data: dict[str, Any]) -> dict[str, Any]:
-    """Validate the user input allows us to connect."""
+    """Validate the user input allows us to connect, and discover the user's domains."""
 
     api = API(
         username=data[CONF_USERNAME],
@@ -52,13 +53,24 @@ async def validate_input(hass: HomeAssistant, data: dict[str, Any]) -> dict[str,
     if not await hass.async_add_executor_job(api.connect):
         raise InvalidAuth
 
-    return {"title": "Radoff", "username": data[CONF_USERNAME]}
+    if not api.connected:
+        raise InvalidAuth
+
+    domains = await hass.async_add_executor_job(api.list_domains)
+
+    return {"title": "Radoff", "username": data[CONF_USERNAME], "domains": domains}
 
 
 class ConfigPatternFlow(ConfigFlow, domain=DOMAIN):
     """Handle a config flow for radoff."""
 
     VERSION = 1
+
+    def __init__(self) -> None:
+        """Initialize the config flow."""
+        self._user_input: dict[str, Any] = {}
+        self._username: str = ""
+        self._domains: list[dict[str, Any]] = []
 
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
@@ -76,13 +88,49 @@ class ConfigPatternFlow(ConfigFlow, domain=DOMAIN):
                 _LOGGER.exception("Unexpected exception")
                 errors["base"] = "unknown"
             else:
-                await self.async_set_unique_id(info.get("username"))
-                self._abort_if_unique_id_configured()
-                return self.async_create_entry(title=info["title"], data=user_input)
+                domains: list[dict[str, Any]] = info["domains"]
+
+                if not domains:
+                    return self.async_abort(reason="no_domains")
+
+                self._user_input = user_input
+                self._username = info["username"]
+
+                if len(domains) == 1:
+                    return await self._async_create_entry(domains[0]["id"])
+
+                self._domains = domains
+                return await self.async_step_domain()
 
         return self.async_show_form(
             step_id="user", data_schema=STEP_USER_DATA_SCHEMA, errors=errors
         )
+
+    async def async_step_domain(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Handle domain selection for accounts with access to more than one domain."""
+        if user_input is not None:
+            return await self._async_create_entry(user_input[CONF_DOMAIN_ID])
+
+        domain_options = {
+            domain["id"]: domain.get("name") or domain["id"] for domain in self._domains
+        }
+
+        return self.async_show_form(
+            step_id="domain",
+            data_schema=vol.Schema(
+                {vol.Required(CONF_DOMAIN_ID): vol.In(domain_options)}
+            ),
+        )
+
+    async def _async_create_entry(self, domain_id: str) -> ConfigFlowResult:
+        """Persist the config entry with the chosen domain_id."""
+        await self.async_set_unique_id(self._username)
+        self._abort_if_unique_id_configured()
+
+        data = {**self._user_input, CONF_DOMAIN_ID: domain_id}
+        return self.async_create_entry(title="Radoff", data=data)
 
 
 class CannotConnect(HomeAssistantError):

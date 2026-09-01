@@ -17,7 +17,13 @@ from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, Upda
 import requests
 
 from .api import API, APIAuthError, Device
-from .const import CONF_POOL_ID, CONF_POOL_REGION, DEFAULT_SCAN_INTERVAL, CONF_INDEX
+from .const import (
+    CONF_DOMAIN_ID,
+    CONF_INDEX,
+    CONF_POOL_ID,
+    CONF_POOL_REGION,
+    DEFAULT_SCAN_INTERVAL,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -44,6 +50,7 @@ class RadoffCoordinator(DataUpdateCoordinator):
         self.password = config_entry.data[CONF_PASSWORD]
         self.pool_id = config_entry.data[CONF_POOL_ID]
         self.pool_region = config_entry.data[CONF_POOL_REGION]
+        self.domain_id = config_entry.data[CONF_DOMAIN_ID]
         self.generate_index = config_entry.data.get(CONF_INDEX, True)
 
         self.poll_interval = config_entry.options.get(
@@ -64,6 +71,7 @@ class RadoffCoordinator(DataUpdateCoordinator):
             client_id=self.client_id,
             pool_id=self.pool_id,
             pool_region=self.pool_region,
+            domain_id=self.domain_id,
         )
 
     async def async_update_data(self):

@@ -93,7 +93,8 @@
   },
   "config": {
     "abort": {
-      "already_configured": "Dispositivo gia configurato"
+      "already_configured": "Dispositivo gia configurato",
+      "no_domains": "Questo account non ha nessun dominio disponibile. Contatta il supporto Radoff prima di riprovare."
     },
     "error": {
       "cannot_connect": "Connessione fallita",
@@ -107,6 +108,13 @@
           "password": "Password",
           "username": "Nome Utente",
           "generate_index": "Genera indici entità"
+        }
+      },
+      "domain": {
+        "title": "Seleziona dominio",
+        "description": "Il tuo account Radoff ha accesso a più di un dominio. Seleziona quello che Home Assistant deve usare.",
+        "data": {
+          "domain_id": "Dominio"
         }
       }
     }

@@ -1,8 +1,10 @@
 """Class which represent the Radoff API."""
 
+import base64
 from collections.abc import Callable
 from dataclasses import dataclass
 from enum import StrEnum
+import json
 import logging
 from numbers import Number
 from typing import Any
@@ -108,7 +110,6 @@ class API:
     """API platform."""
 
     BASE_DOMAIN = "https://api.iot.radoff.life/api/v1/core"
-    PARENT_DOMAIN = "94e966f9-e0b2-11ec-a450-02ab88ac9cd7"
     DEFAULT_TIMEOUT = (10, 30)
 
     def __init__(
@@ -118,15 +119,21 @@ class API:
         client_id: str,
         pool_id: str,
         pool_region: str,
+        domain_id: str = "",
     ) -> None:
-        """Initialise."""
+        """Initialise.
+
+        `domain_id` is the tenant domain already chosen for this account (persisted
+        in the config entry after the config flow's discovery/selection step). It is
+        used as-is for every subsequent call; no domain discovery happens here.
+        """
         self.username = username
         self.password = password
         self.client_id = client_id
         self.pool_id = pool_id
         self.pool_region = pool_region
         self.connected: bool = False
-        self.domain: str = ""
+        self.domain: str = domain_id
         self.tokens: dict = {}
         self._token_expires_at: float = 0
 
@@ -137,7 +144,7 @@ class API:
         session = requests.Session()
 
         retry_strategy = Retry(
-            total=3, 
+            total=3,
             backoff_factor=0.5,
             status_forcelist=[429, 500, 502, 503, 504],
             allowed_methods=["GET", "POST"],
@@ -165,7 +172,13 @@ class API:
         return "cloud_poller"
 
     def connect(self) -> bool:
-        """Connect to api."""
+        """Connect to api.
+
+        Only performs Cognito authentication. Domain resolution is no longer done
+        here: the domain to use is either already known (persisted `domain_id`,
+        passed to `__init__`) or is discovered separately via `list_domains()`
+        during the config flow (see S-01).
+        """
         if self.username != "" and self.password != "" and self.client_id != "":
             _LOGGER.debug("Authenticating with AWS Cognito...")
             connection = AWSSRP(
@@ -184,12 +197,6 @@ class API:
                 _LOGGER.info("Token will expire in %d seconds", expires_in)
 
                 self.connected = True
-                domain = self._get_domain(self._get_bearer_token())
-                if domain is not None and domain != "":
-                    self.domain = domain
-                    _LOGGER.info("Successfully connected to Radoff API, domain: %s", domain)
-                else:
-                    raise DomainNotFoundError("Error domain not found.")
             return True
         raise APIAuthError("Error connecting to api. Invalid authentication data.")
 
@@ -198,8 +205,11 @@ class API:
         _LOGGER.debug("Disconnecting from API")
         self.connected = False
         self.tokens = {}
-        self.domain = ""
         self._token_expires_at = 0
+
+        # Note: self.domain is intentionally NOT cleared here. It is the
+        # persisted tenant domain_id from the config entry, independent of the
+        # Cognito session, and must survive a token-refresh reconnect.
 
         # Close and recreate session
         if self.session:
@@ -207,6 +217,77 @@ class API:
             self.session = self._create_session()
 
         return True
+
+    def list_domains(self, bearer_token: str | None = None) -> list[dict[str, Any]]:
+        """Return every domain the authenticated user has access to, unfiltered.
+
+        No `parentDomainId` filtering is applied here anymore (see S-01): the
+        caller (config flow) decides what to do with 1, more than 1, or 0 domains.
+
+        The discovery endpoint requires a valid `x-domain` header to be sent even
+        for the very first call: it responds 401 "Missing Domain Header" without
+        one, and 401 "Authorization Validation Error" for a syntactically valid
+        but unauthorized UUID. To bootstrap this without hardcoding any
+        production UUID, we decode (without signature verification - these are
+        public claims of the caller's own token) the Cognito IdToken and read the
+        domain ids embedded in its "d_<domain-uuid>" claims, then use the first
+        one as the initial `x-domain`. This was verified empirically against the
+        real API (see card S-01).
+        """
+        if bearer_token is None:
+            bearer_token = self._get_bearer_token()
+
+        candidate_domain_ids = self._extract_domain_claims(bearer_token)
+        if not candidate_domain_ids:
+            _LOGGER.info(
+                "No domain claims found in IdToken; user has no accessible domains"
+            )
+            return []
+
+        url = f"{self.BASE_DOMAIN}/auth/user/me/domains"
+        response = self.session.get(
+            url,
+            headers=self._get_headers(
+                bearer_token=bearer_token, x_domain=candidate_domain_ids[0]
+            ),
+            timeout=self.DEFAULT_TIMEOUT,
+        )
+
+        if response.status_code != 200:
+            _LOGGER.error(
+                "Failed to get domains: status=%d, response=%s",
+                response.status_code,
+                response.text[:200],
+            )
+            raise APIConnectionError(
+                f"Unable to retrieve the domain list (HTTP {response.status_code})."
+            )
+
+        resp_json = response.json()
+        return resp_json.get("domains", [])
+
+    def _extract_domain_claims(self, id_token: str) -> list[str]:
+        """Extract candidate domain ids from the "d_<uuid>" claims of an IdToken.
+
+        These are public (unsigned-read) claims of the caller's own Cognito
+        IdToken; no signature verification is performed or needed, as this is
+        only used to bootstrap the `x-domain` header for the discovery call, not
+        to establish trust.
+        """
+        try:
+            payload_segment = id_token.split(".")[1]
+            padding = "=" * (-len(payload_segment) % 4)
+            payload = json.loads(base64.urlsafe_b64decode(payload_segment + padding))
+        except (IndexError, ValueError, TypeError, UnicodeDecodeError) as err:
+            _LOGGER.warning("Unable to decode IdToken claims: %s", err)
+            return []
+
+        if not isinstance(payload, dict):
+            return []
+
+        return sorted(
+            key[2:] for key in payload if isinstance(key, str) and key.startswith("d_")
+        )
 
     def get_devices(self) -> list[Device]:
         """Get devices on api."""
@@ -306,37 +387,11 @@ class API:
             "content-type": "application/json",
         }
 
-    def _get_domain(self, bearer_token):
-        """Get available domain."""
-        url = f"{self.BASE_DOMAIN}/auth/user/me/domains"
-
-        response = self.session.get(
-            url,
-            headers=self._get_headers(
-                bearer_token=bearer_token, x_domain=self.PARENT_DOMAIN
-            ),
-            timeout=self.DEFAULT_TIMEOUT,
-        )
-
-        if response.status_code != 200:
-            _LOGGER.error(
-                "Failed to get domains: status=%d, response=%s",
-                response.status_code,
-                response.text[:200]
-            )
-            return None
-
-        resp_json = response.json()
-        for domain in resp_json["domains"]:
-            if domain["parentDomainId"] == self.PARENT_DOMAIN:
-                return domain["id"]
-        return None
-
     def _check_response_status(self, response: requests.Response, url: str = ""):
         """Check response status."""
         if response.status_code == 200:
             return True
-        
+
         _LOGGER.warning(
             "API request failed: status=%d, url=%s, response=%s",
             response.status_code,
