@@ -17,6 +17,8 @@ from homeassistant.const import UnitOfPressure, UnitOfTemperature
 from pycognito.aws_srp import AWSSRP
 from requests.adapters import HTTPAdapter, Retry
 
+from .const import DEFAULT_CLIENT_ID, DEFAULT_POOL_ID, DEFAULT_POOL_REGION
+
 _LOGGER = logging.getLogger(__name__)
 
 DEVICE_TYPES = ["Now+"]
@@ -116,13 +118,20 @@ class API:
         self,
         username: str,
         password: str,
-        client_id: str,
-        pool_id: str,
-        pool_region: str,
+        client_id: str = DEFAULT_CLIENT_ID,
+        pool_id: str = DEFAULT_POOL_ID,
+        pool_region: str = DEFAULT_POOL_REGION,
         domain_id: str = "",
     ) -> None:
         """
         Initialise.
+
+        `client_id`, `pool_id` and `pool_region` default to this integration's
+        own Cognito app client (see const.py) and are no longer expected to be
+        supplied by the config flow or persisted in the config entry (S-02):
+        they are internal production infrastructure, not per-user secrets.
+        Callers may still override them explicitly (e.g. for a staging
+        environment or in tests), but there is no user-facing UI for that.
 
         `domain_id` is the tenant domain already chosen for this account (persisted
         in the config entry after the config flow's discovery/selection step). It is

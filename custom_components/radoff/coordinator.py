@@ -7,24 +7,13 @@ from typing import Any
 
 import requests
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import (
-    CONF_CLIENT_ID,
-    CONF_PASSWORD,
-    CONF_SCAN_INTERVAL,
-    CONF_USERNAME,
-)
+from homeassistant.const import CONF_PASSWORD, CONF_SCAN_INTERVAL, CONF_USERNAME
 from homeassistant.core import DOMAIN as HOMEASSISTANT_DOMAIN
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from .api import API, APIAuthError, Device
-from .const import (
-    CONF_DOMAIN_ID,
-    CONF_INDEX,
-    CONF_POOL_ID,
-    CONF_POOL_REGION,
-    DEFAULT_SCAN_INTERVAL,
-)
+from .const import CONF_DOMAIN_ID, CONF_INDEX, DEFAULT_SCAN_INTERVAL
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -45,13 +34,14 @@ class RadoffCoordinator(DataUpdateCoordinator):
 
     def __init__(self, hass: HomeAssistant, config_entry: ConfigEntry) -> None:
         """Initialize coordinator."""
-        self.client_id = config_entry.data[CONF_CLIENT_ID]
         self.username = config_entry.data[CONF_USERNAME]
         self.password = config_entry.data[CONF_PASSWORD]
-        self.pool_id = config_entry.data[CONF_POOL_ID]
-        self.pool_region = config_entry.data[CONF_POOL_REGION]
         self.domain_id = config_entry.data[CONF_DOMAIN_ID]
-        self.generate_index = config_entry.data.get(CONF_INDEX, True)
+
+        # generate_index lives in options (not data) since config entry VERSION 2:
+        # it is a user preference, not connection data, and belongs to the same
+        # place as other user-tunable settings (see S-02, S-11).
+        self.generate_index = config_entry.options.get(CONF_INDEX, True)
 
         self.poll_interval = config_entry.options.get(
             CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL
@@ -65,12 +55,12 @@ class RadoffCoordinator(DataUpdateCoordinator):
             update_interval=timedelta(seconds=self.poll_interval),
         )
 
+        # client_id/pool_id/pool_region are no longer read from the config entry
+        # (see S-02): API() falls back to this integration's own Cognito app
+        # client constants (const.py) unless explicitly overridden.
         self.api = API(
             username=self.username,
             password=self.password,
-            client_id=self.client_id,
-            pool_id=self.pool_id,
-            pool_region=self.pool_region,
             domain_id=self.domain_id,
         )
 

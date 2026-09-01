@@ -12,12 +12,8 @@
     "step": {
       "user": {
         "data": {
-          "client_id": "Client ID",
           "password": "Password",
-          "pool_id": "Pool ID",
-          "pool_region": "Pool Region",
-          "username": "Username",
-          "generate_index": "Generates Index Entities"
+          "username": "Username"
         }
       },
       "domain": {

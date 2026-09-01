@@ -104,10 +104,8 @@
     "step": {
       "user": {
         "data": {
-          "client_id": "Client ID",
           "password": "Password",
-          "username": "Nome Utente",
-          "generate_index": "Genera indici entità"
+          "username": "Nome Utente"
         }
       },
       "domain": {

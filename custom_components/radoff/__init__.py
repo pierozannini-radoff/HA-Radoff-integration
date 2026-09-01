@@ -6,10 +6,10 @@ import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from homeassistant.const import Platform
+from homeassistant.const import CONF_CLIENT_ID, Platform
 from homeassistant.exceptions import ConfigEntryNotReady
 
-from .const import DOMAIN
+from .const import CONF_INDEX, CONF_POOL_ID, CONF_POOL_REGION, DOMAIN
 from .coordinator import RadoffCoordinator
 
 if TYPE_CHECKING:
@@ -31,6 +31,53 @@ class RuntimeData:
 
     coordinator: DataUpdateCoordinator
     cancel_update_listener: Callable
+
+
+async def async_migrate_entry(hass: HomeAssistant, config_entry: ConfigEntry) -> bool:
+    """
+    Migrate a config entry to the current version.
+
+    VERSION 1 -> 2 (S-02):
+      - `client_id`, `pool_id`, `pool_region` are dropped from `data`. They are
+        internal Cognito infrastructure constants (see const.py), not per-user
+        configuration, and must no longer be persisted per entry: this is what
+        allows a future app-client rotation to be a plain integration update
+        instead of a manual fix for every installed entry.
+      - `generate_index` moves from `data` to `options` (default True if it was
+        never set), since it is a user preference rather than connection data.
+
+    This function is idempotent: it only touches entries still at version 1,
+    so a second (or later) restart of an already-migrated entry is a no-op.
+    No entity's `unique_id` is affected by this migration.
+    """
+    _LOGGER.debug(
+        "Checking radoff config entry %s for migration (version=%s)",
+        config_entry.entry_id,
+        config_entry.version,
+    )
+
+    if config_entry.version == 1:
+        new_data = dict(config_entry.data)
+        generate_index = new_data.pop(CONF_INDEX, True)
+        new_data.pop(CONF_CLIENT_ID, None)
+        new_data.pop(CONF_POOL_ID, None)
+        new_data.pop(CONF_POOL_REGION, None)
+
+        new_options = {**config_entry.options, CONF_INDEX: generate_index}
+
+        hass.config_entries.async_update_entry(
+            config_entry,
+            data=new_data,
+            options=new_options,
+            version=2,
+        )
+
+        _LOGGER.debug(
+            "Migrated radoff config entry %s from version 1 to version 2",
+            config_entry.entry_id,
+        )
+
+    return True
 
 
 async def async_setup_entry(hass: HomeAssistant, config_entry: ConfigEntry) -> bool:

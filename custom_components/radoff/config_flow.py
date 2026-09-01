@@ -7,20 +7,11 @@ from typing import TYPE_CHECKING, Any
 
 import voluptuous as vol
 from homeassistant.config_entries import ConfigFlow, ConfigFlowResult
-from homeassistant.const import CONF_CLIENT_ID, CONF_PASSWORD, CONF_USERNAME
+from homeassistant.const import CONF_PASSWORD, CONF_USERNAME
 from homeassistant.exceptions import HomeAssistantError
 
 from .api import API
-from .const import (
-    CONF_DOMAIN_ID,
-    CONF_INDEX,
-    CONF_POOL_ID,
-    CONF_POOL_REGION,
-    DEFAULT_CLIENT_ID,
-    DEFAULT_POOL_ID,
-    DEFAULT_POOL_REGION,
-    DOMAIN,
-)
+from .const import CONF_DOMAIN_ID, CONF_INDEX, DOMAIN
 
 if TYPE_CHECKING:
     from homeassistant.core import HomeAssistant
@@ -32,10 +23,6 @@ STEP_USER_DATA_SCHEMA = vol.Schema(
     {
         vol.Required(CONF_USERNAME): str,
         vol.Required(CONF_PASSWORD): str,
-        vol.Required(CONF_CLIENT_ID, default=DEFAULT_CLIENT_ID): str,
-        vol.Required(CONF_POOL_ID, default=DEFAULT_POOL_ID): str,
-        vol.Required(CONF_POOL_REGION, default=DEFAULT_POOL_REGION): str,
-        vol.Required(CONF_INDEX, default=True): bool,
     }
 )
 
@@ -45,9 +32,6 @@ async def validate_input(hass: HomeAssistant, data: dict[str, Any]) -> dict[str,
     api = API(
         username=data[CONF_USERNAME],
         password=data[CONF_PASSWORD],
-        client_id=data[CONF_CLIENT_ID],
-        pool_id=data[CONF_POOL_ID],
-        pool_region=data[CONF_POOL_REGION],
     )
 
     if not await hass.async_add_executor_job(api.connect):
@@ -64,7 +48,7 @@ async def validate_input(hass: HomeAssistant, data: dict[str, Any]) -> dict[str,
 class ConfigPatternFlow(ConfigFlow, domain=DOMAIN):
     """Handle a config flow for radoff."""
 
-    VERSION = 1
+    VERSION = 2
 
     def __init__(self) -> None:
         """Initialize the config flow."""
@@ -130,7 +114,9 @@ class ConfigPatternFlow(ConfigFlow, domain=DOMAIN):
         self._abort_if_unique_id_configured()
 
         data = {**self._user_input, CONF_DOMAIN_ID: domain_id}
-        return self.async_create_entry(title="Radoff", data=data)
+        return self.async_create_entry(
+            title="Radoff", data=data, options={CONF_INDEX: True}
+        )
 
 
 class CannotConnectError(HomeAssistantError):
