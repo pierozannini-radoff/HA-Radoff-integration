@@ -22,6 +22,14 @@ ignore = [
 # Narrow this list if the script is ever promoted to a maintained dev tool.
 "probe_domain_discovery.py" = ["ALL"]
 
+# api/client.py sits one level inside the `api/` package (S-06b) and needs to
+# reach `const.py` and `properties.py` in the parent `custom_components/radoff/`
+# package. Every intra-integration import in this codebase is relative, never
+# absolute (`custom_components.radoff...` does not resolve the same way under
+# HACS and under the dev harness's PYTHONPATH, see scripts/develop) - TID252
+# would otherwise forbid the only import form that works in both.
+"custom_components/radoff/api/client.py" = ["TID252"]
+
 [lint.flake8-pytest-style]
 fixture-parentheses = false
 

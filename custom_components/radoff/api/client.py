@@ -4,21 +4,18 @@ import base64
 import json
 import logging
 import time
-from collections.abc import Callable
-from dataclasses import dataclass
-from enum import StrEnum
 from http import HTTPStatus
-from numbers import Number
 from typing import Any
 from urllib.parse import urlsplit
 
 import requests
-from homeassistant.components.sensor import DEVICE_CLASS_UNITS, SensorDeviceClass
-from homeassistant.const import UnitOfPressure, UnitOfTemperature
-from pycognito.aws_srp import AWSSRP
 from requests.adapters import HTTPAdapter, Retry
 
-from .const import DEFAULT_CLIENT_ID, DEFAULT_POOL_ID, DEFAULT_POOL_REGION, USER_AGENT
+from ..const import DEFAULT_CLIENT_ID, DEFAULT_POOL_ID, DEFAULT_POOL_REGION, USER_AGENT
+from ..properties import MAPPING
+from .auth import authenticate_user, compute_token_expiry
+from .exceptions import APIAuthError, APIConnectionError, BearerTokenNotFoundError
+from .models import Device, RadoffSensor
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -48,90 +45,6 @@ def _get_request_id(response: requests.Response) -> str | None:
         if value:
             return value
     return None
-
-
-@dataclass
-class RadoffSensor:
-    """Dataclass to store the entity data."""
-
-    name: str
-    value: Number
-    device_class: SensorDeviceClass
-    friendly_name: str
-    unit: type[StrEnum] | str | None
-    normalize_fn: Callable[[Number], float | int]
-
-
-@dataclass
-class Device:
-    """API device."""
-
-    device_id: str
-    device_serial: str
-    device_type: str
-    name: str
-    sensors: dict[str, RadoffSensor]
-
-
-MAPPING: dict[str, dict[str, dict[str, Any]]] = {
-    "data": {
-        "tvoc": {
-            "deviceClass": SensorDeviceClass.VOLATILE_ORGANIC_COMPOUNDS,
-            "friendlyName": "VOC",
-            "unit": next(
-                iter(DEVICE_CLASS_UNITS[SensorDeviceClass.VOLATILE_ORGANIC_COMPOUNDS])
-            ),
-        },
-        "eco2": {
-            "deviceClass": SensorDeviceClass.CO2,
-            "friendlyName": "Co2",
-            "unit": next(iter(DEVICE_CLASS_UNITS[SensorDeviceClass.CO2])),
-        },
-        "pm10": {
-            "deviceClass": SensorDeviceClass.PM10,
-            "friendlyName": "PM10",
-            "unit": next(iter(DEVICE_CLASS_UNITS[SensorDeviceClass.PM10])),
-        },
-        "pm25": {
-            "deviceClass": SensorDeviceClass.PM25,
-            "friendlyName": "PM2.5",
-            "unit": next(iter(DEVICE_CLASS_UNITS[SensorDeviceClass.PM25])),
-        },
-        "pm1": {
-            "deviceClass": SensorDeviceClass.PM1,
-            "friendlyName": "PM1",
-            "unit": next(iter(DEVICE_CLASS_UNITS[SensorDeviceClass.PM1])),
-        },
-        "internal_temperature": {
-            "deviceClass": SensorDeviceClass.TEMPERATURE,
-            "friendlyName": "Temperature",
-            "unit": UnitOfTemperature.CELSIUS,
-            "normalize_fn": lambda value: round(float(value) * 0.00835, 1),
-        },
-        "relative_humidity": {
-            "deviceClass": SensorDeviceClass.HUMIDITY,
-            "friendlyName": "Humidity",
-            "unit": next(iter(DEVICE_CLASS_UNITS[SensorDeviceClass.HUMIDITY])),
-        },
-        "pressure": {
-            "deviceClass": SensorDeviceClass.PRESSURE,
-            "friendlyName": "Pressure",
-            "unit": UnitOfPressure.PA,
-        },
-        "airqualityindex": {
-            "deviceClass": SensorDeviceClass.AQI,
-            "friendlyName": "Air Quality",
-            "unit": None,
-        },
-    },
-    "aggregatedData": {
-        "airqualityindex": {
-            "deviceClass": SensorDeviceClass.AQI,
-            "friendlyName": "Air Quality",
-            "unit": None,
-        },
-    },
-}
 
 
 class API:
@@ -218,19 +131,18 @@ class API:
         """
         if self.username != "" and self.password != "" and self.client_id != "":
             _LOGGER.debug("Authenticating with AWS Cognito...")
-            connection = AWSSRP(
+            auth_data = authenticate_user(
                 username=self.username,
                 password=self.password,
-                pool_id=self.pool_id,
                 client_id=self.client_id,
+                pool_id=self.pool_id,
                 pool_region=self.pool_region,
             )
-            auth_data = connection.authenticate_user()
             if auth_data is not None and "AuthenticationResult" in auth_data:
                 self.tokens = auth_data["AuthenticationResult"]
 
                 expires_in = self.tokens.get("ExpiresIn", 3600)
-                self._token_expires_at = time.time() + expires_in
+                self._token_expires_at = compute_token_expiry(expires_in)
                 _LOGGER.info("Token will expire in %d seconds", expires_in)
 
                 self.connected = True
@@ -479,19 +391,3 @@ class API:
 
         msg = f"API request failed with HTTP {response.status_code}."
         raise APIAuthError(msg)
-
-
-class APIAuthError(Exception):
-    """Exception class for auth error."""
-
-
-class APIConnectionError(Exception):
-    """Exception class for connection error."""
-
-
-class DomainNotFoundError(Exception):
-    """Exception class for domain not found error."""
-
-
-class BearerTokenNotFoundError(Exception):
-    """Exception class for bearer token not found/available."""
