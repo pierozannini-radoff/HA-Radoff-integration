@@ -14,6 +14,13 @@ MIN_SCAN_INTERVAL = 10
 CONF_INDEX = "generate_index"
 CONF_DOMAIN_ID = "domain_id"
 
+# Multiplier used to derive the "stale after" freshness threshold consumed by
+# RadoffEntity.available (card S-07): a reading is considered fresh while its
+# age is below `update_interval * DEFAULT_STALE_MULTIPLIER`. Not exposed as a
+# config option yet - see card S-11 for whether that turns out to be worth
+# doing; today it is only ever read from here.
+DEFAULT_STALE_MULTIPLIER = 3
+
 # AWS Cognito defaults for Radoff API.
 #
 # These are internal implementation details, not secrets: a public Cognito app

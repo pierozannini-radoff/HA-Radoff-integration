@@ -4,6 +4,7 @@ import base64
 import json
 import logging
 import time
+from datetime import UTC, datetime
 from http import HTTPStatus
 from typing import Any
 from urllib.parse import urlsplit
@@ -15,11 +16,29 @@ from ..const import DEFAULT_CLIENT_ID, DEFAULT_POOL_ID, DEFAULT_POOL_REGION, USE
 from ..properties import MAPPING
 from .auth import authenticate_user, compute_token_expiry
 from .exceptions import APIAuthError, APIConnectionError, BearerTokenNotFoundError
-from .models import Device, RadoffSensor
+from .models import RadoffDevice, Reading
 
 _LOGGER = logging.getLogger(__name__)
 
 DEVICE_TYPES = ["Now+"]
+
+# T-02 CONFIRMED (probe run 2026-09-02 against a real account): objects in
+# `data`, `aggregatedData` and `recalculatedData` carry only `propertyName`
+# plus `value`/`aggregationValue` - no per-sample timestamp field exists at
+# all. This tuple therefore stays EMPTY BY DESIGN, not "pending": if a future
+# API version ever adds one, add its key here and `_parse_measured_at`
+# already knows how to read it (ISO-8601, with or without a trailing "Z", or
+# a Unix epoch number in seconds or milliseconds) - nothing else needs to
+# change. Until then, `Reading.measured_at` stays `None` and
+# `RadoffEntity.available` falls back to the device-level
+# `RadoffDevice.last_data_received_at` (see `_get_data` below) instead of
+# fully degrading to "the reading exists" - a real, if coarser, freshness
+# signal the same probe run found sitting one level up in the same response.
+_MEASURED_AT_KEYS: tuple[str, ...] = ()
+
+# A numeric timestamp above this (~year 2100 expressed in seconds) is treated
+# as milliseconds instead of seconds.
+_EPOCH_MS_THRESHOLD = 4_102_444_800
 
 
 def _safe_url(url: str) -> str:
@@ -44,6 +63,60 @@ def _get_request_id(response: requests.Response) -> str | None:
         value = response.headers.get(header)
         if value:
             return value
+    return None
+
+
+def _parse_timestamp(raw: Any) -> datetime | None:
+    """
+    Best-effort parse of a single raw value as a timestamp.
+
+    Accepts either an ISO-8601 string (with or without a trailing "Z") or a
+    Unix epoch number in seconds or milliseconds. Anything else, or a value
+    that fails to parse, returns `None` rather than raising: a single bad or
+    absent timestamp must never be able to fail the whole poll (same
+    "parsing robusto con fallback a None" requirement as card S-07's step 1).
+
+    Assumes UTC when a parsed ISO-8601 string carries no explicit offset.
+    T-02 CONFIRMED (probe run 2026-09-02) that `lastDataReceivedAt` (see
+    `RadoffDevice.last_data_received_at`) never exercises that fallback in
+    practice: real values look like `"2026-09-02T14:26:40.147Z"` -
+    ISO-8601 with millisecond precision and an explicit trailing "Z", i.e.
+    already UTC, same as `lastAggregatedDataReceivedAt` and `provisionedAt`
+    sampled from the same response. The no-explicit-offset branch stays as
+    a defensive fallback for any other timestamp this integration may read
+    in the future, not because this field needs it.
+    """
+    try:
+        if isinstance(raw, bool):
+            # bool is an int subclass; never a plausible timestamp.
+            return None
+        if isinstance(raw, int | float):
+            seconds = raw / 1000 if raw > _EPOCH_MS_THRESHOLD else raw
+            return datetime.fromtimestamp(seconds, tz=UTC)
+        if isinstance(raw, str):
+            # `fromisoformat` accepts a trailing "Z" natively since 3.11.
+            parsed = datetime.fromisoformat(raw)
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=UTC)
+            return parsed
+    except (ValueError, TypeError, OSError, OverflowError):
+        _LOGGER.debug("Unable to parse %r as a timestamp", raw)
+    return None
+
+
+def _parse_measured_at(obj: dict[str, Any]) -> datetime | None:
+    """
+    Best-effort extraction of a per-sample timestamp from a reading object.
+
+    Tries each of `_MEASURED_AT_KEYS` in order (see that tuple's comment for
+    why it is empty today) and returns the first one that parses via
+    `_parse_timestamp`, or `None` if none does.
+    """
+    for key in _MEASURED_AT_KEYS:
+        if key in obj:
+            parsed = _parse_timestamp(obj[key])
+            if parsed is not None:
+                return parsed
     return None
 
 
@@ -241,7 +314,7 @@ class API:
             key[2:] for key in payload if isinstance(key, str) and key.startswith("d_")
         )
 
-    def get_devices(self) -> list[Device]:
+    def get_devices(self) -> list[RadoffDevice]:
         """Get devices on api."""
         # Check if token needs refresh
         if self._is_token_expired():
@@ -249,7 +322,7 @@ class API:
             self.disconnect()
             self.connect()
 
-        device_list: list[Device] = []
+        device_list: list[RadoffDevice] = []
 
         url = f"{self.BASE_DOMAIN}/data/devices/search"
         post_obj = {"filter": {}, "take": 99}
@@ -270,20 +343,21 @@ class API:
 
         for device in devices:
             if "deviceTypeName" in device and device["deviceTypeName"] in DEVICE_TYPES:
-                sensors = self._get_data(device["id"])
+                readings, last_data_received_at = self._get_data(device["id"])
                 device_list.append(
-                    Device(
+                    RadoffDevice(
                         device_id=device["id"],
                         device_serial=device["serial"],
                         device_type=device["deviceTypeName"],
                         name=device["name"],
-                        sensors=sensors,
+                        readings=readings,
+                        last_data_received_at=last_data_received_at,
                     )
                 )
         return device_list
 
-    def _get_data(self, device_id: str) -> dict[str, RadoffSensor]:
-        sensors: dict[str, RadoffSensor] = {}
+    def _get_data(self, device_id: str) -> tuple[dict[str, Reading], datetime | None]:
+        readings: dict[str, Reading] = {}
 
         url = f"{self.BASE_DOMAIN}/data/devices/{device_id}"
         response = self.session.get(
@@ -308,26 +382,35 @@ class API:
             sorted(data.keys()),
         )
 
+        # Device-level freshness signal (T-02 finding, card S-07): confirmed
+        # absent per-sample, but this sibling field of the same response IS
+        # "when this device last reported anything" - coarser than a
+        # per-reading timestamp would be, but real, and what
+        # RadoffEntity.available falls back to.
+        last_data_received_at = _parse_timestamp(data.get("lastDataReceivedAt"))
+
         for k, v in MAPPING.items():
             if k in data:
                 for obj in data[k]:
                     pn = obj["propertyName"]
 
                     av = obj["value"] if "value" in obj else obj["aggregationValue"]
+                    measured_at = _parse_measured_at(obj)
 
                     if pn in v:
                         obj_map = v[pn]
                         fn = obj_map.get("normalize_fn", None)
-                        sensors[pn] = RadoffSensor(
+                        readings[pn] = Reading(
                             name=pn,
                             value=av,
                             device_class=obj_map["deviceClass"],
                             friendly_name=obj_map["friendlyName"],
                             unit=obj_map["unit"],
                             normalize_fn=fn,
+                            measured_at=measured_at,
                         )
 
-        return sensors
+        return readings, last_data_received_at
 
     def _get_bearer_token(self) -> str:
         if self.tokens is not None and "IdToken" in self.tokens:

@@ -11,8 +11,13 @@ from homeassistant.core import DOMAIN as HOMEASSISTANT_DOMAIN
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
-from .api import API, APIAuthError, Device
-from .const import CONF_DOMAIN_ID, CONF_INDEX, DEFAULT_SCAN_INTERVAL
+from .api import API, APIAuthError, RadoffDevice
+from .const import (
+    CONF_DOMAIN_ID,
+    CONF_INDEX,
+    DEFAULT_SCAN_INTERVAL,
+    DEFAULT_STALE_MULTIPLIER,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -23,7 +28,7 @@ class APIData:
 
     controller_name: str
     generate_index: bool
-    devices: list[Device]
+    devices: list[RadoffDevice]
 
 
 class RadoffCoordinator(DataUpdateCoordinator):
@@ -62,6 +67,20 @@ class RadoffCoordinator(DataUpdateCoordinator):
             password=self.password,
             domain_id=self.domain_id,
         )
+
+    @property
+    def stale_after(self) -> timedelta:
+        """
+        Return the age above which a reading is considered stale (card S-07).
+
+        Derived from `update_interval` rather than stored separately, so it
+        always tracks the poll interval actually in effect (including one
+        changed later via the options flow, S-11) without needing its own
+        update listener. Not configurable independently of the multiplier
+        yet - `DEFAULT_STALE_MULTIPLIER` lives in const.py; S-11 is where the
+        multiplier itself, if ever, becomes a user-facing option.
+        """
+        return self.update_interval * DEFAULT_STALE_MULTIPLIER
 
     async def async_update_data(self) -> APIData:
         """Fetch data from API endpoint."""
@@ -103,7 +122,7 @@ class RadoffCoordinator(DataUpdateCoordinator):
             msg = f"Unexpected error: {err}"
             raise UpdateFailed(msg) from err
 
-    def get_device_by_id(self, device_type: str, device_id: str) -> Device | None:
+    def get_device_by_id(self, device_type: str, device_id: str) -> RadoffDevice | None:
         """Return device by device id."""
         _LOGGER.debug("Radoff get_device_by_id")
         # A `for` loop over a list cannot raise IndexError (see card S-06,

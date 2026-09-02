@@ -17,10 +17,35 @@ ignore = [
 ]
 
 [lint.per-file-ignores]
-# Manual API probe script, not shipped code: it lives outside custom_components/,
-# is run by hand against the real backend, and printing to stdout is its purpose.
-# Narrow this list if the script is ever promoted to a maintained dev tool.
+# Manual API probe scripts, not shipped code: they live outside
+# custom_components/, are run by hand against the real backend, and
+# printing to stdout / prompting interactively is their purpose.
 "probe_domain_discovery.py" = ["ALL"]
+"probe_reading_timestamp.py" = ["ALL"]
+
+# Standalone verification scripts (S-06, S-07): run by hand with `python3
+# verify_sXX.py`, not shipped code, and deliberately monkeypatch/stub
+# homeassistant modules and private attributes to exercise the integration
+# without a real HA install.
+"verify_s07.py" = ["ALL"]
+
+# Temporary dev launcher (S-07): a drop-in replacement for
+# ./scripts/develop that monkeypatches API.get_devices to simulate poll
+# faults (missing device / missing property) for manual AC1/AC2 testing
+# with a single real device. Not shipped code - see its own docstring for
+# the removal note (delete once S-18 lands automated degraded-poll tests).
+"dev_fault_injection.py" = ["ALL"]
+
+# Automated wrapper around dev_fault_injection.py (S-07): drives it as a
+# subprocess, polls the REST API, and prints a PASS/FAIL verdict for AC1/AC2
+# instead of requiring you to watch the log or the Developer Tools UI by
+# hand. Not shipped code, same convention as the other dev/probe scripts.
+"verify_fault_injection.py" = ["ALL"]
+
+# Full AC1-AC4 suite (S-07) against two real devices in one continuous HA
+# run, driving dev_fault_injection.py's dynamic fault_control.json. Not
+# shipped code, same convention as the other dev/probe scripts.
+"verify_ac_suite.py" = ["ALL"]
 
 # api/client.py sits one level inside the `api/` package (S-06b) and needs to
 # reach `const.py` and `properties.py` in the parent `custom_components/radoff/`
