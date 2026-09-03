@@ -12,7 +12,15 @@ from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryAuthFailed
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
-from .api import API, APIAuthError, AuthExpiredError, AuthInvalidError, RadoffDevice
+from .api import (
+    API,
+    APIAuthError,
+    AuthChallengeRequiredError,
+    AuthExpiredError,
+    AuthInvalidError,
+    AuthUnavailableError,
+    RadoffDevice,
+)
 from .const import (
     CONF_DOMAIN_ID,
     CONF_INDEX,
@@ -101,6 +109,34 @@ class RadoffCoordinator(DataUpdateCoordinator):
                 generate_index=self.generate_index,
             )
 
+        except AuthChallengeRequiredError as err:
+            # Card S-09: a config entry can only exist for an account whose
+            # initial setup completed with a full Cognito login (no config
+            # entry is ever created for an account still on a challenge -
+            # see config_flow.py's validate_input). If the periodic reconnect
+            # this method performs (see `get_devices()`) ever hits a
+            # challenge on an *already configured* account - e.g. Cognito
+            # starts requiring MFA, or an admin resets the password on the
+            # Radoff side and the account lands back on NEW_PASSWORD_REQUIRED
+            # - that is functionally identical to "the stored credentials no
+            # longer let this integration authenticate" (the same situation
+            # `AuthInvalidError` below covers). Reusing `ConfigEntryAuthFailed`
+            # here opens the exact same re-auth flow (`async_step_reauth_confirm`),
+            # which calls `validate_input` again and, since it still hits the
+            # same challenge, aborts cleanly with `unsupported_challenge`
+            # instead of asking for a new password that would not help. This
+            # closes the same class of defect C7/S-08 fixed for AuthInvalidError:
+            # without this clause, a challenge here fell through to the
+            # generic `except Exception` below and retried forever, logging
+            # "Unexpected error" on every poll with no actionable prompt.
+            _LOGGER.warning(
+                "Radoff now requires a challenge this integration cannot "
+                "complete (%s), starting re-auth: %s",
+                err.challenge_name,
+                err,
+            )
+            raise ConfigEntryAuthFailed(str(err)) from err
+
         except AuthInvalidError as err:
             # Card S-08: the credentials themselves are no longer valid (wrong
             # password, or the Cognito user was disabled/deleted) - raised by
@@ -127,6 +163,22 @@ class RadoffCoordinator(DataUpdateCoordinator):
             # the password truly changed.
             _LOGGER.debug("Radoff authentication token expired, will retry: %s", err)
             msg = f"Authentication token expired: {err}"
+            raise UpdateFailed(msg) from err
+
+        except AuthUnavailableError as err:
+            # Card S-09: Cognito was throttling the request, or could not be
+            # reached at all (EndpointConnectionError). Says nothing about
+            # whether the stored credentials are still correct, so this must
+            # never open the re-auth flow - stays UpdateFailed, logged at
+            # DEBUG rather than with a traceback, same reasoning as
+            # AuthExpiredError above: this is an expected transient
+            # condition, not a bug in this integration.
+            _LOGGER.debug(
+                "Radoff authentication service temporarily unavailable, "
+                "will retry: %s",
+                err,
+            )
+            msg = f"Authentication service temporarily unavailable: {err}"
             raise UpdateFailed(msg) from err
 
         except APIAuthError as err:
