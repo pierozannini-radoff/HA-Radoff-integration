@@ -14,7 +14,7 @@ from requests.adapters import HTTPAdapter, Retry
 
 from ..const import DEFAULT_CLIENT_ID, DEFAULT_POOL_ID, DEFAULT_POOL_REGION, USER_AGENT
 from ..properties import MAPPING
-from .auth import authenticate_user, compute_token_expiry
+from .auth import AuthExpiredError, authenticate_user, compute_token_expiry
 from .exceptions import APIAuthError, APIConnectionError, BearerTokenNotFoundError
 from .models import RadoffDevice, Reading
 
@@ -201,6 +201,13 @@ class API:
         here: the domain to use is either already known (persisted `domain_id`,
         passed to `__init__`) or is discovered separately via `list_domains()`
         during the config flow (see S-01).
+
+        Used for both the initial login and the periodic reconnect this
+        integration performs whenever the current token is close to expiry
+        (see `get_devices()`) - both go through `authenticate_user()` below,
+        which is what actually distinguishes a definitive credential failure
+        (`AuthInvalidError`, propagated unchanged - see card S-08) from anything
+        else.
         """
         if self.username != "" and self.password != "" and self.client_id != "":
             _LOGGER.debug("Authenticating with AWS Cognito...")
@@ -445,6 +452,16 @@ class API:
         )
 
         if response.status_code == HTTPStatus.UNAUTHORIZED:
+            # Card S-08: a 401 on an already-authenticated call means the
+            # *session* behind the current token is no longer valid - it says
+            # nothing yet about whether the configured password itself is
+            # still correct. That is only known once the next reconnect
+            # attempt actually replays it through `authenticate_user()` (see
+            # `get_devices()` and `api/auth.py`), which is where a definitive
+            # `AuthInvalidError` can be raised instead. Until then this stays the
+            # recoverable case: disconnect so the next poll reconnects, raise
+            # `AuthExpiredError` so `coordinator.py` keeps retrying (`UpdateFailed`)
+            # instead of opening the re-auth flow on every expired session.
             _LOGGER.debug(
                 "Authentication token invalid (401) for domain %s, "
                 "will reconnect on next request",
@@ -452,9 +469,16 @@ class API:
             )
             self.disconnect()
             msg = "Authentication failed (HTTP 401 Unauthorized). Token may be expired."
-            raise APIAuthError(msg)
+            raise AuthExpiredError(msg)
 
         if response.status_code == HTTPStatus.FORBIDDEN:
+            # Deliberately NOT reclassified as AuthInvalidError by card S-08: a 403
+            # here is ambiguous (could mean the token's domain access changed,
+            # not necessarily "credentials no longer valid"), and the card's
+            # own coordinator step only names AuthInvalidError/AuthExpiredError coming
+            # from api/auth.py's Cognito handshake, not from this branch. The
+            # pre-existing over-broad "everything auth-adjacent is APIAuthError"
+            # classification for 403 (see finding F3) is tracked separately.
             msg = "Access forbidden (HTTP 403). Check account permissions."
             raise APIAuthError(msg)
 

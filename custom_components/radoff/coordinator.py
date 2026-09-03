@@ -9,9 +9,10 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_PASSWORD, CONF_SCAN_INTERVAL, CONF_USERNAME
 from homeassistant.core import DOMAIN as HOMEASSISTANT_DOMAIN
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import ConfigEntryAuthFailed
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
-from .api import API, APIAuthError, RadoffDevice
+from .api import API, APIAuthError, AuthExpiredError, AuthInvalidError, RadoffDevice
 from .const import (
     CONF_DOMAIN_ID,
     CONF_INDEX,
@@ -99,6 +100,34 @@ class RadoffCoordinator(DataUpdateCoordinator):
                 devices=devices,
                 generate_index=self.generate_index,
             )
+
+        except AuthInvalidError as err:
+            # Card S-08: the credentials themselves are no longer valid (wrong
+            # password, or the Cognito user was disabled/deleted) - raised by
+            # api/auth.py::authenticate_user when connect() (initial or
+            # periodic reconnect, see that module's docstring for the timing
+            # caveat) replays the stored password and Cognito rejects it
+            # outright. This is deliberately NOT logged with `_LOGGER.exception`
+            # (no traceback): it is an expected end-user situation, not a bug,
+            # and is exactly the "no more infinite auth-error log loops" this
+            # card asks for (a single ConfigEntryAuthFailed here stops the
+            # coordinator's periodic refresh until re-auth completes, instead
+            # of retrying and logging every poll interval).
+            _LOGGER.warning(
+                "Radoff credentials are no longer valid, starting re-auth: %s", err
+            )
+            raise ConfigEntryAuthFailed(str(err)) from err
+
+        except AuthExpiredError as err:
+            # Card S-08: a 401 on an authenticated call - the current session
+            # is invalid but the configured credentials have not (yet) been
+            # proven wrong. Stays UpdateFailed on purpose: api/client.py has
+            # already disconnected, so the next poll will attempt a fresh
+            # connect() and *that* is what can turn into AuthInvalidError above if
+            # the password truly changed.
+            _LOGGER.debug("Radoff authentication token expired, will retry: %s", err)
+            msg = f"Authentication token expired: {err}"
+            raise UpdateFailed(msg) from err
 
         except APIAuthError as err:
             _LOGGER.exception("Authentication error")

@@ -7,12 +7,76 @@ of the `API` instance (tokens, connection status, session) - the SRP
 handshake against Cognito, and the expiry computed from `ExpiresIn`. Token
 state itself stays on `API` in client.py; delegating it to a session object
 is S-12's work, which needs refresh logic, not a move.
+
+Card S-08 adds the two exceptions below and the classification performed in
+`authenticate_user`: distinguishing a *definitive* credential failure (wrong
+password, deleted or disabled Cognito user) from anything else lets
+`coordinator.py` raise Home Assistant's `ConfigEntryAuthFailed` - which opens
+the re-auth flow - only for the former, never for a transient or network
+problem (see that card's acceptance criteria: "Un errore di rete NON apre il
+flusso di re-auth.").
+
+Important timing caveat, documented here because it constrains what this
+module can promise: `API.connect()` (see client.py) is used both for the
+*initial* login and for the periodic reconnect this integration performs
+every ~55 minutes by replaying the stored password via a full SRP handshake
+(no Cognito RefreshToken is used today - see finding F7, card S-12). This
+means a password changed on the Radoff side is only detected here the next
+time that reconnect actually runs. Depending on whether the Radoff backend
+invalidates already-issued sessions immediately (global sign-out) or only
+lets the old token expire naturally, that can be as soon as the next couple
+of poll cycles (a 401 from a live API call triggers a reconnect attempt on
+the following poll - see client.py's `_check_response_status`) or as late as
+~55 minutes. This card does not change that cadence; it only makes sure that
+whenever the reconnect *does* run and fails definitively, Home Assistant is
+told correctly instead of looping `UpdateFailed` forever.
 """
 
+import logging
 import time
 from typing import Any
 
+from botocore.exceptions import ClientError
 from pycognito.aws_srp import AWSSRP
+
+_LOGGER = logging.getLogger(__name__)
+
+# Cognito error codes that mean the credentials themselves are no longer
+# valid, as opposed to a transient failure. Both cases named by card S-08 -
+# "credenziali non più valide" and "utente disabilitato" - surface as the
+# same NotAuthorizedException: Cognito returns that identical code for a
+# plain wrong password *and* for a user disabled via AdminDisableUser, there
+# is no separate code for the latter. UserNotFoundException covers a deleted
+# account. A wrong client_id/pool_id/pool_region is deliberately NOT in this
+# set: that fails earlier, inside AWSSRP's own setup, with a different error
+# shape, and no password the user could re-enter would fix it - it is not a
+# credentials problem in the sense this card cares about.
+_DEFINITIVE_AUTH_ERROR_CODES = frozenset(
+    {"NotAuthorizedException", "UserNotFoundException"}
+)
+
+
+class AuthExpiredError(Exception):
+    """
+    The session behind an already-issued token is no longer valid.
+
+    The configured credentials may still be correct - the caller should
+    simply retry, e.g. by reconnecting on the next poll. Raised by
+    `api/client.py` on an HTTP 401 from an authenticated call; never raised
+    from this module, which only performs the initial/periodic Cognito
+    handshake itself.
+    """
+
+
+class AuthInvalidError(Exception):
+    """
+    The configured credentials themselves are no longer valid.
+
+    The password changed, or the Cognito user was disabled or deleted.
+    Recovering requires the user to re-enter their password, i.e. Home
+    Assistant's re-auth flow (`config_flow.py::async_step_reauth_confirm`),
+    not a silent retry.
+    """
 
 
 def authenticate_user(
@@ -22,7 +86,16 @@ def authenticate_user(
     pool_id: str,
     pool_region: str,
 ) -> dict[str, Any] | None:
-    """Perform the Cognito SRP authentication and return its raw result."""
+    """
+    Perform the Cognito SRP authentication and return its raw result.
+
+    Raises `AuthInvalidError` when Cognito rejects the credentials outright (see
+    `_DEFINITIVE_AUTH_ERROR_CODES`). Any other `ClientError` (throttling, a
+    Cognito-side outage, a malformed request, ...) is re-raised unchanged,
+    since it says nothing about whether the password is still correct and
+    must not be able to trigger the re-auth flow (card S-08 AC: "Un errore
+    di rete NON apre il flusso di re-auth.").
+    """
     connection = AWSSRP(
         username=username,
         password=password,
@@ -30,7 +103,17 @@ def authenticate_user(
         client_id=client_id,
         pool_region=pool_region,
     )
-    return connection.authenticate_user()
+    try:
+        return connection.authenticate_user()
+    except ClientError as err:
+        error_code = err.response.get("Error", {}).get("Code", "")
+        if error_code in _DEFINITIVE_AUTH_ERROR_CODES:
+            _LOGGER.debug(
+                "Cognito rejected the configured credentials (%s)", error_code
+            )
+            msg = "The configured Radoff credentials are no longer valid."
+            raise AuthInvalidError(msg) from err
+        raise
 
 
 def compute_token_expiry(expires_in: int) -> float:

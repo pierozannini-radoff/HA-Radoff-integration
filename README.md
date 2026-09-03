@@ -64,6 +64,10 @@ has access to one, the integration entry is created immediately after
 authentication succeeds. There is no device-selection step: every Now+ device
 visible on the selected domain is added automatically.
 
+If your Radoff account password changes, Home Assistant will show a
+**Reconfigure** notification on the integration instead of silently failing
+(see "Known limitations" below for the current timing).
+
 ## Entities produced
 
 For every Now+ device found on your account, the integration creates one
@@ -82,9 +86,13 @@ configurable from the UI.
 - **Device coverage**: only Now+ is supported today; Now (legacy) and Sense
   are not detected (see "Supported devices" above).
 - **Polling interval**: fixed at 60 seconds, not yet exposed as an option.
-- **Re-authentication**: if your Radoff account password changes, the
-  integration will stop updating without a visible re-authentication prompt.
-  Removing and re-adding the integration is currently the way to recover.
+- **Re-authentication timing**: if your Radoff account password changes, Home
+  Assistant will prompt you to re-enter it (**Settings → Devices & Services →
+  Radoff → Reconfigure**) without removing or re-adding the integration and
+  without losing entity history. How quickly the prompt appears depends on
+  when the integration next needs to re-authenticate with Radoff's cloud: this
+  can be as soon as the next poll or two, or - if your existing session stays
+  valid until its natural expiry - up to about an hour.
 - **Availability**: entities do not yet reflect the freshness of the
   underlying device data; a device that has stopped reporting to Radoff may
   continue to show its last known values.
