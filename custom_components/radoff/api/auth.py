@@ -18,18 +18,30 @@ flusso di re-auth.").
 
 Important timing caveat, documented here because it constrains what this
 module can promise: `API.connect()` (see client.py) is used both for the
-*initial* login and for the periodic reconnect this integration performs
-every ~55 minutes by replaying the stored password via a full SRP handshake
-(no Cognito RefreshToken is used today - see finding F7, card S-12). This
-means a password changed on the Radoff side is only detected here the next
-time that reconnect actually runs. Depending on whether the Radoff backend
+*initial* login and for the periodic reconnect this integration performs by
+replaying the stored password via a full SRP handshake (no Cognito
+RefreshToken is used today - see finding F7, card S-12). This means a
+password changed on the Radoff side is only detected here the next time
+that reconnect actually runs. Depending on whether the Radoff backend
 invalidates already-issued sessions immediately (global sign-out) or only
 lets the old token expire naturally, that can be as soon as the next couple
 of poll cycles (a 401 from a live API call triggers a reconnect attempt on
-the following poll - see client.py's `_check_response_status`) or as late as
-~55 minutes. This card does not change that cadence; it only makes sure that
-whenever the reconnect *does* run and fails definitively, Home Assistant is
-told correctly instead of looping `UpdateFailed` forever.
+the following poll - see client.py's `_check_response_status`), or as late
+as the token's own natural expiry.
+
+That natural-expiry ceiling was originally assumed to be ~1 hour (~55
+minutes with `_is_token_expired`'s 5-minute margin) but is, verified
+against a real account on 2026-09-03, `ExpiresIn` = 86400 seconds (24
+hours) for this app client - i.e. up to ~23h55m without a live 401 or a
+manual reconnect (integration reload or Home Assistant restart, both of
+which start a fresh, disconnected `API` and force an immediate
+re-authentication attempt). This card does not change that cadence; it
+only makes sure that whenever the reconnect *does* run and fails
+definitively, Home Assistant is told correctly instead of looping
+`UpdateFailed` forever. Shortening the practical detection window (e.g. a
+shorter Cognito token TTL, or a dedicated re-validation interval
+independent of the token's own expiry) is out of scope here and tracked
+under S-12 alongside the RefreshToken work.
 """
 
 import logging

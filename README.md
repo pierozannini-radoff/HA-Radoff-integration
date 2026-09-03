@@ -92,7 +92,10 @@ configurable from the UI.
   without losing entity history. How quickly the prompt appears depends on
   when the integration next needs to re-authenticate with Radoff's cloud: this
   can be as soon as the next poll or two, or - if your existing session stays
-  valid until its natural expiry - up to about an hour.
+  valid until its natural expiry - up to about 24 hours (verified against a
+  real account: Radoff's Cognito app client currently issues tokens valid for
+  86400 seconds). Reloading the integration or restarting Home Assistant
+  forces an immediate check instead of waiting.
 - **Availability**: entities do not yet reflect the freshness of the
   underlying device data; a device that has stopped reporting to Radoff may
   continue to show its last known values.
