@@ -49,6 +49,13 @@ ignore = [
 # shipped code, same convention as the other dev/probe scripts.
 "verify_ac_suite.py" = ["ALL"]
 
+# Test suite (S-08 AC2/AC3/AC4): pytest-homeassistant-custom-component
+# fixtures and test bodies follow pytest's own conventions (module-level
+# constants, no docstring on every helper, `hass`/`entry` as loosely-typed
+# fixture params, etc.), not this file's "ship-quality library code" bar -
+# same reasoning as the other non-shipped dev/verify scripts above.
+"tests/*.py" = ["ALL"]
+
 # api/client.py sits one level inside the `api/` package (S-06b) and needs to
 # reach `const.py` and `properties.py` in the parent `custom_components/radoff/`
 # package. Every intra-integration import in this codebase is relative, never
