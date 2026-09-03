@@ -10,7 +10,13 @@ from homeassistant.config_entries import ConfigFlow, ConfigFlowResult
 from homeassistant.const import CONF_PASSWORD, CONF_USERNAME
 from homeassistant.exceptions import HomeAssistantError
 
-from .api import API, AuthInvalidError
+from .api import (
+    API,
+    APIConnectionError,
+    AuthChallengeRequiredError,
+    AuthInvalidError,
+    AuthUnavailableError,
+)
 from .const import CONF_DOMAIN_ID, CONF_INDEX, DOMAIN
 
 if TYPE_CHECKING:
@@ -36,7 +42,36 @@ STEP_REAUTH_CONFIRM_DATA_SCHEMA = vol.Schema(
 
 
 async def validate_input(hass: HomeAssistant, data: dict[str, Any]) -> dict[str, Any]:
-    """Validate the user input allows us to connect, and discover the user's domains."""
+    """
+    Validate the user input allows us to connect, and discover the user's domains.
+
+    Card S-09: every outcome of `api.connect()`/`api.list_domains()` that
+    this module knows how to interpret is now mapped to a distinct local
+    error before it can reach the generic `except Exception` in
+    `async_step_user`/`async_step_reauth_confirm` (finding C9 - `unknown`
+    was being shown for cases that have a perfectly good, already-translated
+    message: wrong credentials, a network/Cognito-availability problem, or
+    an unsupported Cognito challenge):
+
+    - `AuthChallengeRequiredError` (api/auth.py): Cognito wants a challenge
+      this flow cannot complete (`NEW_PASSWORD_REQUIRED`, MFA, ...) - this is
+      the fix for finding C8: previously `api.connect()` returned `True` for
+      this case too, so a config entry could be created for an account that
+      would never be able to authenticate. Translated to
+      `UnsupportedChallengeError`, which both callers below turn into a
+      dedicated `async_abort(reason="unsupported_challenge")` - no config
+      entry is ever created for this case.
+    - `AuthInvalidError` (api/auth.py): credentials rejected outright by
+      Cognito, or no authentication data returned at all (see that module's
+      docstring). Translated to this module's `InvalidAuthError` ->
+      `errors["base"] = "invalid_auth"`.
+    - `AuthUnavailableError` (api/auth.py) / `APIConnectionError`
+      (api/exceptions.py, raised by `list_domains()` on a non-200 response):
+      neither says anything about the credentials themselves. Both translate
+      to this module's `CannotConnectError` -> `errors["base"] =
+      "cannot_connect"`, which used to be declared but never actually
+      raised (finding C9).
+    """
     api = API(
         username=data[CONF_USERNAME],
         password=data[CONF_PASSWORD],
@@ -44,19 +79,13 @@ async def validate_input(hass: HomeAssistant, data: dict[str, Any]) -> dict[str,
 
     try:
         await hass.async_add_executor_job(api.connect)
+        domains = await hass.async_add_executor_job(api.list_domains)
+    except AuthChallengeRequiredError as err:
+        raise UnsupportedChallengeError(err.challenge_name) from err
     except AuthInvalidError as err:
-        # Card S-08: same "wrong/definitively-rejected credentials" signal
-        # used by the coordinator's re-auth path, translated here to the
-        # config-flow-local error this module's callers already know how to
-        # show (`errors["base"] = "invalid_auth"`), on both the initial setup
-        # form (async_step_user) and the re-auth form (async_step_reauth_confirm)
-        # below, since both call this same function.
         raise InvalidAuthError from err
-
-    if not api.connected:
-        raise InvalidAuthError
-
-    domains = await hass.async_add_executor_job(api.list_domains)
+    except (AuthUnavailableError, APIConnectionError) as err:
+        raise CannotConnectError from err
 
     return {"title": "Radoff", "username": data[CONF_USERNAME], "domains": domains}
 
@@ -80,6 +109,13 @@ class ConfigPatternFlow(ConfigFlow, domain=DOMAIN):
         if user_input is not None:
             try:
                 info = await validate_input(self.hass, user_input)
+            except UnsupportedChallengeError:
+                # Card S-09 / finding C8: never create a config entry for an
+                # account Cognito is asking a challenge for - abort with a
+                # dedicated, actionable reason instead of the generic
+                # invalid_auth error a bare exception would previously have
+                # produced (or, before that, no rejection at all).
+                return self.async_abort(reason="unsupported_challenge")
             except CannotConnectError:
                 errors["base"] = "cannot_connect"
             except InvalidAuthError:
@@ -126,7 +162,15 @@ class ConfigPatternFlow(ConfigFlow, domain=DOMAIN):
 
     async def _async_create_entry(self, domain_id: str) -> ConfigFlowResult:
         """Persist the config entry with the chosen domain_id."""
-        await self.async_set_unique_id(self._username)
+        # Card S-09 / finding C16: normalize before using the username as the
+        # entry's unique_id, so "Mario@x" and "mario@x" are recognised as the
+        # same account (`already_configured`) instead of producing two
+        # duplicate entries. The *unnormalized* username from `self._user_input`
+        # is still what gets persisted into `data` and used to authenticate -
+        # Cognito usernames are not guaranteed case-insensitive server-side,
+        # so only the HA-local identity key is normalized here, not the
+        # credential itself.
+        await self.async_set_unique_id(self._username.strip().lower())
         self._abort_if_unique_id_configured()
 
         data = {**self._user_input, CONF_DOMAIN_ID: domain_id}
@@ -178,6 +222,11 @@ class ConfigPatternFlow(ConfigFlow, domain=DOMAIN):
         a newer ConfigFlow convenience not guaranteed present on the oldest
         Home Assistant version this integration declares support for
         (`hacs.json`: 2024.6.0).
+
+        Card S-09 adds the same `UnsupportedChallengeError` handling used by
+        `async_step_user`: a password change that leaves the account on a
+        Cognito challenge (e.g. it now requires MFA) must abort cleanly here
+        too, rather than falling through to the generic `except Exception`.
         """
         errors: dict[str, str] = {}
 
@@ -190,6 +239,8 @@ class ConfigPatternFlow(ConfigFlow, domain=DOMAIN):
             data = {**reauth_entry.data, CONF_PASSWORD: user_input[CONF_PASSWORD]}
             try:
                 await validate_input(self.hass, data)
+            except UnsupportedChallengeError:
+                return self.async_abort(reason="unsupported_challenge")
             except CannotConnectError:
                 errors["base"] = "cannot_connect"
             except InvalidAuthError:
@@ -221,3 +272,21 @@ class CannotConnectError(HomeAssistantError):
 
 class InvalidAuthError(HomeAssistantError):
     """Error to indicate there is invalid auth."""
+
+
+class UnsupportedChallengeError(HomeAssistantError):
+    """
+    Error to indicate Cognito requires a challenge this flow cannot complete.
+
+    Card S-09 / finding C8. Carries the raw Cognito `challenge_name` (e.g.
+    `NEW_PASSWORD_REQUIRED`, `SMS_MFA`) purely for logging/diagnostics - the
+    abort reason shown to the user (`unsupported_challenge`, see
+    `strings.json`/`translations/*.json`) is deliberately generic and
+    actionable rather than naming the specific challenge, since actually
+    supporting any of them is out of scope for this card.
+    """
+
+    def __init__(self, challenge_name: str) -> None:
+        """Store the Cognito challenge name that triggered this abort."""
+        super().__init__(challenge_name)
+        self.challenge_name = challenge_name

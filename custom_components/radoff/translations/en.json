@@ -3,7 +3,8 @@
     "abort": {
       "already_configured": "Device is already configured",
       "no_domains": "This account has no domain available. Please contact Radoff support before retrying.",
-      "reauth_successful": "Re-authentication was successful"
+      "reauth_successful": "Re-authentication was successful",
+      "unsupported_challenge": "Your Radoff account needs an extra verification step (such as setting a new password or confirming multi-factor authentication) that this integration cannot complete yet. Please finish that step in the Radoff mobile app first, then try adding the integration again."
     },
     "error": {
       "cannot_connect": "Failed to connect",

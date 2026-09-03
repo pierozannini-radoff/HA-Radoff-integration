@@ -95,7 +95,8 @@
     "abort": {
       "already_configured": "Dispositivo gia configurato",
       "no_domains": "Questo account non ha nessun dominio disponibile. Contatta il supporto Radoff prima di riprovare.",
-      "reauth_successful": "Riautenticazione completata con successo"
+      "reauth_successful": "Riautenticazione completata con successo",
+      "unsupported_challenge": "Il tuo account Radoff richiede un passaggio di verifica aggiuntivo (ad esempio l'impostazione di una nuova password o la conferma dell'autenticazione a più fattori) che questa integrazione non è ancora in grado di completare. Completa quel passaggio nell'app mobile Radoff, poi riprova ad aggiungere l'integrazione."
     },
     "error": {
       "cannot_connect": "Connessione fallita",

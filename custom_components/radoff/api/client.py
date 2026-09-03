@@ -204,31 +204,41 @@ class API:
 
         Used for both the initial login and the periodic reconnect this
         integration performs whenever the current token is close to expiry
-        (see `get_devices()`) - both go through `authenticate_user()` below,
-        which is what actually distinguishes a definitive credential failure
-        (`AuthInvalidError`, propagated unchanged - see card S-08) from anything
-        else.
+        (see `get_devices()`) - both go through `authenticate_user()` below.
+
+        As of card S-09, `authenticate_user()` (see `api/auth.py`) itself
+        fully classifies every outcome of the Cognito handshake: it either
+        returns a dict guaranteed to contain `AuthenticationResult`, or
+        raises one of `AuthInvalidError` (credentials rejected outright, or
+        no authentication data at all - see card S-08), `AuthChallengeRequiredError`
+        (Cognito wants a challenge this integration cannot complete, e.g.
+        `NEW_PASSWORD_REQUIRED` or MFA - this is the fix for finding C8: a
+        challenge response used to be silently treated as "not connected"
+        while this method still returned `True`, letting the config flow
+        create a permanently broken entry) or `AuthUnavailableError`
+        (Cognito unreachable or throttling - never a credentials problem).
+        This method therefore no longer needs to inspect the raw Cognito
+        response itself, or special-case empty `username`/`password`/
+        `client_id` (validating those is voluptuous's job in the config
+        flow's schema, not this method's - finding C9's dead-code branch).
         """
-        if self.username != "" and self.password != "" and self.client_id != "":
-            _LOGGER.debug("Authenticating with AWS Cognito...")
-            auth_data = authenticate_user(
-                username=self.username,
-                password=self.password,
-                client_id=self.client_id,
-                pool_id=self.pool_id,
-                pool_region=self.pool_region,
-            )
-            if auth_data is not None and "AuthenticationResult" in auth_data:
-                self.tokens = auth_data["AuthenticationResult"]
+        _LOGGER.debug("Authenticating with AWS Cognito...")
+        auth_data = authenticate_user(
+            username=self.username,
+            password=self.password,
+            client_id=self.client_id,
+            pool_id=self.pool_id,
+            pool_region=self.pool_region,
+        )
 
-                expires_in = self.tokens.get("ExpiresIn", 3600)
-                self._token_expires_at = compute_token_expiry(expires_in)
-                _LOGGER.info("Token will expire in %d seconds", expires_in)
+        self.tokens = auth_data["AuthenticationResult"]
 
-                self.connected = True
-            return True
-        msg = "Error connecting to api. Invalid authentication data."
-        raise APIAuthError(msg)
+        expires_in = self.tokens.get("ExpiresIn", 3600)
+        self._token_expires_at = compute_token_expiry(expires_in)
+        _LOGGER.info("Token will expire in %d seconds", expires_in)
+
+        self.connected = True
+        return True
 
     def disconnect(self) -> bool:
         """Disconnect from api."""

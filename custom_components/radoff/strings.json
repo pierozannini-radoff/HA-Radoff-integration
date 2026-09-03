@@ -122,7 +122,8 @@
     "abort": {
       "already_configured": "[%key:common::config_flow::abort::already_configured_device%]",
       "no_domains": "This account has no domain available. Please contact Radoff support before retrying.",
-      "reauth_successful": "[%key:common::config_flow::abort::reauth_successful%]"
+      "reauth_successful": "[%key:common::config_flow::abort::reauth_successful%]",
+      "unsupported_challenge": "Your Radoff account needs an extra verification step (such as setting a new password or confirming multi-factor authentication) that this integration cannot complete yet. Please finish that step in the Radoff mobile app first, then try adding the integration again."
     }
   }
 }
