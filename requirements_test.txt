@@ -1,9 +1,0 @@
-# Test-only dependencies for the S-08 AC2/AC3/AC4 suite (tests/test_reauth.py).
-# Not required to run the integration itself (see requirements.txt for that);
-# only to run `pytest`. Needs Python 3.12+ (matches .devcontainer.json).
-#
-# pytest-homeassistant-custom-component pulls in a compatible Home Assistant
-# + pytest/pytest-asyncio stack on its own; do not add a separate
-# `homeassistant` pin here or pip's resolver may fight itself.
-pytest-homeassistant-custom-component
-pycognito==2024.5.1
