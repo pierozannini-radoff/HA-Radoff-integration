@@ -39,6 +39,9 @@
       "airqualityindex": {
         "name": "Air Quality"
       },
+      "airqualityindex_average": {
+        "name": "Air Quality Average"
+      },
       "eco2": {
         "name": "Co2"
       },

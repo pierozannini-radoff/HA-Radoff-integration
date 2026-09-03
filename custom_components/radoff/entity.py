@@ -21,6 +21,18 @@ looked up fresh from `self.coordinator.data` on every access: a device or
 property that disappears from one poll is reflected immediately (S-07 AC:
 "entro un ciclo di poll"), and one that reappears needs no reload to come
 back (S-07 AC), because there is no stale cached object left to clear.
+
+Card S-10 changes what `reading_key` identifies: it used to be the bare
+property name (a `str`); it is now the composite `ReadingKey = (Bucket,
+property_name)` `api/models.py` introduces to resolve finding C4 (a `data`
+and an `aggregatedData` reading for the same property no longer collide in
+`RadoffDevice.readings`). `unique_id` below is the one place in this class
+that has to turn that tuple back into a single identifier string, and it
+does so through `reading_key_slug()` - also used by
+`sensor.py::RadoffSensor.translation_key` - so both stay in lockstep and
+the DATA-bucket case keeps producing byte-for-byte the same string it did
+before this card (S-10 AC: "Le entità esistenti del bucket DATA mantengono
+unique_id e storico").
 """
 
 import logging
@@ -31,11 +43,37 @@ from homeassistant.core import callback
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .api.models import RadoffDevice, Reading
+from .api.models import Bucket, RadoffDevice, Reading, ReadingKey
 from .const import DOMAIN
 from .coordinator import RadoffCoordinator
 
 _LOGGER = logging.getLogger(__name__)
+
+# Suffix appended to a property name to build its entity "slug" (used for
+# both `unique_id` and `translation_key`), per bucket. DATA is the bucket
+# every entity was built from before S-10 introduced any other one, so it
+# keeps the empty suffix - the exact identifier a DATA-bucket reading always
+# had - and every bucket added after it must pick its own non-empty suffix
+# here so it can never collide with DATA's, or with another new bucket's.
+_BUCKET_SLUG_SUFFIXES: dict[Bucket, str] = {
+    Bucket.DATA: "",
+    Bucket.AGGREGATED: "average",
+}
+
+
+def reading_key_slug(reading_key: ReadingKey) -> str:
+    """
+    Return the property-name-based slug identifying one reading's entities.
+
+    `(Bucket.DATA, "airqualityindex")` -> `"airqualityindex"` (unchanged from
+    the pre-S-10 bare-string key, by construction - see
+    `_BUCKET_SLUG_SUFFIXES`). `(Bucket.AGGREGATED, "airqualityindex")` ->
+    `"airqualityindex_average"`, a distinct slug so the two never collide in
+    `unique_id` or `translation_key`.
+    """
+    bucket, property_name = reading_key
+    suffix = _BUCKET_SLUG_SUFFIXES[bucket]
+    return property_name if not suffix else f"{property_name}_{suffix}"
 
 
 class RadoffEntity(CoordinatorEntity):
@@ -47,7 +85,7 @@ class RadoffEntity(CoordinatorEntity):
         self,
         coordinator: RadoffCoordinator,
         device: RadoffDevice,
-        reading_key: str,
+        reading_key: ReadingKey,
     ) -> None:
         """
         Initialize the entity from the device object seen when it was created.
@@ -111,8 +149,15 @@ class RadoffEntity(CoordinatorEntity):
 
     @property
     def unique_id(self) -> str:
-        """Return unique id."""
-        return f"{DOMAIN}-{self._device_id}-{self.reading_key}"
+        """
+        Return unique id.
+
+        Built from `reading_key_slug()`, not from `self.reading_key` directly
+        (card S-10): `reading_key` is now `(Bucket, property_name)`, and the
+        slug is what turns that back into the single identifier string this
+        integration has always used, unchanged for the DATA bucket.
+        """
+        return f"{DOMAIN}-{self._device_id}-{reading_key_slug(self.reading_key)}"
 
     @staticmethod
     def _freshness_reference(reading: Reading, device: RadoffDevice) -> datetime | None:

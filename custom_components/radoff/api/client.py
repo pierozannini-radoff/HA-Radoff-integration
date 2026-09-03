@@ -16,7 +16,7 @@ from ..const import DEFAULT_CLIENT_ID, DEFAULT_POOL_ID, DEFAULT_POOL_REGION, USE
 from ..properties import MAPPING
 from .auth import AuthExpiredError, authenticate_user, compute_token_expiry
 from .exceptions import APIAuthError, APIConnectionError, BearerTokenNotFoundError
-from .models import RadoffDevice, Reading
+from .models import RadoffDevice, Reading, ReadingKey
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -373,8 +373,21 @@ class API:
                 )
         return device_list
 
-    def _get_data(self, device_id: str) -> tuple[dict[str, Reading], datetime | None]:
-        readings: dict[str, Reading] = {}
+    def _get_data(
+        self, device_id: str
+    ) -> tuple[dict[ReadingKey, Reading], datetime | None]:
+        """
+        Fetch one device's readings, keyed by `(bucket, property_name)`.
+
+        Card S-10 / finding C4: `MAPPING` (see `properties.py`) is now keyed
+        by `Bucket` first, so this loop walks it bucket by bucket instead of
+        over a single flat property-name namespace. `data.airqualityindex`
+        and `aggregatedData.airqualityindex` therefore land in two distinct
+        `readings` entries - `(Bucket.DATA, "airqualityindex")` and
+        `(Bucket.AGGREGATED, "airqualityindex")` - instead of one overwriting
+        the other depending on dict iteration order.
+        """
+        readings: dict[ReadingKey, Reading] = {}
 
         url = f"{self.BASE_DOMAIN}/data/devices/{device_id}"
         response = self.session.get(
@@ -406,26 +419,29 @@ class API:
         # RadoffEntity.available falls back to.
         last_data_received_at = _parse_timestamp(data.get("lastDataReceivedAt"))
 
-        for k, v in MAPPING.items():
-            if k in data:
-                for obj in data[k]:
-                    pn = obj["propertyName"]
+        for bucket, bucket_mapping in MAPPING.items():
+            if bucket not in data:
+                continue
+            for obj in data[bucket]:
+                pn = obj["propertyName"]
+                if pn not in bucket_mapping:
+                    continue
 
-                    av = obj["value"] if "value" in obj else obj["aggregationValue"]
-                    measured_at = _parse_measured_at(obj)
+                obj_map = bucket_mapping[pn]
+                av = obj["value"] if "value" in obj else obj["aggregationValue"]
+                measured_at = _parse_measured_at(obj)
+                fn = obj_map.get("normalize_fn", None)
 
-                    if pn in v:
-                        obj_map = v[pn]
-                        fn = obj_map.get("normalize_fn", None)
-                        readings[pn] = Reading(
-                            name=pn,
-                            value=av,
-                            device_class=obj_map["deviceClass"],
-                            friendly_name=obj_map["friendlyName"],
-                            unit=obj_map["unit"],
-                            normalize_fn=fn,
-                            measured_at=measured_at,
-                        )
+                readings[(bucket, pn)] = Reading(
+                    name=pn,
+                    bucket=bucket,
+                    value=av,
+                    device_class=obj_map["deviceClass"],
+                    friendly_name=obj_map["friendlyName"],
+                    unit=obj_map["unit"],
+                    normalize_fn=fn,
+                    measured_at=measured_at,
+                )
 
         return readings, last_data_received_at
 

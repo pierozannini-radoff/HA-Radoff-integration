@@ -19,6 +19,9 @@
       "airqualityindex": {
         "name": "Qualità aria"
       },
+      "airqualityindex_average": {
+        "name": "Qualità aria media"
+      },
       "internal_temperature_index": {
         "name": "Temperatura Indice",
         "state": {

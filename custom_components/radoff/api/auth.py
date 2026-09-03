@@ -140,9 +140,7 @@ class AuthChallengeRequiredError(Exception):
 
     def __init__(self, challenge_name: str) -> None:
         """Store the Cognito challenge name so the caller can report it."""
-        super().__init__(
-            f"Cognito requires an unsupported challenge: {challenge_name}"
-        )
+        super().__init__(f"Cognito requires an unsupported challenge: {challenge_name}")
         self.challenge_name = challenge_name
 
 

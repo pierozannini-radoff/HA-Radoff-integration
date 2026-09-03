@@ -16,9 +16,10 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .api import RadoffDevice
+from .api.models import ReadingKey
 from .const import DOMAIN
 from .coordinator import RadoffCoordinator
-from .entity import RadoffEntity
+from .entity import RadoffEntity, reading_key_slug
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -46,6 +47,12 @@ def _threshold_index(
     return _index
 
 
+# Keyed by bare property name, independent of which bucket(s) a reading of
+# that name exists in (card S-10 does not move this table - see
+# `properties.py`'s docstring, "OUT OF SCOPE"). Today only DATA-bucket
+# readings ever match a key here: `airqualityindex`, the only property the
+# AGGREGATED bucket carries, is not one of them, so it never gets an "-index"
+# sibling entity, in either bucket.
 INDEX_MAPPING: dict[str, dict[str, Any]] = {
     "tvoc": {"index": _threshold_index((100, 200, 300, 400), FIVE_LEVELS)},
     "eco2": {"index": _threshold_index((500, 1000, 1500, 2000), FIVE_LEVELS)},
@@ -71,10 +78,10 @@ async def async_setup_entry(
 
     sensors = []
     for device in coordinator.data.devices:
-        for reading in device.readings.values():
+        for reading_key, reading in device.readings.items():
             sensors.append(
                 RadoffSensor(
-                    reading_key=reading.name,
+                    reading_key=reading_key,
                     coordinator=coordinator,
                     device=device,
                     device_class=reading.device_class,
@@ -89,7 +96,7 @@ async def async_setup_entry(
                 index_obj = INDEX_MAPPING[reading.name]
                 sensors.append(
                     RadoffSensor(
-                        reading_key=reading.name,
+                        reading_key=reading_key,
                         coordinator=coordinator,
                         device=device,
                         device_class=None,
@@ -117,7 +124,7 @@ class RadoffSensor(RadoffEntity, SensorEntity):
 
     def __init__(  # noqa: PLR0913
         self,
-        reading_key: str,
+        reading_key: ReadingKey,
         device: RadoffDevice,
         coordinator: RadoffCoordinator,
         device_class: SensorDeviceClass | None,
@@ -139,10 +146,18 @@ class RadoffSensor(RadoffEntity, SensorEntity):
 
     @property
     def translation_key(self) -> str:
-        """Return the translation key to translate the entity's name and states."""
-        if not self._is_index:
-            return self.reading_key
-        return f"{self.reading_key}_index"
+        """
+        Return the translation key to translate the entity's name and states.
+
+        Built from `reading_key_slug()` (card S-10), the same helper
+        `RadoffEntity.unique_id` uses: a DATA-bucket reading resolves to
+        exactly the bare property name it always has (e.g. `"tvoc"` /
+        `"tvoc_index"`), and any other bucket gets its own suffixed slug
+        (e.g. `"airqualityindex_average"`) so it never collides with, or
+        shadows, the DATA-bucket entity for the same property.
+        """
+        slug = reading_key_slug(self.reading_key)
+        return slug if not self._is_index else f"{slug}_index"
 
     @property
     def native_value(self) -> int | float | str | None:
