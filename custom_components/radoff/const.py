@@ -10,15 +10,39 @@ DOMAIN = "radoff"
 CONF_POOL_ID = "pool_id"
 CONF_POOL_REGION = "pool_region"
 DEFAULT_SCAN_INTERVAL = 60
-MIN_SCAN_INTERVAL = 10
+
+# Card S-11: MIN_SCAN_INTERVAL was 10 seconds and dead code (no OptionsFlow
+# could ever write CONF_SCAN_INTERVAL - see finding F6). T-02's question 6
+# ("rate limit ufficiali dell'API, per definire un update_interval di
+# default difendibile") is still open in every analysis document in this
+# project - no answer has come back from the Radoff backend team. Per this
+# card's own instruction ("se non arriva risposta, alzarlo a un valore
+# difendibile e documentarlo"), raised from 10 to 30: with the N+1 polling
+# pattern (`get_devices()` = 1 search + 1 GET per device, see finding F5),
+# 10 seconds is aggressive even for a single-device account, let alone the
+# property-manager/multi-site accounts the analysis docs call out. 30 is a
+# provisional, defensible floor, not a value derived from any confirmed
+# rate limit - revisit once T-02 actually answers question 6.
+MIN_SCAN_INTERVAL = 30
+
+# Upper bound for the OptionsFlow's scan_interval NumberSelector (card
+# S-11). Not a backend requirement, just a sane ceiling so the form can't be
+# set to something the user would forget about (e.g. once a day).
+MAX_SCAN_INTERVAL = 3600
+
 CONF_INDEX = "generate_index"
 CONF_DOMAIN_ID = "domain_id"
 
 # Multiplier used to derive the "stale after" freshness threshold consumed by
 # RadoffEntity.available (card S-07): a reading is considered fresh while its
-# age is below `update_interval * DEFAULT_STALE_MULTIPLIER`. Not exposed as a
-# config option yet - see card S-11 for whether that turns out to be worth
-# doing; today it is only ever read from here.
+# age is below `update_interval * DEFAULT_STALE_MULTIPLIER`. Card S-11
+# evaluated exposing this as a third OptionsFlow field (per its own "COSA
+# FARE": "moltiplicatore di staleness (o la sua esposizione va valutata,
+# vedi S-07)") and, decided with Piero, left it as an internal constant: no
+# acceptance criterion of S-11 requires it, and RadoffCoordinator.stale_after
+# already tracks a changed scan_interval automatically (it is derived from
+# `update_interval`, not stored separately - see coordinator.py). Revisit if
+# a future card finds users need it independently of the poll interval.
 DEFAULT_STALE_MULTIPLIER = 3
 
 # AWS Cognito defaults for Radoff API.

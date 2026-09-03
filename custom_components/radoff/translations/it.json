@@ -128,5 +128,21 @@
         }
       }
     }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Opzioni Radoff",
+        "description": "Cambiando una qualsiasi delle due opzioni l'integrazione viene ricaricata per applicarla subito.",
+        "data": {
+          "scan_interval": "Intervallo di polling (secondi)",
+          "generate_index": "Genera entità indice"
+        },
+        "data_description": {
+          "scan_interval": "Ogni quanto interrogare l'API Radoff, in secondi.",
+          "generate_index": "Crea anche un sensore qualitativo *_index (es. Ottimo, Buono, ...) accanto alle misure per cui è disponibile."
+        }
+      }
+    }
   }
 }

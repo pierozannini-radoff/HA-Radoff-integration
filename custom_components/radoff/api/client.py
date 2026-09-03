@@ -12,7 +12,13 @@ from urllib.parse import urlsplit
 import requests
 from requests.adapters import HTTPAdapter, Retry
 
-from ..const import DEFAULT_CLIENT_ID, DEFAULT_POOL_ID, DEFAULT_POOL_REGION, USER_AGENT
+from ..const import (
+    DEFAULT_CLIENT_ID,
+    DEFAULT_POOL_ID,
+    DEFAULT_POOL_REGION,
+    DEFAULT_SCAN_INTERVAL,
+    USER_AGENT,
+)
 from ..properties import MAPPING
 from .auth import AuthExpiredError, authenticate_user, compute_token_expiry
 from .exceptions import APIAuthError, APIConnectionError, BearerTokenNotFoundError
@@ -134,6 +140,7 @@ class API:
         pool_id: str = DEFAULT_POOL_ID,
         pool_region: str = DEFAULT_POOL_REGION,
         domain_id: str = "",
+        scan_interval: int = DEFAULT_SCAN_INTERVAL,
     ) -> None:
         """
         Initialise.
@@ -148,6 +155,15 @@ class API:
         `domain_id` is the tenant domain already chosen for this account (persisted
         in the config entry after the config flow's discovery/selection step). It is
         used as-is for every subsequent call; no domain discovery happens here.
+
+        `scan_interval` (card S-11) is the poll interval currently in effect
+        for this account, in seconds, as resolved by the coordinator from
+        `config_entry.options` (or `DEFAULT_SCAN_INTERVAL` if unset). It is
+        not used to schedule anything here - `RadoffCoordinator.update_interval`
+        remains the single source of truth for that - it is only surfaced in
+        the HTTP 429 branch of `_check_response_status`, so a rate-limit error
+        can name the interval actually in effect instead of a hardcoded
+        number that may no longer match what the user configured.
         """
         self.username = username
         self.password = password
@@ -156,6 +172,7 @@ class API:
         self.pool_region = pool_region
         self.connected: bool = False
         self.domain: str = domain_id
+        self.scan_interval = scan_interval
         self.tokens: dict = {}
         self._token_expires_at: float = 0
 
@@ -509,9 +526,22 @@ class API:
             raise APIAuthError(msg)
 
         if response.status_code == HTTPStatus.TOO_MANY_REQUESTS:
+            # Card S-11: this used to suggest raising the interval "above 60
+            # seconds" while the default itself already was 60 (finding, see
+            # analisi-codebase-radoff-ha-presa-in-carico.md §5.2 "ironia
+            # dell'error handling"). S-03 already made it stop naming a fixed
+            # number; this card goes one step further and names the interval
+            # actually configured for this entry (`self.scan_interval`, set
+            # from `config_entry.options` by the coordinator - see
+            # `API.__init__`), so the message is never wrong for this
+            # installation, and points at the option that now actually exists
+            # (before S-11, RadoffOptionsFlow did not exist, so this advice
+            # was inapplicable - finding F6).
             msg = (
-                "API rate limit exceeded (HTTP 429). "
-                "Please increase your polling interval in the integration options."
+                f"API rate limit exceeded (HTTP 429). The current polling "
+                f"interval for this account is {self.scan_interval} seconds; "
+                "increase it from the integration's options (Settings > "
+                "Devices & Services > Radoff > Configure)."
             )
             raise APIAuthError(msg)
 

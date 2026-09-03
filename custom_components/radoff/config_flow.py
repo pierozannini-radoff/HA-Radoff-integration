@@ -6,9 +6,21 @@ import logging
 from typing import TYPE_CHECKING, Any
 
 import voluptuous as vol
-from homeassistant.config_entries import ConfigFlow, ConfigFlowResult
-from homeassistant.const import CONF_PASSWORD, CONF_USERNAME
+from homeassistant.config_entries import (
+    ConfigEntry,
+    ConfigFlow,
+    ConfigFlowResult,
+    OptionsFlow,
+)
+from homeassistant.const import CONF_PASSWORD, CONF_SCAN_INTERVAL, CONF_USERNAME
+from homeassistant.core import callback
 from homeassistant.exceptions import HomeAssistantError
+from homeassistant.helpers.selector import (
+    BooleanSelector,
+    NumberSelector,
+    NumberSelectorConfig,
+    NumberSelectorMode,
+)
 
 from .api import (
     API,
@@ -17,7 +29,14 @@ from .api import (
     AuthInvalidError,
     AuthUnavailableError,
 )
-from .const import CONF_DOMAIN_ID, CONF_INDEX, DOMAIN
+from .const import (
+    CONF_DOMAIN_ID,
+    CONF_INDEX,
+    DEFAULT_SCAN_INTERVAL,
+    DOMAIN,
+    MAX_SCAN_INTERVAL,
+    MIN_SCAN_INTERVAL,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -100,6 +119,23 @@ class ConfigPatternFlow(ConfigFlow, domain=DOMAIN):
         self._user_input: dict[str, Any] = {}
         self._username: str = ""
         self._domains: list[dict[str, Any]] = []
+
+    @staticmethod
+    @callback
+    def async_get_options_flow(config_entry: ConfigEntry) -> RadoffOptionsFlow:
+        """
+        Create the options flow (card S-11).
+
+        `config_entry` is passed explicitly to `RadoffOptionsFlow.__init__`
+        rather than relying on `OptionsFlow` to set `self.config_entry`
+        automatically: that automatic assignment is a newer `ConfigFlow`
+        convenience not guaranteed present on the oldest Home Assistant
+        version this integration declares support for (`hacs.json`:
+        2024.6.0) - same baseline-compatibility reasoning already applied to
+        the re-auth flow in card S-08 (see that step's note on
+        `async_update_reload_and_abort`).
+        """
+        return RadoffOptionsFlow(config_entry)
 
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
@@ -264,6 +300,70 @@ class ConfigPatternFlow(ConfigFlow, domain=DOMAIN):
             description_placeholders={"username": username},
             errors=errors,
         )
+
+
+class RadoffOptionsFlow(OptionsFlow):
+    """
+    Handle an options flow for radoff (card S-11).
+
+    Two fields, both already consumed by `RadoffCoordinator.__init__`
+    (`coordinator.py`) before this flow existed - it read `CONF_SCAN_INTERVAL`
+    and `CONF_INDEX` from `config_entry.options` from the start, but nothing
+    could ever write either one (finding F6: `MIN_SCAN_INTERVAL` was dead
+    code, and disabling index entities required removing and re-adding the
+    integration). This flow is the missing write path; no coordinator change
+    was needed beyond passing the resolved interval through to `API` for the
+    429 message (see `coordinator.py`, `api/client.py`).
+
+    A third field for the staleness multiplier (`DEFAULT_STALE_MULTIPLIER`,
+    const.py) was considered, per this card's own "COSA FARE" ("o la sua
+    esposizione va valutata, vedi S-07"), and deliberately left out - decided
+    with Piero: no acceptance criterion requires it, and it already tracks a
+    changed scan_interval automatically via `RadoffCoordinator.stale_after`.
+    """
+
+    def __init__(self, config_entry: ConfigEntry) -> None:
+        """Store the config entry this flow edits the options of."""
+        self.config_entry = config_entry
+
+    async def async_step_init(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Show and process the single options form."""
+        if user_input is not None:
+            # `NumberSelector` already enforces min/max client- and
+            # server-side (see the schema below), and voluptuous re-validates
+            # server-side regardless of what the frontend sent - a value
+            # below MIN_SCAN_INTERVAL never reaches this point as a saved
+            # option (S-11 AC: "Un valore sotto il minimo viene rifiutato dal
+            # form.").
+            return self.async_create_entry(data=user_input)
+
+        current_scan_interval = self.config_entry.options.get(
+            CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL
+        )
+        current_generate_index = self.config_entry.options.get(CONF_INDEX, True)
+
+        options_schema = vol.Schema(
+            {
+                vol.Required(
+                    CONF_SCAN_INTERVAL, default=current_scan_interval
+                ): NumberSelector(
+                    NumberSelectorConfig(
+                        min=MIN_SCAN_INTERVAL,
+                        max=MAX_SCAN_INTERVAL,
+                        step=10,
+                        mode=NumberSelectorMode.BOX,
+                        unit_of_measurement="s",
+                    )
+                ),
+                vol.Required(
+                    CONF_INDEX, default=current_generate_index
+                ): BooleanSelector(),
+            }
+        )
+
+        return self.async_show_form(step_id="init", data_schema=options_schema)
 
 
 class CannotConnectError(HomeAssistantError):

@@ -13,9 +13,9 @@ Assistant sensor entities.
 ## What this integration does
 
 The integration authenticates against the Radoff cloud API with your Radoff
-account credentials, then polls your account's devices on a fixed 60 second
-interval and creates one Home Assistant sensor entity per measured property
-per device.
+account credentials, then polls your account's devices (every 60 seconds by
+default - configurable, see "Options" below) and creates one Home Assistant
+sensor entity per measured property per device.
 
 This is a **cloud polling** integration (`iot_class: cloud_polling`): it does
 not talk to your Radoff device directly or over the local network, so it only
@@ -68,24 +68,48 @@ If your Radoff account password changes, Home Assistant will show a
 **Reconfigure** notification on the integration instead of silently failing
 (see "Known limitations" below for the current timing).
 
+## Options
+
+Once the integration is configured, open **Settings → Devices & Services →
+Radoff** and select **Configure** to change:
+
+- **Polling interval** - how often, in seconds, the integration polls the
+  Radoff API. Defaults to 60 seconds; the form enforces a minimum (30
+  seconds today - see "Known limitations") and a maximum of 3600 seconds
+  (one hour). Saving reloads the integration and the new interval takes
+  effect immediately, no restart needed.
+- **Generate index entities** - whether to also create a qualitative
+  `*_index` sensor (Excellent, Good, Medium, Poor, Terrible) alongside each
+  applicable measurement, in addition to its raw value. Enabled by default.
+  Toggling this off removes the `*_index` entities on the next reload;
+  toggling it back on recreates them.
+
+If the Radoff API responds with a rate-limit error (HTTP 429), the log
+message names your account's currently configured polling interval and
+points you at this options page.
+
 ## Entities produced
 
 For every Now+ device found on your account, the integration creates one
 sensor entity per measured property, currently: temperature, humidity,
 pressure, CO₂ (eCO₂), TVOC, PM1, PM2.5, PM10, and an air quality index.
 
-If the "Generate index" option is enabled for the config entry (enabled by
-default), an additional qualitative `*_index` sensor (e.g. Excellent, Good,
-...) is created alongside each of the applicable measurements.
-
-Devices are polled every 60 seconds; this interval is currently fixed and not
-configurable from the UI.
+If the "Generate index entities" option is enabled for the config entry
+(enabled by default - see "Options" above), an additional qualitative
+`*_index` sensor (e.g. Excellent, Good, ...) is created alongside each of the
+applicable measurements.
 
 ## Known limitations
 
 - **Device coverage**: only Now+ is supported today; Now (legacy) and Sense
   are not detected (see "Supported devices" above).
-- **Polling interval**: fixed at 60 seconds, not yet exposed as an option.
+- **Polling interval floor**: the options form currently enforces a 30-second
+  minimum. This is a conservative, provisional value, not one derived from
+  any rate limit Radoff has confirmed - the integration polls with an N+1
+  request pattern (one search call plus one per-device call every cycle),
+  so a lower floor risks tripping rate limits on accounts with several
+  devices. It will be revisited once Radoff's backend team confirms the
+  API's actual rate limits.
 - **Re-authentication timing**: if your Radoff account password changes, Home
   Assistant will prompt you to re-enter it (**Settings → Devices & Services →
   Radoff → Reconfigure**) without removing or re-adding the integration and

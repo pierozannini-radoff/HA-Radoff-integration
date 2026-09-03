@@ -34,6 +34,22 @@
       }
     }
   },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Radoff options",
+        "description": "Changing either option reloads the integration to apply it immediately.",
+        "data": {
+          "scan_interval": "Polling interval (seconds)",
+          "generate_index": "Generate index entities"
+        },
+        "data_description": {
+          "scan_interval": "How often to poll the Radoff API, in seconds.",
+          "generate_index": "Also create a qualitative *_index sensor (e.g. Excellent, Good, ...) alongside applicable measurements."
+        }
+      }
+    }
+  },
   "entity": {
     "sensor": {
       "airqualityindex": {

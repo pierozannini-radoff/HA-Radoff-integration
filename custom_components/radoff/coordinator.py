@@ -51,9 +51,12 @@ class RadoffCoordinator(DataUpdateCoordinator):
         self.password = config_entry.data[CONF_PASSWORD]
         self.domain_id = config_entry.data[CONF_DOMAIN_ID]
 
-        # generate_index lives in options (not data) since config entry VERSION 2:
-        # it is a user preference, not connection data, and belongs to the same
-        # place as other user-tunable settings (see S-02, S-11).
+        # generate_index and scan_interval both live in options, not data,
+        # since config entry VERSION 2 (S-02): they are user preferences, not
+        # connection data. Both are now actually settable from the UI via
+        # RadoffOptionsFlow (card S-11, config_flow.py) - before that card,
+        # CONF_SCAN_INTERVAL was read here but nothing could ever write it
+        # (finding F6): every entry silently ran at DEFAULT_SCAN_INTERVAL.
         self.generate_index = config_entry.options.get(CONF_INDEX, True)
 
         self.poll_interval = config_entry.options.get(
@@ -71,10 +74,16 @@ class RadoffCoordinator(DataUpdateCoordinator):
         # client_id/pool_id/pool_region are no longer read from the config entry
         # (see S-02): API() falls back to this integration's own Cognito app
         # client constants (const.py) unless explicitly overridden.
+        #
+        # scan_interval is passed through (card S-11) purely so the API's
+        # HTTP 429 handling (`api/client.py::_check_response_status`) can
+        # name the interval actually in effect for this entry instead of a
+        # value that may not match what the user configured.
         self.api = API(
             username=self.username,
             password=self.password,
             domain_id=self.domain_id,
+            scan_interval=self.poll_interval,
         )
 
     @property
@@ -85,9 +94,9 @@ class RadoffCoordinator(DataUpdateCoordinator):
         Derived from `update_interval` rather than stored separately, so it
         always tracks the poll interval actually in effect (including one
         changed later via the options flow, S-11) without needing its own
-        update listener. Not configurable independently of the multiplier
-        yet - `DEFAULT_STALE_MULTIPLIER` lives in const.py; S-11 is where the
-        multiplier itself, if ever, becomes a user-facing option.
+        update listener. `DEFAULT_STALE_MULTIPLIER` (const.py) stays an
+        internal constant, not a user-facing option: S-11 considered exposing
+        it and decided against it (see const.py's comment on that constant).
         """
         return self.update_interval * DEFAULT_STALE_MULTIPLIER
 
