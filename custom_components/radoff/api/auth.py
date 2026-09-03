@@ -4,9 +4,7 @@ Cognito authentication primitives for the Radoff API.
 Pure move from the former `api.py::API.connect` (see S-06b): the two pieces
 of that method which only depend on their own arguments, not on any state
 of the `API` instance (tokens, connection status, session) - the SRP
-handshake against Cognito, and the expiry computed from `ExpiresIn`. Token
-state itself stays on `API` in client.py; delegating it to a session object
-is S-12's work, which needs refresh logic, not a move.
+handshake against Cognito, and the expiry computed from `ExpiresIn`.
 
 Card S-08 added the first two exceptions below and the classification
 performed in `authenticate_user`: distinguishing a *definitive* credential
@@ -40,35 +38,51 @@ during config-flow validation (`config_flow.py::validate_input`):
   about whether the credentials are correct, only that the request could not
   be completed right now.
 
-Important timing caveat, documented here because it constrains what this
-module can promise: `API.connect()` (see client.py) is used both for the
-*initial* login and for the periodic reconnect this integration performs by
-replaying the stored password via a full SRP handshake (no Cognito
-RefreshToken is used today - see finding F7, card S-12). This means a
-password changed on the Radoff side is only detected here the next time
-that reconnect actually runs. Depending on whether the Radoff backend
-invalidates already-issued sessions immediately (global sign-out) or only
-lets the old token expire naturally, that can be as soon as the next couple
-of poll cycles (a 401 from a live API call triggers a reconnect attempt on
-the following poll - see client.py's `_check_response_status`), or as late
-as the token's own natural expiry.
+Card S-12 moves the *token state* itself here too, in a new `CognitoSession`
+class, and adds the missing piece: using Cognito's `RefreshToken` instead of
+replaying a full SRP handshake on every expiry. Before this card, the
+`RefreshToken` Cognito returns alongside every login was sitting unused in
+`self.tokens` on `API` (client.py): every ~55 minutes (later found to
+actually be ~24h, see below) `API.get_devices()` called `disconnect()` +
+`connect()`, i.e. a brand new SRP handshake with the stored password, for no
+reason other than the token being close to expiry (finding F7). That is
+strictly more expensive than necessary, more exposed to Cognito's own rate
+limits on the SRP flow specifically, and turns a transient SRP hiccup into a
+full outage instead of a degraded retry. `CognitoSession.get_bearer()` is now
+the single entry point for a usable bearer token: it returns the current
+token if still valid, tries a lightweight `REFRESH_TOKEN_AUTH` call if the
+token is stale and a `RefreshToken` is on hand, and only falls back to a full
+SRP handshake (`_srp_login()`, built on `authenticate_user()` below,
+unchanged) if there is no `RefreshToken` yet or the refresh attempt itself
+failed. `API` (client.py) no longer holds any token state at all - it asks
+this session for a bearer token every time and never inspects `tokens`
+directly; see that module for the composition.
 
-That natural-expiry ceiling was originally assumed to be ~1 hour (~55
-minutes with `_is_token_expired`'s 5-minute margin) but is, verified
-against a real account on 2026-09-03, `ExpiresIn` = 86400 seconds (24
-hours) for this app client - i.e. up to ~23h55m without a live 401 or a
-manual reconnect (integration reload or Home Assistant restart, both of
-which start a fresh, disconnected `API` and force an immediate
-re-authentication attempt). Shortening the practical detection window (e.g.
-a shorter Cognito token TTL, or a dedicated re-validation interval
-independent of the token's own expiry) is out of scope here and tracked
-under S-12 alongside the RefreshToken work.
+Historical context on the timing this card changes: the natural-expiry
+ceiling for a full SRP re-login used to be assumed at ~1 hour (~55 minutes
+with the 300-second expiry margin `CognitoSession._is_token_expired` still
+uses) but was found, verified against a real account on 2026-09-03, to
+actually be `ExpiresIn` = 86400 seconds (24 hours) for this app client. That
+number bounded how quickly a changed Radoff password used to get detected
+via a live 401 or the periodic SRP reconnect (see `s-08-implementazione.md`).
+After this card, the periodic path is normally the refresh call, not a new
+SRP login, so that specific ceiling no longer applies the same way: the
+practical detection window is now bounded by how long Cognito's
+`RefreshToken` itself stays valid for this app client (Cognito's own
+default is 30 days, but the actual configured value for the Radoff pool has
+not been verified against a real account) or, sooner, by a live 401 during
+polling (see `api/client.py::_check_response_status`) or two consecutive
+rejected refresh attempts (see `CognitoSession.get_bearer`). This is flagged
+here, not resolved: verifying the app client's actual refresh-token TTL
+needs the same kind of empirical check T-02/S-08 already did for `ExpiresIn`,
+and is tracked as a follow-up rather than blocking this card.
 """
 
 import logging
 import time
 from typing import Any
 
+import boto3
 from botocore.exceptions import ClientError, EndpointConnectionError
 from pycognito.aws_srp import AWSSRP
 
@@ -94,6 +108,23 @@ _DEFINITIVE_AUTH_ERROR_CODES = frozenset(
 # S-09, C9): the caller must never treat these as "wrong password".
 _THROTTLING_ERROR_CODES = frozenset({"TooManyRequestsException"})
 
+# Margin (seconds) before a token's own expiry at which it is already
+# treated as expired, so a request in flight never races the real Cognito
+# deadline. Card S-12 moves this from `API._is_token_expired` (client.py)
+# to `CognitoSession._is_token_expired`, unchanged in value or meaning.
+_TOKEN_EXPIRY_MARGIN_SECONDS = 300
+
+# How many consecutive REFRESH_TOKEN_AUTH failures `CognitoSession.get_bearer`
+# tolerates - by falling back to a full SRP login each time - before giving
+# up on the refresh path and raising `AuthInvalidError` instead of trying
+# again (card S-12 AC: "rifiutato due volte porta al flusso di re-auth").
+# Deliberately NOT reset by a successful SRP fallback (decided with Piero):
+# only a *successful refresh* resets the counter (see
+# `CognitoSession._refresh`) - otherwise a structurally broken refresh
+# mechanism (e.g. a Cognito app client misconfiguration) would hide forever
+# behind the SRP fallback, defeating the point of this card.
+_MAX_CONSECUTIVE_REFRESH_FAILURES = 2
+
 
 class AuthExpiredError(Exception):
     """
@@ -102,8 +133,12 @@ class AuthExpiredError(Exception):
     The configured credentials may still be correct - the caller should
     simply retry, e.g. by reconnecting on the next poll. Raised by
     `api/client.py` on an HTTP 401 from an authenticated call; never raised
-    from this module, which only performs the initial/periodic Cognito
-    handshake itself.
+    from this module for that reason. Card S-12 also lets it be raised
+    indirectly: `CognitoSession.get_bearer()` may itself perform a fresh
+    SRP login when a refresh attempt fails, and that login can hit the same
+    Cognito challenge/availability cases `authenticate_user` has always
+    classified - none of those overlap with `AuthExpiredError`, which stays
+    exclusively an `api/client.py` concern.
     """
 
 
@@ -113,11 +148,12 @@ class AuthInvalidError(Exception):
 
     The password changed, the Cognito user was disabled or deleted (both
     surfaced by Cognito as `NotAuthorizedException`/`UserNotFoundException`,
-    see `_DEFINITIVE_AUTH_ERROR_CODES`), or pycognito returned no
-    authentication data at all for a reason it does not itself document.
-    Recovering requires the user to re-enter their password, i.e. Home
-    Assistant's re-auth flow (`config_flow.py::async_step_reauth_confirm`),
-    not a silent retry.
+    see `_DEFINITIVE_AUTH_ERROR_CODES`), pycognito returned no authentication
+    data at all for a reason it does not itself document, or (card S-12)
+    `CognitoSession.get_bearer()` had two consecutive `REFRESH_TOKEN_AUTH`
+    attempts rejected in a row. Recovering requires the user to re-enter
+    their password, i.e. Home Assistant's re-auth flow
+    (`config_flow.py::async_step_reauth_confirm`), not a silent retry.
     """
 
 
@@ -235,3 +271,230 @@ def authenticate_user(
 def compute_token_expiry(expires_in: int) -> float:
     """Return the absolute time (`time.time()`-based) a token expires at."""
     return time.time() + expires_in
+
+
+class CognitoSession:
+    """
+    Own the Cognito token lifecycle for one Radoff account (card S-12).
+
+    Moved out of `API` (`api/client.py`), which used to hold `tokens` and
+    `_token_expires_at` directly and, on every expiry, replayed the stored
+    password through a brand new SRP handshake - see this module's own
+    docstring for the cost that used to have. `get_bearer()` is the single
+    entry point every caller should use; nothing outside this class reads
+    `self.tokens` directly.
+
+    Not thread-safe, deliberately - same reasoning card S-12 itself calls
+    out: with a single `DataUpdateCoordinator`, calls into one `API`/
+    `CognitoSession` pair are already serialized by construction. The config
+    flow instantiates its own separate `API` (and therefore its own separate
+    `CognitoSession`) for setup/re-auth validation, so the two never share
+    state. This invariant holds today because of how the integration is
+    structured, not because this class enforces it - exactly the caveat the
+    card's own "CONTESTO" section raises about `disconnect()` recreating the
+    HTTP session while a request could theoretically be in flight.
+    """
+
+    def __init__(
+        self,
+        username: str,
+        password: str,
+        client_id: str,
+        pool_id: str,
+        pool_region: str,
+    ) -> None:
+        """Store the account's Cognito identity. No network call is made yet."""
+        self.username = username
+        self.password = password
+        self.client_id = client_id
+        self.pool_id = pool_id
+        self.pool_region = pool_region
+        self.tokens: dict[str, Any] = {}
+        self._token_expires_at: float = 0
+        self._refresh_token: str | None = None
+        self._consecutive_refresh_failures: int = 0
+
+    def _is_token_expired(self) -> bool:
+        """Check if the current token is expired or will expire soon."""
+        if not self.tokens:
+            return True
+        return time.time() >= (self._token_expires_at - _TOKEN_EXPIRY_MARGIN_SECONDS)
+
+    def get_bearer(self) -> str:
+        """
+        Return a valid Cognito IdToken, refreshing or re-logging in as needed.
+
+        Single entry point for every other module (card S-12): callers no
+        longer check expiry or the `RefreshToken` themselves. Order of
+        attempts:
+
+        1. the current token, if not close to expiring;
+        2. `_refresh()` via Cognito's `REFRESH_TOKEN_AUTH`, if a
+           `RefreshToken` is on hand - a lightweight call, not a full SRP
+           handshake, and one that needs no domain re-discovery;
+        3. `_srp_login()`, the full SRP handshake - either because there is
+           no `RefreshToken` yet (first call ever on this session) or
+           because the refresh attempt itself just failed.
+
+        A single refresh failure does not give up on this call: it counts
+        toward `_consecutive_refresh_failures` and falls back to
+        `_srp_login()` so the caller still gets a usable token right now
+        (card S-12 AC: "Un refresh rifiutato una volta viene ritentato" -
+        the retry being that same-cycle SRP fallback, and the next expiry
+        naturally re-attempting a refresh with whatever `RefreshToken` that
+        fallback obtained). Only a *second* consecutive refresh failure
+        raises `AuthInvalidError` instead of falling back again (card S-12
+        AC: "rifiutato due volte porta al flusso di re-auth", mapped to
+        `ConfigEntryAuthFailed` by `coordinator.py`, unchanged since S-08).
+
+        A refresh call can fail for reasons that say nothing about the
+        credentials themselves (a transient network blip, Cognito
+        throttling) as much as for a truly rejected `RefreshToken` - this
+        method does not distinguish between them for the failure counter,
+        unlike `authenticate_user`'s careful classification of the SRP path:
+        the card's own acceptance criteria only ask about "un refresh
+        rifiutato", and the SRP fallback triggered here still goes through
+        that full classification on its own, so a transient failure that
+        happens to also break the SRP fallback surfaces correctly as
+        `AuthUnavailableError`, never as `AuthInvalidError`.
+        """
+        if self.tokens and not self._is_token_expired():
+            return self.tokens["IdToken"]
+
+        if self._refresh_token:
+            _LOGGER.debug("Cognito token expired; attempting REFRESH_TOKEN_AUTH")
+            try:
+                self._refresh()
+            except (ClientError, EndpointConnectionError) as err:
+                self._consecutive_refresh_failures += 1
+                _LOGGER.debug(
+                    "Cognito refresh failed (%d consecutive failure(s)): %s",
+                    self._consecutive_refresh_failures,
+                    err,
+                )
+                if (
+                    self._consecutive_refresh_failures
+                    >= _MAX_CONSECUTIVE_REFRESH_FAILURES
+                ):
+                    self.invalidate()
+                    self._refresh_token = None
+                    msg = (
+                        "Cognito rejected the refresh token twice in a row; "
+                        "the configured Radoff credentials must be re-entered."
+                    )
+                    raise AuthInvalidError(msg) from err
+                self._srp_login()
+                return self.tokens["IdToken"]
+            else:
+                return self.tokens["IdToken"]
+
+        self._srp_login()
+        return self.tokens["IdToken"]
+
+    def _refresh(self) -> None:
+        """
+        Attempt to renew the current session via Cognito's REFRESH_TOKEN_AUTH flow.
+
+        Raises the underlying `ClientError`/`EndpointConnectionError` on any
+        failure - `get_bearer()` is what decides whether that counts toward
+        `_consecutive_refresh_failures` and whether to fall back to
+        `_srp_login()`. On success, `self.tokens` is updated with the new
+        `IdToken`/`AccessToken`/`ExpiresIn`. Cognito's refresh response never
+        contains a new `RefreshToken` (card S-12 "COSA FARE", step 3), so
+        `self._refresh_token` is deliberately left untouched here - the
+        original one, obtained at the last full SRP login, keeps being used
+        until it is itself rejected.
+
+        Uses a plain `boto3` `cognito-idp` client rather than `pycognito`'s
+        `AWSSRP` (which only implements the SRP flow): `InitiateAuth` with
+        `REFRESH_TOKEN_AUTH` needs no password and no SRP math, only the
+        stored `RefreshToken`. Like the SRP calls this integration already
+        makes, this is an unauthenticated Cognito Identity Provider API
+        call - no AWS credentials are required or configured for it.
+        """
+        client = boto3.client("cognito-idp", region_name=self.pool_region)
+        response = client.initiate_auth(
+            ClientId=self.client_id,
+            AuthFlow="REFRESH_TOKEN_AUTH",
+            AuthParameters={
+                "REFRESH_TOKEN": self._refresh_token,
+                "USERNAME": self.username,
+            },
+        )
+
+        auth_result = response.get("AuthenticationResult")
+        if not auth_result or "IdToken" not in auth_result:
+            msg = "Cognito refresh returned no usable AuthenticationResult."
+            raise ClientError(
+                {"Error": {"Code": "InvalidRefreshResponse", "Message": msg}},
+                "InitiateAuth",
+            )
+
+        self.tokens = auth_result
+        expires_in = auth_result.get("ExpiresIn", 3600)
+        self._token_expires_at = compute_token_expiry(expires_in)
+        self._consecutive_refresh_failures = 0
+        _LOGGER.debug(
+            "Refreshed Cognito session via REFRESH_TOKEN_AUTH; expires in %d seconds",
+            expires_in,
+        )
+
+    def _srp_login(self) -> None:
+        """
+        Perform a full Cognito SRP handshake and store the resulting tokens.
+
+        Delegates the handshake itself, and all of its error classification
+        (`AuthInvalidError`/`AuthChallengeRequiredError`/`AuthUnavailableError`),
+        to `authenticate_user` above - unchanged since cards S-08/S-09.
+        Unlike `_refresh()`, a successful SRP login *does* return a new
+        `RefreshToken`, stored here for the next `get_bearer()` cycle to use
+        instead of another full login. Deliberately does not reset
+        `_consecutive_refresh_failures` (decided with Piero, see that
+        counter's own comment) - a login here can be either the very first
+        one for this session, or a fallback after a rejected refresh, and
+        only a genuinely successful *refresh* proves the mechanism healthy
+        again.
+        """
+        _LOGGER.debug("Performing full Cognito SRP handshake")
+        auth_data = authenticate_user(
+            username=self.username,
+            password=self.password,
+            client_id=self.client_id,
+            pool_id=self.pool_id,
+            pool_region=self.pool_region,
+        )
+        auth_result = auth_data["AuthenticationResult"]
+        self.tokens = auth_result
+        self._refresh_token = auth_result.get("RefreshToken")
+        expires_in = auth_result.get("ExpiresIn", 3600)
+        self._token_expires_at = compute_token_expiry(expires_in)
+        _LOGGER.info("Token will expire in %d seconds", expires_in)
+
+    def invalidate(self) -> None:
+        """
+        Clear the current token state, without touching the `RefreshToken`.
+
+        Replaces the old `API.disconnect()` on the token-expiry/401 path
+        (card S-12, "COSA FARE" step 5): a rejected or expired *access*
+        token is a credentials-adjacent problem, not a networking one, so
+        `API.disconnect()` recreating the `requests.Session` (and its
+        connection pool) for it was unwarranted churn - it used to do that
+        on every single reconnect, roughly once every 24h per user before
+        this card, or on every live 401. This method leaves the HTTP
+        transport session untouched entirely; `api/client.py` no longer
+        calls anything resembling `disconnect()`.
+
+        The `RefreshToken` is deliberately NOT cleared here: an HTTP 401 on
+        a single request (see `api/client.py::_check_response_status`) means
+        the current *access* token's session died, not that the
+        `RefreshToken` itself is bad - the next `get_bearer()` call can and
+        should try `_refresh()` with it before falling back to a full SRP
+        login (card S-12 AC: "Un 401 su una singola richiesta non abbatte
+        l'integrazione: il ciclo successivo riparte con un token nuovo").
+
+        `_consecutive_refresh_failures` is also left untouched: invalidating
+        the current tokens says nothing about whether the refresh mechanism
+        itself is healthy, which is the only thing that counter tracks.
+        """
+        self.tokens = {}
+        self._token_expires_at = 0

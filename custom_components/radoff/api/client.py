@@ -3,7 +3,6 @@
 import base64
 import json
 import logging
-import time
 from datetime import UTC, datetime
 from http import HTTPStatus
 from typing import Any
@@ -20,8 +19,8 @@ from ..const import (
     USER_AGENT,
 )
 from ..properties import MAPPING
-from .auth import AuthExpiredError, authenticate_user, compute_token_expiry
-from .exceptions import APIAuthError, APIConnectionError, BearerTokenNotFoundError
+from .auth import AuthExpiredError, CognitoSession
+from .exceptions import APIAuthError, APIConnectionError
 from .models import RadoffDevice, Reading, ReadingKey
 
 _LOGGER = logging.getLogger(__name__)
@@ -164,17 +163,23 @@ class API:
         the HTTP 429 branch of `_check_response_status`, so a rate-limit error
         can name the interval actually in effect instead of a hardcoded
         number that may no longer match what the user configured.
+
+        Card S-12: this class no longer holds any Cognito token state
+        itself (`tokens`, `_token_expires_at`, `connected` are all gone) -
+        that responsibility, plus the refresh-before-SRP logic, now lives
+        entirely in the `CognitoSession` this constructor builds by
+        composition. Every method below that needs a bearer token asks
+        `self._session.get_bearer()` for one instead of reading `self.tokens`.
         """
-        self.username = username
-        self.password = password
-        self.client_id = client_id
-        self.pool_id = pool_id
-        self.pool_region = pool_region
-        self.connected: bool = False
         self.domain: str = domain_id
         self.scan_interval = scan_interval
-        self.tokens: dict = {}
-        self._token_expires_at: float = 0
+        self._session = CognitoSession(
+            username=username,
+            password=password,
+            client_id=client_id,
+            pool_id=pool_id,
+            pool_region=pool_region,
+        )
 
         self.session = self._create_session()
 
@@ -199,12 +204,6 @@ class API:
         session.mount("https://", adapter)
         return session
 
-    def _is_token_expired(self) -> bool:
-        """Check if current token is expired or will expire soon."""
-        if not self.tokens:
-            return True
-        return time.time() >= (self._token_expires_at - 300)
-
     @property
     def controller_name(self) -> str:
         """Return the name of the controller."""
@@ -212,67 +211,33 @@ class API:
 
     def connect(self) -> bool:
         """
-        Connect to api.
+        Perform an initial Cognito login and return True on success.
 
-        Only performs Cognito authentication. Domain resolution is no longer done
-        here: the domain to use is either already known (persisted `domain_id`,
-        passed to `__init__`) or is discovered separately via `list_domains()`
-        during the config flow (see S-01).
+        Card S-12 moves all token state and refresh/fallback logic into
+        `CognitoSession` (`api/auth.py`); this method is kept as the thin,
+        explicit entry point `config_flow.py` uses for setup and re-auth
+        validation, where a full login is exactly what is wanted - there is
+        no existing session yet to reuse there. It shares `get_bearer()`
+        with every other caller rather than reaching into `CognitoSession`'s
+        internal `_srp_login()` directly, so a fresh `API` instance's very
+        first authentication attempt goes through the exact same code path
+        as any later reconnect (`get_devices()` below).
 
-        Used for both the initial login and the periodic reconnect this
-        integration performs whenever the current token is close to expiry
-        (see `get_devices()`) - both go through `authenticate_user()` below.
+        `coordinator.py` no longer calls this method directly (card S-12,
+        "COSA FARE": "coordinator.py: non chiama più connect/disconnect
+        direttamente") - `get_devices()` authenticates lazily via
+        `get_bearer()` instead.
 
-        As of card S-09, `authenticate_user()` (see `api/auth.py`) itself
-        fully classifies every outcome of the Cognito handshake: it either
-        returns a dict guaranteed to contain `AuthenticationResult`, or
-        raises one of `AuthInvalidError` (credentials rejected outright, or
-        no authentication data at all - see card S-08), `AuthChallengeRequiredError`
-        (Cognito wants a challenge this integration cannot complete, e.g.
-        `NEW_PASSWORD_REQUIRED` or MFA - this is the fix for finding C8: a
-        challenge response used to be silently treated as "not connected"
-        while this method still returned `True`, letting the config flow
-        create a permanently broken entry) or `AuthUnavailableError`
-        (Cognito unreachable or throttling - never a credentials problem).
-        This method therefore no longer needs to inspect the raw Cognito
-        response itself, or special-case empty `username`/`password`/
-        `client_id` (validating those is voluptuous's job in the config
-        flow's schema, not this method's - finding C9's dead-code branch).
+        Every outcome `CognitoSession.get_bearer()`/`authenticate_user()`
+        know how to classify is raised as one of `AuthInvalidError`
+        (credentials rejected outright, or no authentication data at all -
+        card S-08), `AuthChallengeRequiredError` (Cognito wants a challenge
+        this integration cannot complete, e.g. `NEW_PASSWORD_REQUIRED` or
+        MFA - card S-09/C8) or `AuthUnavailableError` (Cognito unreachable
+        or throttling - never a credentials problem, card S-09/C9) - this
+        method does not need to inspect anything itself.
         """
-        _LOGGER.debug("Authenticating with AWS Cognito...")
-        auth_data = authenticate_user(
-            username=self.username,
-            password=self.password,
-            client_id=self.client_id,
-            pool_id=self.pool_id,
-            pool_region=self.pool_region,
-        )
-
-        self.tokens = auth_data["AuthenticationResult"]
-
-        expires_in = self.tokens.get("ExpiresIn", 3600)
-        self._token_expires_at = compute_token_expiry(expires_in)
-        _LOGGER.info("Token will expire in %d seconds", expires_in)
-
-        self.connected = True
-        return True
-
-    def disconnect(self) -> bool:
-        """Disconnect from api."""
-        _LOGGER.debug("Disconnecting from API")
-        self.connected = False
-        self.tokens = {}
-        self._token_expires_at = 0
-
-        # Note: self.domain is intentionally NOT cleared here. It is the
-        # persisted tenant domain_id from the config entry, independent of the
-        # Cognito session, and must survive a token-refresh reconnect.
-
-        # Close and recreate session
-        if self.session:
-            self.session.close()
-            self.session = self._create_session()
-
+        self._session.get_bearer()
         return True
 
     def list_domains(self, bearer_token: str | None = None) -> list[dict[str, Any]]:
@@ -291,9 +256,16 @@ class API:
         domain ids embedded in its "d_<domain-uuid>" claims, then use the first
         one as the initial `x-domain`. This was verified empirically against the
         real API (see card S-01).
+
+        Only ever called from the config flow (initial setup or re-auth
+        validation) - `RadoffCoordinator`'s periodic polling never calls this
+        (card S-12 AC: "Nessuna chiamata a /auth/user/me/domains dopo il
+        primo setup"): the `domain_id` it needs is the one already persisted
+        on the config entry (see S-01), and `get_devices()` below never
+        re-discovers it.
         """
         if bearer_token is None:
-            bearer_token = self._get_bearer_token()
+            bearer_token = self._session.get_bearer()
 
         candidate_domain_ids = self._extract_domain_claims(bearer_token)
         if not candidate_domain_ids:
@@ -349,13 +321,15 @@ class API:
         )
 
     def get_devices(self) -> list[RadoffDevice]:
-        """Get devices on api."""
-        # Check if token needs refresh
-        if self._is_token_expired():
-            _LOGGER.info("Token expired, reconnecting...")
-            self.disconnect()
-            self.connect()
+        """
+        Get devices on api.
 
+        Card S-12: no longer checks token expiry or calls `disconnect()`/
+        `connect()` itself - `self._session.get_bearer()` (used by
+        `_get_headers` below via each request) handles refreshing or
+        re-logging in lazily, on demand, the first time a bearer token is
+        actually needed in this call.
+        """
         device_list: list[RadoffDevice] = []
 
         url = f"{self.BASE_DOMAIN}/data/devices/search"
@@ -364,7 +338,7 @@ class API:
         response = self.session.post(
             url,
             headers=self._get_headers(
-                bearer_token=self._get_bearer_token(), x_domain=self.domain
+                bearer_token=self._session.get_bearer(), x_domain=self.domain
             ),
             json=post_obj,
             timeout=self.DEFAULT_TIMEOUT,
@@ -410,7 +384,7 @@ class API:
         response = self.session.get(
             url,
             headers=self._get_headers(
-                bearer_token=self._get_bearer_token(), x_domain=self.domain
+                bearer_token=self._session.get_bearer(), x_domain=self.domain
             ),
             timeout=self.DEFAULT_TIMEOUT,
         )
@@ -462,12 +436,6 @@ class API:
 
         return readings, last_data_received_at
 
-    def _get_bearer_token(self) -> str:
-        if self.tokens is not None and "IdToken" in self.tokens:
-            return self.tokens["IdToken"]
-        msg = "Error retrieving bearer token."
-        raise BearerTokenNotFoundError(msg)
-
     def _get_headers(self, bearer_token: str, x_domain: str) -> dict[str, str]:
         return {
             "user-agent": USER_AGENT,
@@ -500,17 +468,23 @@ class API:
             # nothing yet about whether the configured password itself is
             # still correct. That is only known once the next reconnect
             # attempt actually replays it through `authenticate_user()` (see
-            # `get_devices()` and `api/auth.py`), which is where a definitive
-            # `AuthInvalidError` can be raised instead. Until then this stays the
-            # recoverable case: disconnect so the next poll reconnects, raise
-            # `AuthExpiredError` so `coordinator.py` keeps retrying (`UpdateFailed`)
-            # instead of opening the re-auth flow on every expired session.
+            # `api/auth.py`), which is where a definitive `AuthInvalidError`
+            # can be raised instead. Until then this stays the recoverable
+            # case: invalidate the session's tokens (card S-12: NOT the
+            # requests.Session itself - see `CognitoSession.invalidate`'s own
+            # docstring for why recreating the HTTP transport on every
+            # expired token was unwarranted) so the next call's
+            # `get_bearer()` reconnects - preferring a refresh over a full
+            # SRP login, since the RefreshToken is deliberately left intact -
+            # and raise `AuthExpiredError` so `coordinator.py` keeps
+            # retrying (`UpdateFailed`) instead of opening the re-auth flow
+            # on every expired session.
             _LOGGER.debug(
                 "Authentication token invalid (401) for domain %s, "
                 "will reconnect on next request",
                 self.domain,
             )
-            self.disconnect()
+            self._session.invalidate()
             msg = "Authentication failed (HTTP 401 Unauthorized). Token may be expired."
             raise AuthExpiredError(msg)
 

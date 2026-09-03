@@ -113,13 +113,18 @@ applicable measurements.
 - **Re-authentication timing**: if your Radoff account password changes, Home
   Assistant will prompt you to re-enter it (**Settings → Devices & Services →
   Radoff → Reconfigure**) without removing or re-adding the integration and
-  without losing entity history. How quickly the prompt appears depends on
-  when the integration next needs to re-authenticate with Radoff's cloud: this
-  can be as soon as the next poll or two, or - if your existing session stays
-  valid until its natural expiry - up to about 24 hours (verified against a
-  real account: Radoff's Cognito app client currently issues tokens valid for
-  86400 seconds). Reloading the integration or restarting Home Assistant
-  forces an immediate check instead of waiting.
+  without losing entity history. Since this integration now renews its
+  Cognito session via a lightweight token refresh instead of a full login on
+  every cycle, how quickly the prompt appears depends on when that refresh
+  (or a live request) actually gets rejected by Radoff's cloud, rather than
+  on a fixed token lifetime: this can be as soon as the next poll or two (if
+  Radoff invalidates sessions immediately), after two consecutive rejected
+  refresh attempts, or - in the worst case, if the existing session is
+  neither actively revoked nor ever fails a refresh - as late as the
+  underlying Cognito session's own refresh-token lifetime, which has not
+  been independently verified against a real account (Cognito's own default
+  is 30 days). Reloading the integration or restarting Home Assistant forces
+  an immediate full login instead of waiting.
 - **Availability**: entities do not yet reflect the freshness of the
   underlying device data; a device that has stopped reporting to Radoff may
   continue to show its last known values.

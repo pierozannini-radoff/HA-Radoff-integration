@@ -101,14 +101,20 @@ class RadoffCoordinator(DataUpdateCoordinator):
         return self.update_interval * DEFAULT_STALE_MULTIPLIER
 
     async def async_update_data(self) -> APIData:
-        """Fetch data from API endpoint."""
+        """
+        Fetch data from API endpoint.
+
+        Card S-12: no longer checks `self.api.connected` or calls
+        `self.api.connect()` before fetching - `API.get_devices()`
+        authenticates lazily via `CognitoSession.get_bearer()` (api/auth.py),
+        preferring a Cognito token refresh over a full SRP handshake, the
+        first time it actually needs a bearer token. This coordinator never
+        calls `connect()`/`disconnect()` directly any more (card S-12,
+        "COSA FARE": "coordinator.py: non chiama più connect/disconnect
+        direttamente").
+        """
         _LOGGER.debug("Radoff async_update_data starting")
         try:
-            if not self.api.connected:
-                _LOGGER.info("API not connected, attempting to connect...")
-                await self.hass.async_add_executor_job(self.api.connect)
-                _LOGGER.info("API connection established")
-
             devices = await self.hass.async_add_executor_job(self.api.get_devices)
 
             _LOGGER.debug("Successfully fetched data for %d device", len(devices))
@@ -123,7 +129,8 @@ class RadoffCoordinator(DataUpdateCoordinator):
             # initial setup completed with a full Cognito login (no config
             # entry is ever created for an account still on a challenge -
             # see config_flow.py's validate_input). If the periodic reconnect
-            # this method performs (see `get_devices()`) ever hits a
+            # this method performs (see `get_devices()`, via
+            # `CognitoSession.get_bearer()`'s SRP fallback) ever hits a
             # challenge on an *already configured* account - e.g. Cognito
             # starts requiring MFA, or an admin resets the password on the
             # Radoff side and the account lands back on NEW_PASSWORD_REQUIRED
@@ -149,15 +156,19 @@ class RadoffCoordinator(DataUpdateCoordinator):
         except AuthInvalidError as err:
             # Card S-08: the credentials themselves are no longer valid (wrong
             # password, or the Cognito user was disabled/deleted) - raised by
-            # api/auth.py::authenticate_user when connect() (initial or
-            # periodic reconnect, see that module's docstring for the timing
-            # caveat) replays the stored password and Cognito rejects it
-            # outright. This is deliberately NOT logged with `_LOGGER.exception`
-            # (no traceback): it is an expected end-user situation, not a bug,
-            # and is exactly the "no more infinite auth-error log loops" this
-            # card asks for (a single ConfigEntryAuthFailed here stops the
-            # coordinator's periodic refresh until re-auth completes, instead
-            # of retrying and logging every poll interval).
+            # api/auth.py::authenticate_user when a Cognito login (initial or
+            # a fallback after a rejected refresh, see that module's
+            # `CognitoSession.get_bearer`) replays the stored password and
+            # Cognito rejects it outright. Card S-12 adds a second source: two
+            # consecutive rejected `REFRESH_TOKEN_AUTH` attempts, raised
+            # directly by `CognitoSession.get_bearer` without a further SRP
+            # attempt. Either way this is deliberately NOT logged with
+            # `_LOGGER.exception` (no traceback): it is an expected end-user
+            # situation, not a bug, and is exactly the "no more infinite
+            # auth-error log loops" this card asks for (a single
+            # ConfigEntryAuthFailed here stops the coordinator's periodic
+            # refresh until re-auth completes, instead of retrying and
+            # logging every poll interval).
             _LOGGER.warning(
                 "Radoff credentials are no longer valid, starting re-auth: %s", err
             )
@@ -167,9 +178,11 @@ class RadoffCoordinator(DataUpdateCoordinator):
             # Card S-08: a 401 on an authenticated call - the current session
             # is invalid but the configured credentials have not (yet) been
             # proven wrong. Stays UpdateFailed on purpose: api/client.py has
-            # already disconnected, so the next poll will attempt a fresh
-            # connect() and *that* is what can turn into AuthInvalidError above if
-            # the password truly changed.
+            # already invalidated the current tokens (card S-12:
+            # `CognitoSession.invalidate()`, which keeps the RefreshToken), so
+            # the next poll's `get_bearer()` call will attempt a refresh
+            # first, and *that* is what can turn into AuthInvalidError above
+            # if it keeps getting rejected.
             _LOGGER.debug("Radoff authentication token expired, will retry: %s", err)
             msg = f"Authentication token expired: {err}"
             raise UpdateFailed(msg) from err
