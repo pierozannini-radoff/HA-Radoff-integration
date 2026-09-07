@@ -31,8 +31,8 @@ ignore = [
 # to stdout is its entire purpose.
 "check_reauth_log.py" = ["ALL"]
 
-# Standalone verification scripts (S-06, S-07, S-08, S-09, S-10, S-11, S-12):
-# run by hand with `python3 verify_sXX.py`, not shipped code, and
+# Standalone verification scripts (S-06, S-07, S-08, S-09, S-10, S-11, S-12,
+# S-13): run by hand with `python3 verify_sXX.py`, not shipped code, and
 # deliberately monkeypatch/stub homeassistant modules and private attributes
 # to exercise the integration without a real HA install.
 "verify_s07.py" = ["ALL"]
@@ -41,6 +41,7 @@ ignore = [
 "verify_s10.py" = ["ALL"]
 "verify_s11.py" = ["ALL"]
 "verify_s12.py" = ["ALL"]
+"verify_s13.py" = ["ALL"]
 
 # Temporary dev launcher (S-07): a drop-in replacement for
 # ./scripts/develop that monkeypatches API.get_devices to simulate poll

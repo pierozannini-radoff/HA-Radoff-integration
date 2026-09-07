@@ -13,7 +13,9 @@ re-auth exception types the same way. Card S-09 adds two more from the same
 module - `AuthChallengeRequiredError` and `AuthUnavailableError` - so
 `config_flow.py` can map every outcome of the Cognito handshake to a
 distinct, translated user-facing message instead of falling through to
-"unknown" (findings C8/C9).
+"unknown" (findings C8/C9). Card S-13 adds `DeviceFetchError`
+(`api/models.py`) so `coordinator.py` can type the per-device errors
+`API.get_devices()` now returns instead of raising.
 
 Every name below is listed in `__all__`, which is what tells ruff's
 pyflakes-derived unused-import check (F401) that these imports are the
@@ -33,7 +35,7 @@ from .exceptions import (
     BearerTokenNotFoundError,
     DomainNotFoundError,
 )
-from .models import RadoffDevice, Reading
+from .models import DeviceFetchError, RadoffDevice, Reading
 
 __all__ = [
     "API",
@@ -44,6 +46,7 @@ __all__ = [
     "AuthInvalidError",
     "AuthUnavailableError",
     "BearerTokenNotFoundError",
+    "DeviceFetchError",
     "DomainNotFoundError",
     "RadoffDevice",
     "Reading",

@@ -45,8 +45,13 @@ The other two additions from S-07 are unchanged by this card:
   always. Format and timezone CONFIRMED (ISO-8601, millisecond precision,
   explicit trailing "Z", i.e. already UTC) - see `api/client.py::_parse_timestamp`.
 - `RadoffDevice.stale`: whether the last per-device fetch for this device
-  failed. Always `False` for now - card S-13 is what actually sets it; S-07
-  only consumes the flag in `RadoffEntity.available`.
+  failed. Used to always be `False` unconditionally - card S-13 is what
+  actually sets it now (see `api/client.py::get_devices` and
+  `coordinator.py::RadoffCoordinator._merge_device_errors`); S-07 already
+  consumed the flag correctly in `RadoffEntity.available` before S-13
+  existed to produce it.
+
+Card S-13 adds `DeviceFetchError`, described below.
 """
 
 from collections.abc import Callable
@@ -103,3 +108,36 @@ class RadoffDevice:
     readings: dict[ReadingKey, Reading]
     stale: bool = False
     last_data_received_at: datetime | None = None
+
+
+@dataclass
+class DeviceFetchError:
+    """
+    One device's identity, paired with why its per-device fetch failed (S-13).
+
+    `api/client.py::get_devices()` builds one of these, instead of raising,
+    whenever the `search` call itself succeeded (so the device's identity -
+    id, serial, type, name - is known from that response) but the follow-up
+    per-device `GET /data/devices/{id}` failed with an isolatable error (see
+    `get_devices()`'s own docstring for exactly which exceptions qualify).
+
+    `coordinator.py::RadoffCoordinator._merge_device_errors` is what turns
+    this into a `RadoffDevice` the rest of the integration can use: it looks
+    up the previous poll's device with the same `(device_type, device_id)`
+    and, if found, keeps its `readings`/`last_data_received_at` and only
+    flips `stale` to `True`; if this device has no previous data at all
+    (e.g. its very first poll already failed), it is still included, with
+    empty `readings` and `stale=True`, rather than silently dropped - the
+    card's own "COSA FARE" step 2 asks for exactly this fallback.
+
+    `error` is a short, human-readable description of the failure (built
+    from `str(exception)`), used only for the DEBUG log line the card asks
+    for (step 5) - it carries no meaning to `RadoffDevice`/`RadoffEntity`,
+    which only ever see the resulting `stale` flag.
+    """
+
+    device_id: str
+    device_serial: str
+    device_type: str
+    name: str
+    error: str

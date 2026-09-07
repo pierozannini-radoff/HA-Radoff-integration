@@ -21,7 +21,7 @@ from ..const import (
 from ..properties import MAPPING
 from .auth import AuthExpiredError, CognitoSession
 from .exceptions import APIAuthError, APIConnectionError
-from .models import RadoffDevice, Reading, ReadingKey
+from .models import DeviceFetchError, RadoffDevice, Reading, ReadingKey
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -44,6 +44,22 @@ _MEASURED_AT_KEYS: tuple[str, ...] = ()
 # A numeric timestamp above this (~year 2100 expressed in seconds) is treated
 # as milliseconds instead of seconds.
 _EPOCH_MS_THRESHOLD = 4_102_444_800
+
+# Errors from a single per-device `GET /data/devices/{id}` that `get_devices`
+# isolates to that one device instead of letting them fail the whole poll
+# (card S-13): an HTTP-level failure on that one request (`APIAuthError` -
+# 403/429/5xx/other non-200, see `_check_response_status`) or a
+# transport-level one (`requests.exceptions.RequestException` - connection
+# error, read/connect timeout, malformed response body, ...). Deliberately
+# NOT included: `AuthExpiredError`/`AuthInvalidError`/`AuthChallengeRequiredError`
+# (all raised via `self._session.get_bearer()`, called from `_get_data`
+# below) - those are about the Cognito *session*, not this one device, so
+# `get_devices()` must let them propagate unisolated (card S-13, "COSA FARE"
+# step 6: "Un errore auth su un dispositivo NON va isolato: risale, perché
+# riguarda la sessione e non il dispositivo"). They are simply not part of
+# this tuple, so a plain `except _ISOLATABLE_DEVICE_ERRORS` below never
+# catches them - no special-casing needed.
+_ISOLATABLE_DEVICE_ERRORS = (APIAuthError, requests.exceptions.RequestException)
 
 
 def _safe_url(url: str) -> str:
@@ -187,8 +203,19 @@ class API:
         """Create a requests session."""
         session = requests.Session()
 
+        # Card S-13: total was 3 (three retries, four attempts total) with a
+        # 0.5s backoff factor and a (10, 30)s per-request timeout - in the
+        # worst case (every attempt hits the read timeout) that is minutes
+        # per single device request, which on its own could blow well past
+        # `update_interval`. `RadoffCoordinator.async_update_data` now caps
+        # the whole poll cycle at `UPDATE_TIMEOUT_FACTOR * update_interval`
+        # (see const.py) regardless of what happens here, so this Retry no
+        # longer has to be the only thing standing between a slow backend
+        # and an overrun cycle - reduced to total=2 (two retries, three
+        # attempts total) so a single stuck device leaves more of that
+        # overall budget for the other devices in the same poll.
         retry_strategy = Retry(
-            total=3,
+            total=2,
             backoff_factor=0.5,
             status_forcelist=[429, 500, 502, 503, 504],
             allowed_methods=["GET", "POST"],
@@ -320,7 +347,7 @@ class API:
             key[2:] for key in payload if isinstance(key, str) and key.startswith("d_")
         )
 
-    def get_devices(self) -> list[RadoffDevice]:
+    def get_devices(self) -> tuple[list[RadoffDevice], list[DeviceFetchError]]:
         """
         Get devices on api.
 
@@ -329,8 +356,32 @@ class API:
         `_get_headers` below via each request) handles refreshing or
         re-logging in lazily, on demand, the first time a bearer token is
         actually needed in this call.
+
+        Card S-13 splits this into two isolated pieces:
+
+        1. The `search` call (below) stays fully blocking: a failure here
+           means the set of devices itself is unknown, so there is nothing
+           to isolate - it still raises exactly as before (S-13 AC: "Un
+           fallimento della search porta tutte le entità a unavailable,
+           come oggi").
+        2. The per-device loop that follows no longer lets one device's
+           failure raise out of this method. Each `_get_data()` call is
+           tried independently; an isolatable error (see
+           `_ISOLATABLE_DEVICE_ERRORS`) is recorded as a `DeviceFetchError`
+           and the loop moves on to the next device instead of aborting the
+           whole poll (S-13 AC: "le entità dell'altro continuano ad
+           aggiornarsi"). A session-level error (an auth exception not in
+           that tuple) is NOT caught here and propagates out of this
+           method, aborting the rest of the loop - by design, see
+           `_ISOLATABLE_DEVICE_ERRORS`'s own comment and this card's "COSA
+           FARE" step 6.
+
+        `coordinator.py::RadoffCoordinator._merge_device_errors` is what
+        turns the returned `device_errors` into `RadoffDevice` entries with
+        `stale=True`, reusing the previous poll's readings when available.
         """
-        device_list: list[RadoffDevice] = []
+        devices_ok: list[RadoffDevice] = []
+        device_errors: list[DeviceFetchError] = []
 
         url = f"{self.BASE_DOMAIN}/data/devices/search"
         post_obj = {"filter": {}, "take": 99}
@@ -350,19 +401,47 @@ class API:
         _LOGGER.debug("Found %d devices in response", len(devices))
 
         for device in devices:
-            if "deviceTypeName" in device and device["deviceTypeName"] in DEVICE_TYPES:
-                readings, last_data_received_at = self._get_data(device["id"])
-                device_list.append(
-                    RadoffDevice(
-                        device_id=device["id"],
-                        device_serial=device["serial"],
-                        device_type=device["deviceTypeName"],
-                        name=device["name"],
-                        readings=readings,
-                        last_data_received_at=last_data_received_at,
+            if "deviceTypeName" not in device or device["deviceTypeName"] not in (
+                DEVICE_TYPES
+            ):
+                continue
+
+            device_id = device["id"]
+            device_serial = device["serial"]
+            device_type = device["deviceTypeName"]
+            name = device["name"]
+
+            try:
+                readings, last_data_received_at = self._get_data(device_id)
+            except _ISOLATABLE_DEVICE_ERRORS as err:
+                _LOGGER.debug(
+                    "Isolated per-device fetch error for device %s (%s): %s",
+                    device_id,
+                    device_type,
+                    err,
+                )
+                device_errors.append(
+                    DeviceFetchError(
+                        device_id=device_id,
+                        device_serial=device_serial,
+                        device_type=device_type,
+                        name=name,
+                        error=str(err),
                     )
                 )
-        return device_list
+                continue
+
+            devices_ok.append(
+                RadoffDevice(
+                    device_id=device_id,
+                    device_serial=device_serial,
+                    device_type=device_type,
+                    name=name,
+                    readings=readings,
+                    last_data_received_at=last_data_received_at,
+                )
+            )
+        return devices_ok, device_errors
 
     def _get_data(
         self, device_id: str
@@ -377,6 +456,13 @@ class API:
         `readings` entries - `(Bucket.DATA, "airqualityindex")` and
         `(Bucket.AGGREGATED, "airqualityindex")` - instead of one overwriting
         the other depending on dict iteration order.
+
+        Card S-13: every exception this method can raise - `AuthExpiredError`
+        (via `get_bearer()` or a 401 from `_check_response_status`),
+        `APIAuthError` (403/429/5xx/other from `_check_response_status`), or
+        a `requests.exceptions.RequestException` (network/transport failure)
+        - is left to propagate unchanged; `get_devices()` above is the one
+        place that decides which of those get isolated to this one device.
         """
         readings: dict[ReadingKey, Reading] = {}
 
@@ -479,6 +565,12 @@ class API:
             # and raise `AuthExpiredError` so `coordinator.py` keeps
             # retrying (`UpdateFailed`) instead of opening the re-auth flow
             # on every expired session.
+            #
+            # Card S-13: this is deliberately NOT one of the
+            # `_ISOLATABLE_DEVICE_ERRORS` `get_devices()` isolates per
+            # device - a 401 on a single device's GET means the whole
+            # session's token is bad, not that one device, so it must
+            # propagate and abort the rest of that poll cycle.
             _LOGGER.debug(
                 "Authentication token invalid (401) for domain %s, "
                 "will reconnect on next request",

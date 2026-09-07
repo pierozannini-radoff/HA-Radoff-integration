@@ -45,6 +45,20 @@ CONF_DOMAIN_ID = "domain_id"
 # a future card finds users need it independently of the poll interval.
 DEFAULT_STALE_MULTIPLIER = 3
 
+# Fraction of `update_interval` used as the overall wall-clock budget for one
+# coordinator update cycle (card S-13). The API client's per-device fetch is
+# still a synchronous, sequential N+1 pattern (1 search + 1 GET per device -
+# see `api/client.py::get_devices`), not yet converted to aiohttp (tracked
+# separately as an "L" item, see `architettura-target-sprint-m.md` §11), so
+# a slow or unresponsive backend could otherwise let a single update cycle
+# run well past `update_interval` itself with nothing to stop it.
+# `RadoffCoordinator.async_update_data` wraps its work in
+# `asyncio.timeout(update_interval * UPDATE_TIMEOUT_FACTOR)` and raises
+# `UpdateFailed` with an explicit message if that budget is exceeded,
+# instead of letting the cycle run indefinitely and the next one start late
+# or overlap with a still-running one.
+UPDATE_TIMEOUT_FACTOR = 0.8
+
 # AWS Cognito defaults for Radoff API.
 #
 # These are internal implementation details, not secrets: a public Cognito app
