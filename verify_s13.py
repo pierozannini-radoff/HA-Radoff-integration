@@ -31,7 +31,7 @@ What this checks, mapped to the card's acceptance criteria:
   when available, or with empty readings when there is no previous poll for
   that device.
 - AC "Un ciclo di update non supera mai 0,8 x update_interval": a slow
-  `get_devices()` call trips `asyncio.timeout` and `async_update_data`
+  `get_devices()` call trips `asyncio.timeout` and `_async_update_data`
   raises `UpdateFailed` with an explicit, timeout-specific message.
 - AC "Il dispositivo in errore torna disponibile al primo poll riuscito,
   senza reload": a device present in a later successful poll simply
@@ -55,6 +55,9 @@ from datetime import UTC, datetime, timedelta
 from enum import Enum
 from pathlib import Path
 from types import ModuleType
+from typing import Generic, TypeVar
+
+_DataT = TypeVar("_DataT")
 
 REPO_ROOT = Path(__file__).resolve().parent
 
@@ -151,24 +154,31 @@ def _install_homeassistant_stub() -> None:
     class UpdateFailed(Exception):
         """Stand-in for homeassistant.helpers.update_coordinator.UpdateFailed."""
 
-    class DataUpdateCoordinator:
+    class DataUpdateCoordinator(Generic[_DataT]):
         """
         Minimal stand-in for DataUpdateCoordinator.
 
-        Only what RadoffCoordinator.__init__ and async_update_data actually
-        use: stores update_interval/update_method, and starts `self.data`
+        Only what RadoffCoordinator.__init__ and _async_update_data actually
+        use: stores update_interval/config_entry, and starts `self.data`
         at `None` exactly like the real base class does before the first
         successful refresh - RadoffCoordinator._merge_device_errors relies
-        on that.
+        on that. `Generic[_DataT]` is what lets card S-14's
+        `DataUpdateCoordinator[RadoffData]` subscript work here too.
         """
 
         def __init__(
-            self, hass, logger, *, name, update_method=None, update_interval=None
-        ):  # noqa: ANN001
+            self,
+            hass,  # noqa: ANN001
+            logger,  # noqa: ANN001
+            *,
+            config_entry=None,  # noqa: ANN001
+            name,  # noqa: ANN001
+            update_interval=None,  # noqa: ANN001
+        ):
             self.hass = hass
             self.logger = logger
+            self.config_entry = config_entry
             self.name = name
-            self.update_method = update_method
             self.update_interval = update_interval
             self.data = None
             self.last_update_success = True
@@ -235,7 +245,7 @@ from custom_components.radoff.const import UPDATE_TIMEOUT_FACTOR  # noqa: E402
 
 API = client_mod.API
 RadoffCoordinator = coordinator_mod.RadoffCoordinator
-APIData = coordinator_mod.APIData
+RadoffData = coordinator_mod.RadoffData
 ConfigEntryAuthFailed = sys.modules["homeassistant.exceptions"].ConfigEntryAuthFailed
 UpdateFailed = sys.modules["homeassistant.helpers.update_coordinator"].UpdateFailed
 ConfigEntry = sys.modules["homeassistant.config_entries"].ConfigEntry
@@ -434,7 +444,7 @@ def test_merge_reuses_previous_readings_and_marks_stale() -> None:
         stale=False,
         last_data_received_at=datetime(2026, 9, 7, 9, 0, tzinfo=UTC),
     )
-    coordinator.data = APIData(
+    coordinator.data = RadoffData(
         controller_name="cloud_poller",
         generate_index=True,
         devices=[previous_device],
@@ -503,7 +513,7 @@ def test_merge_preserves_devices_ok() -> None:
 
 
 # --------------------------------------------------------------------------
-# Group C: async_update_data - overall timeout
+# Group C: _async_update_data - overall timeout
 # --------------------------------------------------------------------------
 
 
@@ -530,7 +540,7 @@ def test_update_cycle_times_out() -> None:
 
     raised_msg = None
     try:
-        asyncio.run(coordinator.async_update_data())
+        asyncio.run(coordinator._async_update_data())
     except UpdateFailed as err:
         raised_msg = str(err)
 
@@ -564,9 +574,9 @@ def test_update_cycle_within_budget_succeeds() -> None:
     )
     coordinator.api.get_devices = lambda: ([healthy], [error])
 
-    result = asyncio.run(coordinator.async_update_data())
+    result = asyncio.run(coordinator._async_update_data())
 
-    check("Successful cycle returns an APIData", isinstance(result, APIData))
+    check("Successful cycle returns a RadoffData", isinstance(result, RadoffData))
     check(
         "It contains both the healthy and the merged-stale device",
         len(result.devices) == 2,
@@ -590,7 +600,7 @@ def test_recovered_device_is_no_longer_stale_next_cycle() -> None:
         error="500",
     )
     coordinator.api.get_devices = lambda: ([], [error])
-    first = asyncio.run(coordinator.async_update_data())
+    first = asyncio.run(coordinator._async_update_data())
     coordinator.data = first
     check("First cycle: device is stale", first.devices[0].stale is True)
 
@@ -602,7 +612,7 @@ def test_recovered_device_is_no_longer_stale_next_cycle() -> None:
         readings={},
     )
     coordinator.api.get_devices = lambda: ([recovered], [])
-    second = asyncio.run(coordinator.async_update_data())
+    second = asyncio.run(coordinator._async_update_data())
 
     check(
         "Second cycle: device is fresh again, no reload needed",
