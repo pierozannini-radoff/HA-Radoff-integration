@@ -73,6 +73,15 @@
       "relative_humidity": {
         "name": "Humidity"
       },
+      "pm10": {
+        "name": "PM10"
+      },
+      "pm25": {
+        "name": "PM2.5"
+      },
+      "pm1": {
+        "name": "PM1"
+      },
       "internal_temperature_index": {
         "name": "Temperature Index",
         "state": {

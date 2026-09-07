@@ -3,6 +3,10 @@
 # committed - see that script's own docstring.
 s13_fault_control.json
 
+# Result file written by verify_s15_live.py (S-15) on every check run -
+# a local run artifact, never meant to be committed.
+s15_live_check_result.txt
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]

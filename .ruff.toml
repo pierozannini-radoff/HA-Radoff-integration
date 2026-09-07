@@ -57,6 +57,15 @@ ignore = [
 # code, same convention as the other dev/verify scripts in this list.
 "verify_s13_live.py" = ["ALL"]
 
+# Live AC verification launcher (S-15): same launcher pattern as
+# verify_s13_live.py above, but monkeypatches
+# custom_components.radoff.async_setup_entry to check, against a real entity
+# registry, that pm1/pm25/pm10 (and every other Radoff entity) resolve a
+# proper has_entity_name/translation_key name instead of falling back to the
+# bare device name. Not shipped code, same convention as the other
+# dev/verify scripts in this list.
+"verify_s15_live.py" = ["ALL"]
+
 # Automated wrapper around dev_fault_injection.py (S-07): drives it as a
 # subprocess, polls the REST API, and prints a PASS/FAIL verdict for AC1/AC2
 # instead of requiring you to watch the log or the Developer Tools UI by
