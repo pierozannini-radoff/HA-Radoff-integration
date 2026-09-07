@@ -35,7 +35,7 @@ _LOGGER = logging.getLogger(__name__)
 
 
 @dataclass
-class APIData:
+class RadoffData:
     """Class to hold api data."""
 
     controller_name: str
@@ -43,10 +43,8 @@ class APIData:
     devices: list[RadoffDevice]
 
 
-class RadoffCoordinator(DataUpdateCoordinator):
+class RadoffCoordinator(DataUpdateCoordinator[RadoffData]):
     """The implementation of the Radoff coordinator."""
-
-    data: APIData
 
     def __init__(self, hass: HomeAssistant, config_entry: ConfigEntry) -> None:
         """Initialize coordinator."""
@@ -69,8 +67,8 @@ class RadoffCoordinator(DataUpdateCoordinator):
         super().__init__(
             hass,
             _LOGGER,
+            config_entry=config_entry,
             name=f"{HOMEASSISTANT_DOMAIN} ({config_entry.unique_id})",
-            update_method=self.async_update_data,
             update_interval=timedelta(seconds=self.poll_interval),
         )
 
@@ -120,7 +118,7 @@ class RadoffCoordinator(DataUpdateCoordinator):
           `last_data_received_at` - "conserva le sue letture precedenti"),
           only flipping `stale` to `True`. `dataclasses.replace` is used
           instead of mutating the previous instance in place, so the
-          previous poll's `APIData.devices` (which HA entities may still be
+          previous poll's `RadoffData.devices` (which HA entities may still be
           reading from concurrently) is never touched.
         - not found (this device has never been seen with a successful
           fetch - e.g. its very first poll already failed): include it
@@ -167,7 +165,7 @@ class RadoffCoordinator(DataUpdateCoordinator):
             )
         return merged
 
-    async def async_update_data(self) -> APIData:
+    async def _async_update_data(self) -> RadoffData:
         """
         Fetch data from API endpoint.
 
@@ -189,7 +187,7 @@ class RadoffCoordinator(DataUpdateCoordinator):
            - "async_timeout.timeout(...)" - describes) is used instead of
            adding the third-party `async_timeout` package as a new
            dependency: this integration's minimum supported Home Assistant
-           version (`hacs.json`: 2024.6.0) already requires Python ≥3.11, so
+           version (`hacs.json`: 2025.1.4) already requires Python ≥3.12, so
            the stdlib primitive is available with no manifest.json/
            requirements.txt change. If the budget is exceeded, `UpdateFailed`
            is raised with an explicit message (S-13 AC: "allo scadere il log
@@ -213,7 +211,7 @@ class RadoffCoordinator(DataUpdateCoordinator):
            updated cleanly vs. went stale this cycle (S-13 "COSA FARE" step
            5).
         """
-        _LOGGER.debug("Radoff async_update_data starting")
+        _LOGGER.debug("Radoff _async_update_data starting")
         timeout_seconds = self.update_interval.total_seconds() * UPDATE_TIMEOUT_FACTOR
 
         try:
@@ -360,7 +358,7 @@ class RadoffCoordinator(DataUpdateCoordinator):
                 len(device_errors),
             )
 
-            return APIData(
+            return RadoffData(
                 controller_name=self.api.controller_name,
                 devices=devices,
                 generate_index=self.generate_index,

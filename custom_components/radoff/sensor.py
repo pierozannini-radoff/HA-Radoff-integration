@@ -11,13 +11,12 @@ from homeassistant.components.sensor import (
     SensorEntity,
     SensorStateClass,
 )
-from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
+from . import RadoffConfigEntry
 from .api import RadoffDevice
 from .api.models import ReadingKey
-from .const import DOMAIN
 from .coordinator import RadoffCoordinator
 from .entity import RadoffEntity, reading_key_slug
 
@@ -65,16 +64,14 @@ INDEX_MAPPING: dict[str, dict[str, Any]] = {
 
 
 async def async_setup_entry(
-    hass: HomeAssistant,
-    config_entry: ConfigEntry,
+    hass: HomeAssistant,  # noqa: ARG001
+    config_entry: RadoffConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     """Set up the Sensors."""
     _LOGGER.debug("Radoff async_setup_entry")
 
-    coordinator: RadoffCoordinator = hass.data[DOMAIN][
-        config_entry.entry_id
-    ].coordinator
+    coordinator: RadoffCoordinator = config_entry.runtime_data
 
     sensors = []
     for device in coordinator.data.devices:

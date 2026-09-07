@@ -76,7 +76,7 @@ def reading_key_slug(reading_key: ReadingKey) -> str:
     return property_name if not suffix else f"{property_name}_{suffix}"
 
 
-class RadoffEntity(CoordinatorEntity):
+class RadoffEntity(CoordinatorEntity[RadoffCoordinator]):
     """Base class for Radoff entities backed by a single (device, reading) pair."""
 
     _attr_has_entity_name = True

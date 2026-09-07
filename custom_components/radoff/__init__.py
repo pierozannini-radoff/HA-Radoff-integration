@@ -3,33 +3,23 @@
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_CLIENT_ID, Platform
 
-from .const import CONF_INDEX, CONF_POOL_ID, CONF_POOL_REGION, DOMAIN
+from .const import CONF_INDEX, CONF_POOL_ID, CONF_POOL_REGION
 from .coordinator import RadoffCoordinator
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
-
-    from homeassistant.config_entries import ConfigEntry
     from homeassistant.core import HomeAssistant
     from homeassistant.helpers.device_registry import DeviceEntry
-    from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 
 PLATFORMS: list[Platform] = [Platform.SENSOR]
 
 _LOGGER = logging.getLogger(__name__)
 
-
-@dataclass
-class RuntimeData:
-    """Class to hold your data."""
-
-    coordinator: DataUpdateCoordinator
-    cancel_update_listener: Callable
+type RadoffConfigEntry = ConfigEntry[RadoffCoordinator]
 
 
 async def async_migrate_entry(hass: HomeAssistant, config_entry: ConfigEntry) -> bool:
@@ -79,11 +69,11 @@ async def async_migrate_entry(hass: HomeAssistant, config_entry: ConfigEntry) ->
     return True
 
 
-async def async_setup_entry(hass: HomeAssistant, config_entry: ConfigEntry) -> bool:
+async def async_setup_entry(
+    hass: HomeAssistant, config_entry: RadoffConfigEntry
+) -> bool:
     """Set up Example Integration from a config entry."""
     _LOGGER.debug("Radoff async_setup_entry")
-
-    hass.data.setdefault(DOMAIN, {})
 
     coordinator = RadoffCoordinator(hass, config_entry)
 
@@ -93,11 +83,14 @@ async def async_setup_entry(hass: HomeAssistant, config_entry: ConfigEntry) -> b
     # to follow this call was unreachable and has been removed.
     await coordinator.async_config_entry_first_refresh()
 
-    cancel_update_listener = config_entry.add_update_listener(_async_update_listener)
-
-    hass.data[DOMAIN][config_entry.entry_id] = RuntimeData(
-        coordinator, cancel_update_listener
+    # `async_on_unload` registers the listener's cancel callback to run when
+    # this entry is unloaded (S-14), replacing the manual `RuntimeData.
+    # cancel_update_listener` bookkeeping this used to need.
+    config_entry.async_on_unload(
+        config_entry.add_update_listener(_async_update_listener)
     )
+
+    config_entry.runtime_data = coordinator
 
     await hass.config_entries.async_forward_entry_setups(config_entry, PLATFORMS)
 
@@ -120,23 +113,8 @@ async def async_remove_config_entry_device(
     return True
 
 
-async def async_unload_entry(hass: HomeAssistant, config_entry: ConfigEntry) -> bool:
+async def async_unload_entry(
+    hass: HomeAssistant, config_entry: RadoffConfigEntry
+) -> bool:
     """Unload a config entry."""
-    unload_ok = await hass.config_entries.async_unload_platforms(
-        config_entry, PLATFORMS
-    )
-
-    if unload_ok:
-        # Pop only this entry's own data (C3): with `single_config_entry:
-        # false`, `hass.data.pop(DOMAIN, None)` used to remove the *whole*
-        # domain dict, taking down every other configured entry with it.
-        runtime_data: RuntimeData = hass.data[DOMAIN].pop(config_entry.entry_id)
-        runtime_data.cancel_update_listener()
-
-        # Only remove the domain key itself once no entry is left under it,
-        # so a second config entry configured for this integration is
-        # untouched by unloading the first one.
-        if not hass.data[DOMAIN]:
-            hass.data.pop(DOMAIN)
-
-    return unload_ok
+    return await hass.config_entries.async_unload_platforms(config_entry, PLATFORMS)

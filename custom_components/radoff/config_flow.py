@@ -225,7 +225,7 @@ class ConfigPatternFlow(ConfigFlow, domain=DOMAIN):
         `entry_data`, and - crucially - has already put the entry id in
         `self.context["entry_id"]` (set by `ConfigEntry.async_start_reauth`,
         which is what the coordinator calls internally when
-        `async_update_data` raises `ConfigEntryAuthFailed`). `entry_data` is
+        `_async_update_data` raises `ConfigEntryAuthFailed`). `entry_data` is
         not used directly: `async_step_reauth_confirm` below re-reads the
         entry fresh from `self.context["entry_id"]` instead, so it always
         shows the username currently on the entry rather than a snapshot
