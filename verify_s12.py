@@ -20,6 +20,32 @@ are instead checked with `py_compile` + `ruff` here, plus manual
 verification against the dev harness for the timing-dependent acceptance
 criteria (see `s-12-implementazione.md`).
 
+`_refresh()` calls `GetTokensFromRefreshToken`, not `InitiateAuth`/
+`AuthFlow=REFRESH_TOKEN_AUTH`: this card's own manual AC1 verification
+against a real account (2026-09-04) found the Radoff Cognito app client has
+refresh token rotation enabled, which makes `InitiateAuth` unconditionally
+reject that flow (`UnsupportedOperationException: This API does not support
+refresh token rotation`) - see `api/auth.py`'s module docstring. The mocks
+below target `get_tokens_from_refresh_token`, and
+`test_refresh_uses_get_tokens_from_refresh_token_not_initiate_auth` is a
+regression test specifically for this - it fails loudly if `_refresh()` ever
+goes back to calling `initiate_auth`.
+
+UPDATE (2026-09-07): a further real-account retest found Cognito can reject
+a freshly minted `RefreshToken` as invalid on its very first use - a likely
+AWS-side limitation (see `api/auth.py`'s module docstring for the matching
+public GitHub issue), not something fixable from this integration's code.
+Piero decided `_consecutive_refresh_failures` should reset on ANY
+successful login, refresh or SRP, not only a successful refresh, so that a
+persistently broken refresh chain degrades gracefully to "SRP every cycle"
+instead of tripping a false `AuthInvalidError`/re-auth roughly every other
+poll. `test_refresh_rejected_once_falls_back_to_srp` and
+`test_network_failure_during_refresh_counts_and_falls_back` were updated
+for this (the counter now reads back as 0, not 1, after a successful SRP
+fallback), and `test_persistent_refresh_failure_with_srp_fallback_never_raises_auth_invalid`
+is a new regression test for the graceful-degradation behaviour itself,
+across several consecutive cycles.
+
 Usage: `python3 verify_s12.py` from the repository root.
 """
 
@@ -91,7 +117,7 @@ def _srp_result(id_token: str, refresh_token: str | None = "srp-refresh") -> dic
 def _client_error(code: str = "NotAuthorizedException") -> ClientError:
     return ClientError(
         {"Error": {"Code": code, "Message": "Refresh Token has expired"}},
-        "InitiateAuth",
+        "GetTokensFromRefreshToken",
     )
 
 
@@ -122,20 +148,32 @@ def _allow_srp(id_token: str, refresh_token: str | None = "srp-refresh") -> None
 
 
 def _allow_refresh(
-    *, id_token: str | None = None, error: Exception | None = None
-) -> None:
+    *,
+    id_token: str | None = None,
+    refresh_token: str | None = None,
+    error: Exception | None = None,
+) -> MagicMock:
+    """
+    Patch `boto3.client(...)` so `get_tokens_from_refresh_token` is the only
+    call `_refresh()` can make - returns the fake client so a test can also
+    assert on how it was called (see the regression test below).
+    """
     fake_client = MagicMock()
     if error is not None:
-        fake_client.initiate_auth.side_effect = error
+        fake_client.get_tokens_from_refresh_token.side_effect = error
     else:
-        fake_client.initiate_auth.return_value = {
-            "AuthenticationResult": {
-                "IdToken": id_token,
-                "AccessToken": f"access-{id_token}",
-                "ExpiresIn": 3600,
-            }
+        result: dict[str, object] = {
+            "IdToken": id_token,
+            "AccessToken": f"access-{id_token}",
+            "ExpiresIn": 3600,
+        }
+        if refresh_token is not None:
+            result["RefreshToken"] = refresh_token
+        fake_client.get_tokens_from_refresh_token.return_value = {
+            "AuthenticationResult": result
         }
     auth.boto3 = MagicMock(client=MagicMock(return_value=fake_client))  # noqa: SLF001
+    return fake_client
 
 
 def test_valid_token_short_circuits() -> None:
@@ -165,12 +203,70 @@ def test_refresh_success_no_srp() -> None:
         condition=bearer == "refreshed-id",
     )
     check(
-        "successful refresh preserves the original RefreshToken (Cognito never returns a new one)",
+        "refresh response with no RefreshToken field keeps the current one "
+        "(defensive fallback for a hypothetical non-rotating app client)",
         condition=session._refresh_token == "rt-original",  # noqa: SLF001
     )
     check(
         "successful refresh resets the consecutive-failure counter",
         condition=session._consecutive_refresh_failures == 0,  # noqa: SLF001
+    )
+
+
+def test_refresh_success_adopts_rotated_refresh_token() -> None:
+    """
+    The Radoff Cognito app client has refresh token rotation enabled (found
+    during this card's own manual AC1 verification, 2026-09-04): every
+    successful `GetTokensFromRefreshToken` call returns a *new*
+    `RefreshToken`, and the one just used is invalidated shortly after. This
+    is the realistic case for this account, unlike the previous test's mock.
+    """
+    session = _make_session(
+        tokens={"IdToken": "expiring"},
+        expires_at=time.time() - 100,
+        refresh_token="rt-original",
+    )
+    _forbid_srp()
+    _allow_refresh(id_token="refreshed-id", refresh_token="rt-rotated")
+    bearer = session.get_bearer()
+    check(
+        "rotating refresh: new bearer token returned",
+        condition=bearer == "refreshed-id",
+    )
+    check(
+        "rotating refresh: the new RefreshToken from the response replaces "
+        "the old one, so the next cycle uses it instead of the now-invalid one",
+        condition=session._refresh_token == "rt-rotated",  # noqa: SLF001
+    )
+
+
+def test_refresh_uses_get_tokens_from_refresh_token_not_initiate_auth() -> None:
+    """
+    Regression test for the real-world failure found during this card's own
+    manual AC1 verification (2026-09-04): the Radoff Cognito app client has
+    refresh token rotation enabled, so `InitiateAuth`/`AuthFlow=
+    REFRESH_TOKEN_AUTH` always failed with `UnsupportedOperationException:
+    This API does not support refresh token rotation`. `_refresh()` must call
+    `GetTokensFromRefreshToken` with only `ClientId`/`RefreshToken` (no
+    `USERNAME`, never valid for either API) - this test fails loudly if that
+    regresses back to `initiate_auth`.
+    """
+    session = _make_session(tokens={}, refresh_token="rt-1")
+    fake_client = _allow_refresh(id_token="id-via-gtfrt", refresh_token="rt-2")
+    bearer = session.get_bearer()
+    check(
+        "regression: get_bearer() still returns a usable token",
+        condition=bearer == "id-via-gtfrt",
+    )
+    check(
+        "regression: _refresh() never calls initiate_auth",
+        condition=not fake_client.initiate_auth.called,
+    )
+    check(
+        "regression: get_tokens_from_refresh_token called with exactly "
+        "ClientId+RefreshToken (no USERNAME, no other extra parameter)",
+        condition=fake_client.get_tokens_from_refresh_token.call_args.kwargs
+        == {"ClientId": "client-id", "RefreshToken": "rt-1"},
     )
 
 
@@ -184,8 +280,10 @@ def test_refresh_rejected_once_falls_back_to_srp() -> None:
         condition=bearer == "srp-fallback-id",
     )
     check(
-        "one rejected refresh increments the failure counter to 1",
-        condition=session._consecutive_refresh_failures == 1,  # noqa: SLF001
+        "a rejected refresh followed by a successful SRP fallback resets the "
+        "failure counter to 0 (revised 2026-09-07: reset on any successful "
+        "login, not only a successful refresh)",
+        condition=session._consecutive_refresh_failures == 0,  # noqa: SLF001
     )
     check(
         "SRP fallback's new RefreshToken replaces the rejected one",
@@ -261,19 +359,66 @@ def test_network_failure_during_refresh_counts_and_falls_back() -> None:
         condition=bearer == "srp-after-network-blip",
     )
     check(
-        "EndpointConnectionError during refresh counts toward the failure counter",
-        condition=session._consecutive_refresh_failures == 1,  # noqa: SLF001
+        "EndpointConnectionError during refresh, followed by a successful SRP "
+        "fallback, resets the failure counter to 0",
+        condition=session._consecutive_refresh_failures == 0,  # noqa: SLF001
+    )
+
+
+def test_persistent_refresh_failure_degrades_gracefully_via_srp() -> None:
+    """
+    Regression test for the 2026-09-07 counter-reset revision.
+
+    A real account was found to sometimes reject EVERY refresh attempt for a
+    whole login session (see the module docstring and `api/auth.py`'s own
+    2026-09-07 update) - a persistent, not one-off, refresh failure. Runs
+    several `get_bearer()` cycles where refresh always fails but the
+    same-cycle SRP fallback always succeeds, and checks that no cycle ever
+    raises `AuthInvalidError`: with the counter resetting on any successful
+    login, the second-consecutive-failure threshold is never actually
+    reached as long as SRP keeps rescuing the call, however many cycles run.
+    """
+    session = _make_session(tokens={}, refresh_token="rt-0", consecutive_failures=0)
+    all_succeeded = True
+    counter_always_zero_after = True
+    for cycle in range(5):
+        # Force the token to look expired again on every cycle, same as a
+        # real ~24h-later poll would.
+        session.tokens = {}
+        _allow_refresh(error=_client_error())
+        _allow_srp(f"srp-cycle-{cycle}", refresh_token=f"rt-{cycle + 1}")
+        try:
+            bearer = session.get_bearer()
+        except auth.AuthInvalidError:
+            all_succeeded = False
+            break
+        if bearer != f"srp-cycle-{cycle}":
+            all_succeeded = False
+        if session._consecutive_refresh_failures != 0:  # noqa: SLF001
+            counter_always_zero_after = False
+    check(
+        "persistent refresh failure + always-successful SRP fallback: 5 "
+        "consecutive cycles all return a usable bearer token, no AuthInvalidError",
+        condition=all_succeeded,
+    )
+    check(
+        "persistent refresh failure + always-successful SRP fallback: the "
+        "failure counter is back to 0 after every single cycle",
+        condition=counter_always_zero_after,
     )
 
 
 if __name__ == "__main__":
     test_valid_token_short_circuits()
     test_refresh_success_no_srp()
+    test_refresh_success_adopts_rotated_refresh_token()
+    test_refresh_uses_get_tokens_from_refresh_token_not_initiate_auth()
     test_refresh_rejected_once_falls_back_to_srp()
     test_refresh_rejected_twice_raises_auth_invalid_without_srp()
     test_no_refresh_token_goes_straight_to_srp()
     test_invalidate_keeps_refresh_token_and_prefers_refresh_next_time()
     test_network_failure_during_refresh_counts_and_falls_back()
+    test_persistent_refresh_failure_degrades_gracefully_via_srp()
 
     print()
     if FAILURES:

@@ -50,13 +50,31 @@ strictly more expensive than necessary, more exposed to Cognito's own rate
 limits on the SRP flow specifically, and turns a transient SRP hiccup into a
 full outage instead of a degraded retry. `CognitoSession.get_bearer()` is now
 the single entry point for a usable bearer token: it returns the current
-token if still valid, tries a lightweight `REFRESH_TOKEN_AUTH` call if the
-token is stale and a `RefreshToken` is on hand, and only falls back to a full
-SRP handshake (`_srp_login()`, built on `authenticate_user()` below,
-unchanged) if there is no `RefreshToken` yet or the refresh attempt itself
-failed. `API` (client.py) no longer holds any token state at all - it asks
-this session for a bearer token every time and never inspects `tokens`
-directly; see that module for the composition.
+token if still valid, tries a lightweight refresh call if the token is stale
+and a `RefreshToken` is on hand, and only falls back to a full SRP handshake
+(`_srp_login()`, built on `authenticate_user()` below, unchanged) if there is
+no `RefreshToken` yet or the refresh attempt itself failed. `API`
+(client.py) no longer holds any token state at all - it asks this session
+for a bearer token every time and never inspects `tokens` directly; see that
+module for the composition.
+
+IMPORTANT, found during this card's own manual AC1 verification against a
+real account (2026-09-04): the Radoff Cognito app client has **refresh token
+rotation enabled**. That setting makes `InitiateAuth`/`AuthFlow=
+REFRESH_TOKEN_AUTH` - the "obvious" refresh API, and this card's first
+implementation - unconditionally fail with
+`UnsupportedOperationException: This API does not support refresh token
+rotation`, regardless of what `AuthParameters` are passed: AWS simply does
+not support that flow for a rotating app client at all. The correct API for
+this app client is `GetTokensFromRefreshToken`, which `_refresh()` below
+uses instead. Rotation also means the assumption "a refresh response never
+carries a new RefreshToken" - true for a non-rotating app client, and this
+card's own first (wrong) assumption - does NOT hold here: every successful
+`GetTokensFromRefreshToken` call returns a *new* `RefreshToken`, and the one
+just used is invalidated (after a short grace period) once the new one is
+issued. `_refresh()` therefore adopts whatever `RefreshToken` the response
+carries for the next cycle to use, falling back to keeping the current one
+only if a response is ever missing that field.
 
 Historical context on the timing this card changes: the natural-expiry
 ceiling for a full SRP re-login used to be assumed at ~1 hour (~55 minutes
@@ -67,15 +85,49 @@ number bounded how quickly a changed Radoff password used to get detected
 via a live 401 or the periodic SRP reconnect (see `s-08-implementazione.md`).
 After this card, the periodic path is normally the refresh call, not a new
 SRP login, so that specific ceiling no longer applies the same way: the
-practical detection window is now bounded by how long Cognito's
-`RefreshToken` itself stays valid for this app client (Cognito's own
-default is 30 days, but the actual configured value for the Radoff pool has
-not been verified against a real account) or, sooner, by a live 401 during
-polling (see `api/client.py::_check_response_status`) or two consecutive
-rejected refresh attempts (see `CognitoSession.get_bearer`). This is flagged
-here, not resolved: verifying the app client's actual refresh-token TTL
-needs the same kind of empirical check T-02/S-08 already did for `ExpiresIn`,
-and is tracked as a follow-up rather than blocking this card.
+practical detection window is now bounded by how long a given (rotating)
+`RefreshToken` chain stays valid for this app client - which, because of the
+rotation above, is a chain of values rather than one fixed token, and its
+overall lifetime has not been independently verified against a real account
+(Cognito's own default session length is 30 days) - or, sooner, by a live
+401 during polling (see `api/client.py::_check_response_status`) or two
+consecutive rejected refresh attempts (see `CognitoSession.get_bearer`).
+This is flagged here, not resolved: verifying that chain's actual TTL needs
+the same kind of empirical check T-02/S-08 already did for `ExpiresIn`, and
+is tracked as a follow-up rather than blocking this card.
+
+UPDATE (2026-09-07), found during a retest of the `GetTokensFromRefreshToken`
+fix above against a real account: Cognito can reject a *freshly minted*
+`RefreshToken` as genuinely invalid (`NotAuthorizedException: Invalid
+Refresh Token`) on its very first use, roughly 60 seconds after the SRP
+login that issued it - not a client-code bug, since the request is
+confirmed to be hitting the right operation with the right, just-issued
+token. This matches a public, unresolved AWS SDK issue reporting the same
+symptom for `InitiateAuth`-issued tokens under refresh token rotation
+(`aws/aws-sdk-js-v3#7162`, "ADMIN_NO_SRP_AUTH + Rotating Refresh Tokens -->
+Invalid Refresh Token"; our SRP login goes through `InitiateAuth` with
+`USER_SRP_AUTH` rather than `ADMIN_NO_SRP_AUTH`, but the shape of the
+failure - a same-service token rejected by `GetTokensFromRefreshToken`
+under rotation - is the same), which points to a likely AWS-side
+limitation rather than anything fixable from this integration's code.
+
+Because this can make *every* refresh attempt fail for a given login
+session, not just an occasional one, it changes what the consecutive-
+failure counter (`_MAX_CONSECUTIVE_REFRESH_FAILURES` below) needs to
+tolerate: if that counter only ever reset on a successful *refresh* (this
+card's original design), a persistently broken refresh chain would trip
+`AuthInvalidError` - and Home Assistant's re-auth flow - roughly every
+other polling cycle, even though the configured password is still
+perfectly correct and the same-cycle SRP fallback keeps succeeding. Piero
+reviewed this trade-off and chose to reset the counter on *any* successful
+login, refresh or SRP (see `_srp_login()` below): this trades a small
+amount of the counter's original purpose - catching a refresh mechanism
+that is broken but silently hidden behind an always-working SRP fallback -
+for not turning a known, currently unfixable AWS-side quirk into
+recurring, spurious re-auth prompts. `AuthInvalidError` is still reachable
+in the case that matters most (both refresh and the same-cycle SRP
+fallback fail), just not merely because refresh keeps failing while SRP
+keeps saving the call.
 """
 
 import logging
@@ -114,15 +166,20 @@ _THROTTLING_ERROR_CODES = frozenset({"TooManyRequestsException"})
 # to `CognitoSession._is_token_expired`, unchanged in value or meaning.
 _TOKEN_EXPIRY_MARGIN_SECONDS = 300
 
-# How many consecutive REFRESH_TOKEN_AUTH failures `CognitoSession.get_bearer`
-# tolerates - by falling back to a full SRP login each time - before giving
-# up on the refresh path and raising `AuthInvalidError` instead of trying
-# again (card S-12 AC: "rifiutato due volte porta al flusso di re-auth").
-# Deliberately NOT reset by a successful SRP fallback (decided with Piero):
-# only a *successful refresh* resets the counter (see
-# `CognitoSession._refresh`) - otherwise a structurally broken refresh
-# mechanism (e.g. a Cognito app client misconfiguration) would hide forever
-# behind the SRP fallback, defeating the point of this card.
+# How many consecutive refresh failures `CognitoSession.get_bearer` tolerates
+# - by falling back to a full SRP login each time - before giving up on the
+# refresh path and raising `AuthInvalidError` instead of trying again (card
+# S-12 AC: "rifiutato due volte porta al flusso di re-auth"). Reset by ANY
+# successful login, refresh or SRP (decided with Piero on 2026-09-07,
+# revising this card's original design - see the module docstring's
+# 2026-09-07 update for the full story): a real account was found to
+# sometimes reject every refresh attempt for a whole login session (a
+# likely AWS-side limitation, not a bug here), and resetting only on a
+# successful refresh would have turned that into a false re-auth prompt
+# roughly every other polling cycle despite a still-correct password. The
+# counter still protects the case that actually matters - refresh AND the
+# same-cycle SRP fallback both failing - just not the narrower case of a
+# refresh mechanism that is broken but always rescued by SRP.
 _MAX_CONSECUTIVE_REFRESH_FAILURES = 2
 
 
@@ -150,9 +207,9 @@ class AuthInvalidError(Exception):
     surfaced by Cognito as `NotAuthorizedException`/`UserNotFoundException`,
     see `_DEFINITIVE_AUTH_ERROR_CODES`), pycognito returned no authentication
     data at all for a reason it does not itself document, or (card S-12)
-    `CognitoSession.get_bearer()` had two consecutive `REFRESH_TOKEN_AUTH`
-    attempts rejected in a row. Recovering requires the user to re-enter
-    their password, i.e. Home Assistant's re-auth flow
+    `CognitoSession.get_bearer()` had two consecutive refresh attempts
+    rejected in a row. Recovering requires the user to re-enter their
+    password, i.e. Home Assistant's re-auth flow
     (`config_flow.py::async_step_reauth_confirm`), not a silent retry.
     """
 
@@ -329,9 +386,9 @@ class CognitoSession:
         attempts:
 
         1. the current token, if not close to expiring;
-        2. `_refresh()` via Cognito's `REFRESH_TOKEN_AUTH`, if a
-           `RefreshToken` is on hand - a lightweight call, not a full SRP
-           handshake, and one that needs no domain re-discovery;
+        2. `_refresh()` via Cognito's `GetTokensFromRefreshToken` operation,
+           if a `RefreshToken` is on hand - a lightweight call, not a full
+           SRP handshake, and one that needs no domain re-discovery;
         3. `_srp_login()`, the full SRP handshake - either because there is
            no `RefreshToken` yet (first call ever on this session) or
            because the refresh attempt itself just failed.
@@ -342,10 +399,17 @@ class CognitoSession:
         (card S-12 AC: "Un refresh rifiutato una volta viene ritentato" -
         the retry being that same-cycle SRP fallback, and the next expiry
         naturally re-attempting a refresh with whatever `RefreshToken` that
-        fallback obtained). Only a *second* consecutive refresh failure
-        raises `AuthInvalidError` instead of falling back again (card S-12
-        AC: "rifiutato due volte porta al flusso di re-auth", mapped to
-        `ConfigEntryAuthFailed` by `coordinator.py`, unchanged since S-08).
+        fallback obtained). A second consecutive refresh failure only
+        raises `AuthInvalidError` if the same-cycle SRP fallback that
+        follows the *first* failure also fails to complete (e.g. raises
+        `AuthUnavailableError`): both `_refresh()` and `_srp_login()` reset
+        the counter to 0 on success (revised with Piero on 2026-09-07, see
+        `_MAX_CONSECUTIVE_REFRESH_FAILURES`'s comment and the module
+        docstring), so the common case of "refresh fails, SRP fallback
+        succeeds" never trips it, however many cycles in a row it happens.
+        `AuthInvalidError` still maps to `ConfigEntryAuthFailed` by
+        `coordinator.py` when it is raised (card S-12 AC: "rifiutato due
+        volte porta al flusso di re-auth", unchanged since S-08).
 
         A refresh call can fail for reasons that say nothing about the
         credentials themselves (a transient network blip, Cognito
@@ -362,7 +426,7 @@ class CognitoSession:
             return self.tokens["IdToken"]
 
         if self._refresh_token:
-            _LOGGER.debug("Cognito token expired; attempting REFRESH_TOKEN_AUTH")
+            _LOGGER.debug("Cognito token expired; attempting a token refresh")
             try:
                 self._refresh()
             except (ClientError, EndpointConnectionError) as err:
@@ -393,33 +457,41 @@ class CognitoSession:
 
     def _refresh(self) -> None:
         """
-        Attempt to renew the current session via Cognito's REFRESH_TOKEN_AUTH flow.
+        Attempt to renew the session via Cognito's GetTokensFromRefreshToken.
 
         Raises the underlying `ClientError`/`EndpointConnectionError` on any
         failure - `get_bearer()` is what decides whether that counts toward
         `_consecutive_refresh_failures` and whether to fall back to
         `_srp_login()`. On success, `self.tokens` is updated with the new
-        `IdToken`/`AccessToken`/`ExpiresIn`. Cognito's refresh response never
-        contains a new `RefreshToken` (card S-12 "COSA FARE", step 3), so
-        `self._refresh_token` is deliberately left untouched here - the
-        original one, obtained at the last full SRP login, keeps being used
-        until it is itself rejected.
+        `IdToken`/`AccessToken`/`ExpiresIn`.
 
-        Uses a plain `boto3` `cognito-idp` client rather than `pycognito`'s
-        `AWSSRP` (which only implements the SRP flow): `InitiateAuth` with
-        `REFRESH_TOKEN_AUTH` needs no password and no SRP math, only the
-        stored `RefreshToken`. Like the SRP calls this integration already
-        makes, this is an unauthenticated Cognito Identity Provider API
-        call - no AWS credentials are required or configured for it.
+        Uses `GetTokensFromRefreshToken`, not `InitiateAuth`/
+        `AuthFlow=REFRESH_TOKEN_AUTH`: this card's own manual AC1
+        verification against a real account (2026-09-04) found that the
+        Radoff Cognito app client has refresh token rotation enabled, which
+        makes `InitiateAuth` unconditionally reject that flow with
+        `UnsupportedOperationException: This API does not support refresh
+        token rotation` - see the module docstring for the full story.
+        `GetTokensFromRefreshToken` is the API AWS documents as the
+        rotation-compatible replacement, and needs only `ClientId` and the
+        stored `RefreshToken` (no password, no SRP math, no `USERNAME`).
+
+        Because this app client rotates, every successful call here returns
+        a *new* `RefreshToken` and invalidates the one just used (after a
+        short grace period) - unlike a non-rotating app client, where a
+        refresh response never carries a new one. `self._refresh_token` is
+        therefore updated from the response, falling back to keeping the
+        current value only if a response is ever missing that field (e.g. a
+        hypothetical future app client change back to non-rotating).
+
+        Like the SRP calls this integration already makes, this is an
+        unauthenticated Cognito Identity Provider API call - no AWS
+        credentials are required or configured for it.
         """
         client = boto3.client("cognito-idp", region_name=self.pool_region)
-        response = client.initiate_auth(
+        response = client.get_tokens_from_refresh_token(
             ClientId=self.client_id,
-            AuthFlow="REFRESH_TOKEN_AUTH",
-            AuthParameters={
-                "REFRESH_TOKEN": self._refresh_token,
-                "USERNAME": self.username,
-            },
+            RefreshToken=self._refresh_token,
         )
 
         auth_result = response.get("AuthenticationResult")
@@ -427,15 +499,17 @@ class CognitoSession:
             msg = "Cognito refresh returned no usable AuthenticationResult."
             raise ClientError(
                 {"Error": {"Code": "InvalidRefreshResponse", "Message": msg}},
-                "InitiateAuth",
+                "GetTokensFromRefreshToken",
             )
 
         self.tokens = auth_result
+        self._refresh_token = auth_result.get("RefreshToken", self._refresh_token)
         expires_in = auth_result.get("ExpiresIn", 3600)
         self._token_expires_at = compute_token_expiry(expires_in)
         self._consecutive_refresh_failures = 0
         _LOGGER.debug(
-            "Refreshed Cognito session via REFRESH_TOKEN_AUTH; expires in %d seconds",
+            "Refreshed Cognito session via GetTokensFromRefreshToken; "
+            "expires in %d seconds",
             expires_in,
         )
 
@@ -446,14 +520,22 @@ class CognitoSession:
         Delegates the handshake itself, and all of its error classification
         (`AuthInvalidError`/`AuthChallengeRequiredError`/`AuthUnavailableError`),
         to `authenticate_user` above - unchanged since cards S-08/S-09.
-        Unlike `_refresh()`, a successful SRP login *does* return a new
-        `RefreshToken`, stored here for the next `get_bearer()` cycle to use
-        instead of another full login. Deliberately does not reset
-        `_consecutive_refresh_failures` (decided with Piero, see that
-        counter's own comment) - a login here can be either the very first
-        one for this session, or a fallback after a rejected refresh, and
-        only a genuinely successful *refresh* proves the mechanism healthy
-        again.
+        A successful SRP login also returns a `RefreshToken`, stored here for
+        the next `get_bearer()` cycle to use instead of another full login.
+
+        Resets `_consecutive_refresh_failures` to 0 on success, same as
+        `_refresh()` (revised with Piero on 2026-09-07, superseding this
+        card's original design - see `_MAX_CONSECUTIVE_REFRESH_FAILURES`'s
+        comment and the module docstring's 2026-09-07 update for why): a
+        real account was found to sometimes reject every refresh attempt
+        for a whole login session for reasons outside this integration's
+        control, and only resetting on a successful *refresh* would have
+        let that turn into a false re-auth prompt roughly every other
+        polling cycle despite a still-correct password. A login here can be
+        either the very first one for this session or a fallback after a
+        rejected refresh; either way, a token in hand right now is what the
+        counter ultimately exists to guarantee, and this method just
+        obtained one.
         """
         _LOGGER.debug("Performing full Cognito SRP handshake")
         auth_data = authenticate_user(
@@ -468,6 +550,7 @@ class CognitoSession:
         self._refresh_token = auth_result.get("RefreshToken")
         expires_in = auth_result.get("ExpiresIn", 3600)
         self._token_expires_at = compute_token_expiry(expires_in)
+        self._consecutive_refresh_failures = 0
         _LOGGER.info("Token will expire in %d seconds", expires_in)
 
     def invalidate(self) -> None:
