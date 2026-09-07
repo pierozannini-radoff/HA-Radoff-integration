@@ -1,3 +1,8 @@
+# Runtime toggle file for verify_s13_live.py (S-13): edited by hand while
+# a dev-harness Home Assistant instance is running, never meant to be
+# committed - see that script's own docstring.
+s13_fault_control.json
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]

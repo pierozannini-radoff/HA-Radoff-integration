@@ -50,6 +50,13 @@ ignore = [
 # the removal note (delete once S-18 lands automated degraded-poll tests).
 "dev_fault_injection.py" = ["ALL"]
 
+# Live AC verification launcher (S-13): same pattern as
+# dev_fault_injection.py above, but monkeypatches API._get_data/get_devices
+# to simulate a per-device 500, a search failure, or a slow poll, driven by
+# a git-ignored s13_fault_control.json read fresh every cycle. Not shipped
+# code, same convention as the other dev/verify scripts in this list.
+"verify_s13_live.py" = ["ALL"]
+
 # Automated wrapper around dev_fault_injection.py (S-07): drives it as a
 # subprocess, polls the REST API, and prints a PASS/FAIL verdict for AC1/AC2
 # instead of requiring you to watch the log or the Developer Tools UI by
