@@ -153,5 +153,5 @@ versioning conventions used in this repository.
 ## License
 
 This project is licensed under the MIT License - see [LICENSE](LICENSE) for
-details, including attribution to the `integration_blueprint` template this
-repository was originally scaffolded from.
+details. See [NOTICE](NOTICE.md) for attribution to the `integration_blueprint`
+template this repository was originally scaffolded from.
