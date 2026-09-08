@@ -2,4 +2,4 @@ pycognito==2024.5.1
 ruff==0.5.5
 colorlog==6.8.2
 homeassistant==2025.1.4
-pip>=21.3.1
+pip>=26.2.1
