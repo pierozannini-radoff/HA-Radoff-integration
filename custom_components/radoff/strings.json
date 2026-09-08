@@ -36,8 +36,6 @@
         "state": {
           "excellent": "Excellent",
           "good": "Good",
-          "medium": "Medium",
-          "poor": "Poor",
           "terrible": "Terrible"
         }
       },
@@ -46,8 +44,6 @@
         "state": {
           "excellent": "Excellent",
           "good": "Good",
-          "medium": "Medium",
-          "poor": "Poor",
           "terrible": "Terrible"
         }
       },

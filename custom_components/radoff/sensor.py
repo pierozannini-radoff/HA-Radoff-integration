@@ -46,6 +46,16 @@ def _threshold_index(
     return _index
 
 
+# Thresholds named so tests can probe boundary values from the same source
+# the index functions below are built from, instead of duplicating them.
+_TVOC_THRESHOLDS = (100.0, 200.0, 300.0, 400.0)
+_ECO2_THRESHOLDS = (500.0, 1000.0, 1500.0, 2000.0)
+_PM10_THRESHOLDS = (20.0, 30.0, 40.0, 50.0)
+_PM25_THRESHOLDS = (16.0, 21.0, 26.0, 32.0)
+_PM1_THRESHOLDS = (6.0, 9.0, 12.0, 15.0)
+_TEMPERATURE_THRESHOLDS = (18.0, 27.0)
+_HUMIDITY_THRESHOLDS = (40.0, 60.0)
+
 # Keyed by bare property name, independent of which bucket(s) a reading of
 # that name exists in (card S-10 does not move this table - see
 # `properties.py`'s docstring, "OUT OF SCOPE"). Today only DATA-bucket
@@ -53,13 +63,41 @@ def _threshold_index(
 # AGGREGATED bucket carries, is not one of them, so it never gets an "-index"
 # sibling entity, in either bucket.
 INDEX_MAPPING: dict[str, dict[str, Any]] = {
-    "tvoc": {"index": _threshold_index((100, 200, 300, 400), FIVE_LEVELS)},
-    "eco2": {"index": _threshold_index((500, 1000, 1500, 2000), FIVE_LEVELS)},
-    "pm10": {"index": _threshold_index((20, 30, 40, 50), FIVE_LEVELS)},
-    "pm25": {"index": _threshold_index((16, 21, 26, 32), FIVE_LEVELS)},
-    "pm1": {"index": _threshold_index((6, 9, 12, 15), FIVE_LEVELS)},
-    "internal_temperature": {"index": _threshold_index((18, 27), THREE_LEVELS)},
-    "relative_humidity": {"index": _threshold_index((40, 60), THREE_LEVELS)},
+    "tvoc": {
+        "index": _threshold_index(_TVOC_THRESHOLDS, FIVE_LEVELS),
+        "states": FIVE_LEVELS,
+        "thresholds": _TVOC_THRESHOLDS,
+    },
+    "eco2": {
+        "index": _threshold_index(_ECO2_THRESHOLDS, FIVE_LEVELS),
+        "states": FIVE_LEVELS,
+        "thresholds": _ECO2_THRESHOLDS,
+    },
+    "pm10": {
+        "index": _threshold_index(_PM10_THRESHOLDS, FIVE_LEVELS),
+        "states": FIVE_LEVELS,
+        "thresholds": _PM10_THRESHOLDS,
+    },
+    "pm25": {
+        "index": _threshold_index(_PM25_THRESHOLDS, FIVE_LEVELS),
+        "states": FIVE_LEVELS,
+        "thresholds": _PM25_THRESHOLDS,
+    },
+    "pm1": {
+        "index": _threshold_index(_PM1_THRESHOLDS, FIVE_LEVELS),
+        "states": FIVE_LEVELS,
+        "thresholds": _PM1_THRESHOLDS,
+    },
+    "internal_temperature": {
+        "index": _threshold_index(_TEMPERATURE_THRESHOLDS, THREE_LEVELS),
+        "states": THREE_LEVELS,
+        "thresholds": _TEMPERATURE_THRESHOLDS,
+    },
+    "relative_humidity": {
+        "index": _threshold_index(_HUMIDITY_THRESHOLDS, THREE_LEVELS),
+        "states": THREE_LEVELS,
+        "thresholds": _HUMIDITY_THRESHOLDS,
+    },
 }
 
 
@@ -87,6 +125,7 @@ async def async_setup_entry(
                     normalize_fn=reading.normalize_fn,
                     is_index=False,
                     index_fn=None,
+                    index_states=None,
                 )
             )
             if coordinator.data.generate_index and reading.name in INDEX_MAPPING:
@@ -96,12 +135,13 @@ async def async_setup_entry(
                         reading_key=reading_key,
                         coordinator=coordinator,
                         device=device,
-                        device_class=None,
+                        device_class=SensorDeviceClass.ENUM,
                         friendly_name=reading.friendly_name,
                         unit=None,
                         normalize_fn=reading.normalize_fn,
                         is_index=True,
                         index_fn=index_obj["index"],
+                        index_states=index_obj["states"],
                     )
                 )
 
@@ -129,6 +169,7 @@ class RadoffSensor(RadoffEntity, SensorEntity):
         normalize_fn: Callable[[Number], float | int] | None,
         unit: type[StrEnum] | str | None,
         index_fn: Callable[[Number], str] | None,
+        index_states: tuple[str, ...] | None,
         *,
         is_index: bool | None = None,
     ) -> None:
@@ -140,6 +181,8 @@ class RadoffSensor(RadoffEntity, SensorEntity):
         self._normalize_fn = normalize_fn
         self._is_index = is_index
         self._index_fn = index_fn
+        if index_states is not None:
+            self._attr_options = list(index_states)
 
     @property
     def translation_key(self) -> str:

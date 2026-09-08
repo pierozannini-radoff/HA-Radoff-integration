@@ -34,21 +34,17 @@
       "internal_temperature_index": {
         "name": "Temperatura Indice",
         "state": {
-          "excellent": "Ottimo",
-          "good": "Buono",
-          "medium": "Medio",
-          "poor": "Scarso",
-          "terrible": "Alto"
+          "excellent": "Bassa",
+          "good": "Ottimale",
+          "terrible": "Alta"
         }
       },
       "relative_humidity_index": {
         "name": "Umidità Indice",
         "state": {
-          "excellent": "Ottimo",
-          "good": "Buono",
-          "medium": "Medio",
-          "poor": "Scarso",
-          "terrible": "Alto"
+          "excellent": "Bassa",
+          "good": "Ottimale",
+          "terrible": "Alta"
         }
       },
       "tvoc_index": {
@@ -56,9 +52,9 @@
         "state": {
           "excellent": "Ottimo",
           "good": "Buono",
-          "medium": "Medio",
+          "medium": "Accettabile",
           "poor": "Scarso",
-          "terrible": "Pessimo"
+          "terrible": "Critico"
         }
       },
       "eco2_index": {
@@ -66,9 +62,9 @@
         "state": {
           "excellent": "Ottimo",
           "good": "Buono",
-          "medium": "Medio",
+          "medium": "Accettabile",
           "poor": "Scarso",
-          "terrible": "Pessimo"
+          "terrible": "Critico"
         }
       },
       "pm10_index": {
@@ -76,9 +72,9 @@
         "state": {
           "excellent": "Ottimo",
           "good": "Buono",
-          "medium": "Medio",
+          "medium": "Accettabile",
           "poor": "Scarso",
-          "terrible": "Pessimo"
+          "terrible": "Critico"
         }
       },
       "pm25_index": {
@@ -86,9 +82,9 @@
         "state": {
           "excellent": "Ottimo",
           "good": "Buono",
-          "medium": "Medio",
+          "medium": "Accettabile",
           "poor": "Scarso",
-          "terrible": "Pessimo"
+          "terrible": "Critico"
         }
       },
       "pm1_index": {
@@ -96,9 +92,9 @@
         "state": {
           "excellent": "Ottimo",
           "good": "Buono",
-          "medium": "Medio",
+          "medium": "Accettabile",
           "poor": "Scarso",
-          "terrible": "Pessimo"
+          "terrible": "Critico"
         }
       }
     }
