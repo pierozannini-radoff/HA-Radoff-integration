@@ -19,24 +19,32 @@
       "airqualityindex": {
         "name": "Qualità aria"
       },
+      "airqualityindex_average": {
+        "name": "Qualità aria media"
+      },
+      "pm10": {
+        "name": "PM10"
+      },
+      "pm25": {
+        "name": "PM2.5"
+      },
+      "pm1": {
+        "name": "PM1"
+      },
       "internal_temperature_index": {
         "name": "Temperatura Indice",
         "state": {
-          "excellent": "Ottimo",
-          "good": "Buono",
-          "medium": "Medio",
-          "poor": "Scarso",
-          "terrible": "Alto"
+          "excellent": "Bassa",
+          "good": "Ottimale",
+          "terrible": "Alta"
         }
       },
       "relative_humidity_index": {
         "name": "Umidità Indice",
         "state": {
-          "excellent": "Ottimo",
-          "good": "Buono",
-          "medium": "Medio",
-          "poor": "Scarso",
-          "terrible": "Alto"
+          "excellent": "Bassa",
+          "good": "Ottimale",
+          "terrible": "Alta"
         }
       },
       "tvoc_index": {
@@ -44,9 +52,9 @@
         "state": {
           "excellent": "Ottimo",
           "good": "Buono",
-          "medium": "Medio",
+          "medium": "Accettabile",
           "poor": "Scarso",
-          "terrible": "Pessimo"
+          "terrible": "Critico"
         }
       },
       "eco2_index": {
@@ -54,9 +62,9 @@
         "state": {
           "excellent": "Ottimo",
           "good": "Buono",
-          "medium": "Medio",
+          "medium": "Accettabile",
           "poor": "Scarso",
-          "terrible": "Pessimo"
+          "terrible": "Critico"
         }
       },
       "pm10_index": {
@@ -64,9 +72,9 @@
         "state": {
           "excellent": "Ottimo",
           "good": "Buono",
-          "medium": "Medio",
+          "medium": "Accettabile",
           "poor": "Scarso",
-          "terrible": "Pessimo"
+          "terrible": "Critico"
         }
       },
       "pm25_index": {
@@ -74,9 +82,9 @@
         "state": {
           "excellent": "Ottimo",
           "good": "Buono",
-          "medium": "Medio",
+          "medium": "Accettabile",
           "poor": "Scarso",
-          "terrible": "Pessimo"
+          "terrible": "Critico"
         }
       },
       "pm1_index": {
@@ -84,16 +92,19 @@
         "state": {
           "excellent": "Ottimo",
           "good": "Buono",
-          "medium": "Medio",
+          "medium": "Accettabile",
           "poor": "Scarso",
-          "terrible": "Pessimo"
+          "terrible": "Critico"
         }
       }
     }
   },
   "config": {
     "abort": {
-      "already_configured": "Dispositivo gia configurato"
+      "already_configured": "Dispositivo gia configurato",
+      "no_domains": "Questo account non ha nessun dominio disponibile. Contatta il supporto Radoff prima di riprovare.",
+      "reauth_successful": "Riautenticazione completata con successo",
+      "unsupported_challenge": "Il tuo account Radoff richiede un passaggio di verifica aggiuntivo (ad esempio l'impostazione di una nuova password o la conferma dell'autenticazione a più fattori) che questa integrazione non è ancora in grado di completare. Completa quel passaggio nell'app mobile Radoff, poi riprova ad aggiungere l'integrazione."
     },
     "error": {
       "cannot_connect": "Connessione fallita",
@@ -103,10 +114,38 @@
     "step": {
       "user": {
         "data": {
-          "client_id": "Client ID",
           "password": "Password",
-          "username": "Nome Utente",
-          "generate_index": "Genera indici entità"
+          "username": "Nome Utente"
+        }
+      },
+      "domain": {
+        "title": "Seleziona dominio",
+        "description": "Il tuo account Radoff ha accesso a più di un dominio. Seleziona quello che Home Assistant deve usare.",
+        "data": {
+          "domain_id": "Dominio"
+        }
+      },
+      "reauth_confirm": {
+        "title": "Riautentica Radoff",
+        "description": "La password per {username} non è più valida. Inserisci la nuova password per riconnettere questa integrazione.",
+        "data": {
+          "password": "Password"
+        }
+      }
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Opzioni Radoff",
+        "description": "Cambiando una qualsiasi delle due opzioni l'integrazione viene ricaricata per applicarla subito.",
+        "data": {
+          "scan_interval": "Intervallo di polling (secondi)",
+          "generate_index": "Genera entità indice"
+        },
+        "data_description": {
+          "scan_interval": "Ogni quanto interrogare l'API Radoff, in secondi.",
+          "generate_index": "Crea anche un sensore qualitativo *_index (es. Ottimo, Buono, ...) accanto alle misure per cui è disponibile."
         }
       }
     }

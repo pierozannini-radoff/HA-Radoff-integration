@@ -4,16 +4,23 @@ set -e
 
 cd "$(dirname "$0")/.."
 
+# HA config directory for the dev harness lives under .devcontainer/, not at
+# the repo root (S-04): this makes the separation between the distributable
+# custom_components/radoff content and the local runtime — which HA fills
+# with the Radoff account credentials and Cognito tokens on first run —
+# structural instead of relying only on .gitignore.
+HASS_CONFIG_DIR="${PWD}/.devcontainer/config"
+
 # Create config dir if not present
-if [[ ! -d "${PWD}/config" ]]; then
-    mkdir -p "${PWD}/config"
-    hass --config "${PWD}/config" --script ensure_config
+if [[ ! -d "${HASS_CONFIG_DIR}" ]]; then
+    mkdir -p "${HASS_CONFIG_DIR}"
+    hass --config "${HASS_CONFIG_DIR}" --script ensure_config
 fi
 
 # Set the path to custom_components
 ## This let's us have the structure we want <root>/custom_components/integration_blueprint
-## while at the same time have Home Assistant configuration inside <root>/config
+## while at the same time have Home Assistant configuration inside <root>/.devcontainer/config
 ## without resulting to symlinks.
 export PYTHONPATH="${PYTHONPATH}:${PWD}/custom_components"
 # Start Home Assistant
-hass --config "${PWD}/config" --debug
+hass --config "${HASS_CONFIG_DIR}" --debug

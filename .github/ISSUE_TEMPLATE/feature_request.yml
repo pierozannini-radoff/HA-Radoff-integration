@@ -1,0 +1,40 @@
+name: Feature request
+description: Suggest an improvement or a new device/entity to support
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Requests for **Now (legacy)** or **Sense** support are welcome and
+        already tracked separately - feel free to open one anyway so we can
+        gauge interest, but no diagnostics are needed for this kind of
+        request.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem would this solve?
+      description: What are you trying to do that the integration doesn't support today?
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: How would you like this to work?
+    validations:
+      required: false
+
+  - type: dropdown
+    id: device_model
+    attributes:
+      label: Related device model (if applicable)
+      options:
+        - Not applicable
+        - Now+
+        - Now (legacy)
+        - Sense
+        - Other / not sure
+    validations:
+      required: false

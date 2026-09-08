@@ -1,3 +1,12 @@
+# Runtime toggle file for verify_s13_live.py (S-13): edited by hand while
+# a dev-harness Home Assistant instance is running, never meant to be
+# committed - see that script's own docstring.
+s13_fault_control.json
+
+# Result file written by verify_s15_live.py (S-15) on every check run -
+# a local run artifact, never meant to be committed.
+s15_live_check_result.txt
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
@@ -161,3 +170,17 @@ cython_debug/
 #  and can be added to the global gitignore or merged into this file.  For a more nuclear
 #  option (not recommended) you can uncomment the following to ignore the entire idea folder.
 #.idea/
+
+# HA dev harness runtime (S-04) — contains the Radoff account credentials and
+# Cognito tokens created by the first `scripts/develop` run
+# (.devcontainer/config/.storage/core.config_entries), plus the local HA
+# instance's own auth/DB files. Only the harness's own configuration.yaml is
+# meant to be versioned; everything else HA writes under this directory at
+# runtime must never be committed.
+.devcontainer/config/*
+!.devcontainer/config/configuration.yaml
+
+# Legacy dev harness location, pre-S-04. No longer used by scripts/develop,
+# kept ignored in case a stale local checkout still has one from before this
+# change (its removal from git history, if it was ever committed, is T-01).
+/config/

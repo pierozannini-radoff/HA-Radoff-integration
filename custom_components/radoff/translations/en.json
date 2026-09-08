@@ -1,7 +1,10 @@
 {
   "config": {
     "abort": {
-      "already_configured": "Device is already configured"
+      "already_configured": "Device is already configured",
+      "no_domains": "This account has no domain available. Please contact Radoff support before retrying.",
+      "reauth_successful": "Re-authentication was successful",
+      "unsupported_challenge": "Your Radoff account needs an extra verification step (such as setting a new password or confirming multi-factor authentication) that this integration cannot complete yet. Please finish that step in the Radoff mobile app first, then try adding the integration again."
     },
     "error": {
       "cannot_connect": "Failed to connect",
@@ -11,12 +14,38 @@
     "step": {
       "user": {
         "data": {
-          "client_id": "Client ID",
           "password": "Password",
-          "pool_id": "Pool ID",
-          "pool_region": "Pool Region",
-          "username": "Username",
-          "generate_index": "Generates Index Entities"
+          "username": "Username"
+        }
+      },
+      "domain": {
+        "title": "Select domain",
+        "description": "Your Radoff account has access to more than one domain. Select the one Home Assistant should use.",
+        "data": {
+          "domain_id": "Domain"
+        }
+      },
+      "reauth_confirm": {
+        "title": "Reauthenticate Radoff",
+        "description": "The password for {username} is no longer valid. Enter the new password to reconnect this integration.",
+        "data": {
+          "password": "Password"
+        }
+      }
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Radoff options",
+        "description": "Changing either option reloads the integration to apply it immediately.",
+        "data": {
+          "scan_interval": "Polling interval (seconds)",
+          "generate_index": "Generate index entities"
+        },
+        "data_description": {
+          "scan_interval": "How often to poll the Radoff API, in seconds.",
+          "generate_index": "Also create a qualitative *_index sensor (e.g. Excellent, Good, ...) alongside applicable measurements."
         }
       }
     }
@@ -25,6 +54,9 @@
     "sensor": {
       "airqualityindex": {
         "name": "Air Quality"
+      },
+      "airqualityindex_average": {
+        "name": "Air Quality Average"
       },
       "eco2": {
         "name": "Co2"
@@ -41,24 +73,29 @@
       "relative_humidity": {
         "name": "Humidity"
       },
+      "pm10": {
+        "name": "PM10"
+      },
+      "pm25": {
+        "name": "PM2.5"
+      },
+      "pm1": {
+        "name": "PM1"
+      },
       "internal_temperature_index": {
         "name": "Temperature Index",
         "state": {
-          "excellent": "Excellent",
-          "good": "Good",
-          "medium": "Medium",
-          "poor": "Poor",
-          "terrible": "Terrible"
+          "excellent": "Low",
+          "good": "Optimal",
+          "terrible": "High"
         }
       },
       "relative_humidity_index": {
         "name": "Humidity Index",
         "state": {
-          "excellent": "Excellent",
-          "good": "Good",
-          "medium": "Medium",
-          "poor": "Poor",
-          "terrible": "Terrible"
+          "excellent": "Low",
+          "good": "Optimal",
+          "terrible": "High"
         }
       },
       "tvoc_index": {
