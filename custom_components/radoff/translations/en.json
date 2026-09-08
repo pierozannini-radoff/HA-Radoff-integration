@@ -85,17 +85,17 @@
       "internal_temperature_index": {
         "name": "Temperature Index",
         "state": {
-          "excellent": "Excellent",
-          "good": "Good",
-          "terrible": "Terrible"
+          "excellent": "Low",
+          "good": "Optimal",
+          "terrible": "High"
         }
       },
       "relative_humidity_index": {
         "name": "Humidity Index",
         "state": {
-          "excellent": "Excellent",
-          "good": "Good",
-          "terrible": "Terrible"
+          "excellent": "Low",
+          "good": "Optimal",
+          "terrible": "High"
         }
       },
       "tvoc_index": {
