@@ -12,6 +12,45 @@ on:
       - "main"
 
 jobs:
+  lint:
+    name: "Lint"
+    runs-on: "ubuntu-latest"
+    steps:
+        - name: "Checkout the repository"
+          uses: "actions/checkout@v4.1.7"
+
+        - name: "Set up Python"
+          uses: "actions/setup-python@v5.1.1"
+          with:
+            python-version: "3.12"
+
+        - name: "Install ruff"
+          run: "pip install ruff==0.5.5"
+
+        - name: "Run ruff format --check"
+          run: "ruff format --check ."
+
+        - name: "Run ruff check"
+          run: "ruff check ."
+
+  test:
+    name: "Test"
+    runs-on: "ubuntu-latest"
+    steps:
+        - name: "Checkout the repository"
+          uses: "actions/checkout@v4.1.7"
+
+        - name: "Set up Python"
+          uses: "actions/setup-python@v5.1.1"
+          with:
+            python-version: "3.12"
+
+        - name: "Install test dependencies"
+          run: "pip install -r requirements-test.txt"
+
+        - name: "Run pytest"
+          run: "pytest"
+
   hassfest: # https://developers.home-assistant.io/blog/2020/04/16/hassfest
     name: "Hassfest Validation"
     runs-on: "ubuntu-latest"

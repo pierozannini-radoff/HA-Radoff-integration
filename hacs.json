@@ -3,5 +3,6 @@
     "hide_default_branch": false,
     "homeassistant": "2025.1.4",
     "render_readme": true,
-      "country": "IT"
+    "zip_release": true,
+    "filename": "radoff.zip"
 }
