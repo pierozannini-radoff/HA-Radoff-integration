@@ -45,10 +45,19 @@ jobs:
           with:
             python-version: "3.12"
 
-        - name: "Install test dependencies"
-          run: "pip install -r requirements-test.txt"
+        - name: "Install dependencies"
+          run: "pip install -r requirements.txt -r requirements-test.txt"
 
         - name: "Run pytest"
+          # Dummy credentials so botocore's default credential chain
+          # resolves immediately: without any credentials available it
+          # falls through to a "login" provider that requires the optional
+          # botocore[crt] extra and raises MissingDependencyException
+          # before the test's AWSSRP mocking is ever reached.
+          env:
+            AWS_ACCESS_KEY_ID: "testing"
+            AWS_SECRET_ACCESS_KEY: "testing"
+            AWS_DEFAULT_REGION: "eu-west-1"
           run: "pytest"
 
   hassfest: # https://developers.home-assistant.io/blog/2020/04/16/hassfest
