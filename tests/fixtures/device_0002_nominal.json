@@ -1,0 +1,11 @@
+{
+  "data": {
+    "lastDataReceivedAt": "2026-09-02T14:26:40.147Z",
+    "data": [
+      { "propertyName": "tvoc", "value": 80 },
+      { "propertyName": "internal_temperature", "value": 2600 },
+      { "propertyName": "relative_humidity", "value": 50 }
+    ],
+    "aggregatedData": []
+  }
+}

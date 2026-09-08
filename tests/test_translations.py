@@ -72,9 +72,9 @@ def test_every_mapping_entry_has_a_name(path: Path, slug: str) -> None:
     """S-15 AC: every properties.py entry (incl. S-10's aggregated ones) has a name."""
     sensor_entities = DOCS[path].get("entity", {}).get("sensor", {})
     assert slug in sensor_entities, f"{path.name}: missing entity.sensor.{slug}"
-    assert sensor_entities[slug].get("name"), (
-        f"{path.name}: entity.sensor.{slug} has no non-empty 'name'"
-    )
+    assert sensor_entities[slug].get(
+        "name"
+    ), f"{path.name}: entity.sensor.{slug} has no non-empty 'name'"
 
 
 @pytest.mark.parametrize("path", TRANSLATION_PATHS, ids=lambda p: p.name)
@@ -119,9 +119,9 @@ def test_index_translation_states_match_declared_states(path: Path, name: str) -
     state_keys = set(sensor_entities[slug].get("state", {}).keys())
     missing = declared - state_keys
     orphaned = state_keys - declared
-    assert not missing, (
-        f"{path.name}: entity.sensor.{slug}.state missing keys {sorted(missing)}"
-    )
-    assert not orphaned, (
-        f"{path.name}: entity.sensor.{slug}.state has orphaned keys {sorted(orphaned)}"
-    )
+    assert (
+        not missing
+    ), f"{path.name}: entity.sensor.{slug}.state missing keys {sorted(missing)}"
+    assert (
+        not orphaned
+    ), f"{path.name}: entity.sensor.{slug}.state has orphaned keys {sorted(orphaned)}"

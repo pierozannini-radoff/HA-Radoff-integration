@@ -1,0 +1,10 @@
+{
+  "devices": [
+    {
+      "id": "device-0000-0001",
+      "serial": "SER-0000-0001",
+      "deviceTypeName": "Now+",
+      "name": "Living Room"
+    }
+  ]
+}

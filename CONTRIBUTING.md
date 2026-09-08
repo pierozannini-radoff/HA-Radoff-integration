@@ -40,10 +40,31 @@ run this locally before opening one.
 
 ## Tests
 
-This repository does not yet have an automated test suite (`pytest`-based
-testing is tracked as separate work). Until it lands, verify your change
-manually against the dev harness described above, and describe how you
-tested it in your pull request.
+This repository has an automated `pytest` suite under `tests/`, built on
+`pytest-homeassistant-custom-component`. It mocks the Radoff API at the
+transport level (`requests_mock` for HTTP, `AWSSRP.authenticate_user` for
+the Cognito SRP handshake) and exercises auth, domain discovery, entity
+construction and config entry migration the same way Home Assistant itself
+does - no real network access or Radoff account is needed or used.
+
+Install the test dependencies (in addition to `requirements.txt`) and run
+the suite from the repository root:
+
+```bash
+pip install -r requirements-test.txt
+pytest
+```
+
+`pytest.ini` enables coverage reporting with a non-regressive floor (60%,
+`--cov-fail-under`) - this is a safety net, not a target: it should only
+ever go up as more of the integration gets covered. Fixture payloads live
+under `tests/fixtures/` as anonymized JSON (synthetic ids, no real UUIDs,
+serials or credentials); `tests/conftest.py` documents the mocking helpers
+built on top of them.
+
+Please still describe any manual verification against the dev harness in
+your pull request when a change is not fully exercised by the automated
+suite (e.g. a real-account-only behaviour).
 
 ## Branching and versioning
 

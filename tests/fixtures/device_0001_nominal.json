@@ -1,0 +1,19 @@
+{
+  "data": {
+    "lastDataReceivedAt": "2026-09-02T14:26:40.147Z",
+    "data": [
+      { "propertyName": "tvoc", "value": 50 },
+      { "propertyName": "eco2", "value": 600 },
+      { "propertyName": "pm10", "value": 10 },
+      { "propertyName": "pm25", "value": 8 },
+      { "propertyName": "pm1", "value": 3 },
+      { "propertyName": "internal_temperature", "value": 2500 },
+      { "propertyName": "relative_humidity", "value": 45 },
+      { "propertyName": "pressure", "value": 101325 },
+      { "propertyName": "airqualityindex", "value": 20 }
+    ],
+    "aggregatedData": [
+      { "propertyName": "airqualityindex", "aggregationValue": 25 }
+    ]
+  }
+}

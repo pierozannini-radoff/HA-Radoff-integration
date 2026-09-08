@@ -143,7 +143,9 @@ def test_diagnostics_redacts_all_sensitive_fields() -> None:
         # that never interpolate the username/password - matched here rather
         # than an exception that embeds a secret, which no code path in this
         # integration actually raises.
-        last_exception=Exception("The configured Radoff credentials are no longer valid."),
+        last_exception=Exception(
+            "The configured Radoff credentials are no longer valid."
+        ),
         update_interval=timedelta(seconds=60),
     )
 
@@ -183,7 +185,9 @@ def test_diagnostics_covers_runbook_cases() -> None:
 
     entry_zero = _build_entry()
     entry_zero.runtime_data = _FakeCoordinator(
-        data=RadoffData(controller_name="cloud_poller", generate_index=True, devices=[]),
+        data=RadoffData(
+            controller_name="cloud_poller", generate_index=True, devices=[]
+        ),
         last_update_success=True,
         last_exception=None,
         update_interval=timedelta(seconds=60),
