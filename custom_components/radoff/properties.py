@@ -27,6 +27,22 @@ changes its *content*, not its location (`api/client.py` still does
    versa), not a crash. Every constant below was picked to match the actual
    semantics of the value the Radoff API returns for that property, not
    merely "a valid unit for this device class".
+3. `Bucket.DATA` no longer describes `airqualityindex` (card T-06/F2). The
+   entry S-10 left there mapped a `(bucket, property)` combination the
+   backend does not deliver: over ~8 days of real polling on two devices,
+   all 118 occurrences of `airqualityindex` arrived in `aggregatedData` and
+   none in `data` (`data` carries 21 properties, none of them this one).
+   Keeping the entry cost an entity that could never take a value, and -
+   because the released version's single AQI entity is keyed on the bare
+   property name and therefore matches this bucket's slug - it silently
+   captured that entity's `unique_id` while the value it had always shown
+   moved to the AGGREGATED slug: the pre-existing entity went `unavailable`
+   for good and its history was severed (see `__init__.py`'s
+   `_async_migrate_aggregated_aqi_unique_ids`, which reunites the two).
+   `recalculatedData` also carries `airqualityindex` and is the only other
+   place it appears, but what that value represents is an open question for
+   the backend, so it stays unmapped rather than being quietly promoted into
+   the entity users already have.
 
 `properties.py` is still an intermediate step, not the final architecture:
 per `architettura-target-sprint-m.md` §2, it stays a single global table
@@ -94,11 +110,9 @@ MAPPING: dict[Bucket, dict[str, dict[str, Any]]] = {
             "friendlyName": "Pressure",
             "unit": UnitOfPressure.PA,
         },
-        "airqualityindex": {
-            "deviceClass": SensorDeviceClass.AQI,
-            "friendlyName": "Air Quality",
-            "unit": None,
-        },
+        # No `airqualityindex` here, deliberately - see this module's
+        # docstring, point 3 (card T-06/F2): the `data` bucket has never
+        # carried that property.
     },
     Bucket.AGGREGATED: {
         "airqualityindex": {

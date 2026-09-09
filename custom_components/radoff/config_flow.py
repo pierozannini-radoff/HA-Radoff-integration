@@ -113,6 +113,12 @@ class ConfigPatternFlow(ConfigFlow, domain=DOMAIN):
     """Handle a config flow for radoff."""
 
     VERSION = 2
+    # Bumped by card T-06/F2 together with the entity-registry step in
+    # `__init__.py::async_migrate_entry`, so a newly created entry is not
+    # sent through a migration that has nothing to do (its entities are
+    # built with the current identifiers from the start). Minor, not major:
+    # the entry's own `data`/`options` shape is unchanged.
+    MINOR_VERSION = 2
 
     def __init__(self) -> None:
         """Initialize the config flow."""

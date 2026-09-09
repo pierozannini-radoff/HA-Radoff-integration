@@ -8,8 +8,7 @@
       { "propertyName": "pm25", "value": 8 },
       { "propertyName": "pm1", "value": 3 },
       { "propertyName": "relative_humidity", "value": 45 },
-      { "propertyName": "pressure", "value": 101325 },
-      { "propertyName": "airqualityindex", "value": 20 }
+      { "propertyName": "pressure", "value": 101325 }
     ],
     "aggregatedData": [
       { "propertyName": "airqualityindex", "aggregationValue": 25 }

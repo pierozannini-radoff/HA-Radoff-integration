@@ -65,11 +65,17 @@ def reading_key_slug(reading_key: ReadingKey) -> str:
     """
     Return the property-name-based slug identifying one reading's entities.
 
-    `(Bucket.DATA, "airqualityindex")` -> `"airqualityindex"` (unchanged from
-    the pre-S-10 bare-string key, by construction - see
-    `_BUCKET_SLUG_SUFFIXES`). `(Bucket.AGGREGATED, "airqualityindex")` ->
-    `"airqualityindex_average"`, a distinct slug so the two never collide in
-    `unique_id` or `translation_key`.
+    `(Bucket.DATA, "pressure")` -> `"pressure"` (unchanged from the pre-S-10
+    bare-string key, by construction - see `_BUCKET_SLUG_SUFFIXES`).
+    `(Bucket.AGGREGATED, "airqualityindex")` -> `"airqualityindex_average"`,
+    a distinct slug so no two buckets can ever collide in `unique_id` or
+    `translation_key`.
+
+    Note that a distinct slug is not automatically a *free* one: the
+    AGGREGATED AQI reading is the value the released version's
+    `radoff-{device_id}-airqualityindex` entity has always shown, so moving
+    it to this slug orphans that entity unless the registry is migrated with
+    it (card T-06/F2, `__init__.py::_async_migrate_aggregated_aqi_unique_ids`).
     """
     bucket, property_name = reading_key
     suffix = _BUCKET_SLUG_SUFFIXES[bucket]

@@ -69,7 +69,8 @@ async def setup_nominal_entry(
         ("sensor.living_room_temperature", "20.9", "°C", "temperature"),
         ("sensor.living_room_humidity", "45", "%", "humidity"),
         ("sensor.living_room_pressure", "101325", "Pa", "pressure"),
-        ("sensor.living_room_air_quality", "20", None, "aqi"),
+        # The AQI has one entity only, fed by `aggregatedData`: `data` does
+        # not carry `airqualityindex` (T-06/F2, `properties.py` point 3).
         ("sensor.living_room_air_quality_average", "25", None, "aqi"),
     ],
 )
@@ -143,3 +144,44 @@ async def test_no_index_entities_when_generate_index_disabled(
 
     assert hass.states.get("sensor.living_room_temperature") is not None
     assert hass.states.get("sensor.living_room_temperature_index") is None
+
+
+async def test_data_bucket_airqualityindex_creates_no_entity(
+    hass: HomeAssistant,
+    monkeypatch: pytest.MonkeyPatch,
+    requests_mock: Any,
+    config_entry_v2_data: dict[str, Any],
+) -> None:
+    """
+    An `airqualityindex` in `data` is ignored; the AQI keeps one entity (T-06/F2).
+
+    The real payload has never carried that property in the `data` bucket -
+    which is why `properties.py` no longer maps it - but a fixture that
+    invented one is exactly what hid the orphaning bug the first time. This
+    test pins the behaviour if the backend ever starts sending it: the entity
+    users already have must not gain a sibling that splits the AQI in two.
+    """
+    patch_authenticate_user(
+        monkeypatch,
+        result=auth_result(make_id_token(["aaaaaaaa-0000-0000-0000-000000000001"])),
+    )
+    register_search(requests_mock, load_fixture("search_one_device.json"))
+    payload = load_device_fixture("device_0001_nominal.json")
+    payload["data"]["data"].append({"propertyName": "airqualityindex", "value": 20})
+    register_device(requests_mock, "device-0000-0001", payload)
+
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data=config_entry_v2_data,
+        options={"generate_index": True},
+        version=2,
+        minor_version=2,
+    )
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    assert hass.states.get("sensor.living_room_air_quality") is None
+    aqi_average = hass.states.get("sensor.living_room_air_quality_average")
+    assert aqi_average is not None
+    assert aqi_average.state == "25"

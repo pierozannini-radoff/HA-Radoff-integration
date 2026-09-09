@@ -9,6 +9,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_CLIENT_ID, CONF_USERNAME, Platform
 from homeassistant.core import callback
 from homeassistant.exceptions import ConfigEntryError
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers import issue_registry as ir
 
 from .const import (
@@ -60,9 +61,23 @@ async def async_migrate_entry(hass: HomeAssistant, config_entry: ConfigEntry) ->
     where discovery runs on demand and an ambiguous choice can actually be
     put to them.
 
-    This function is idempotent: it only touches entries still at version 1,
-    so a second (or later) restart of an already-migrated entry is a no-op.
-    No entity's `unique_id` is affected by this migration.
+    VERSION 2.1 -> 2.2 (card T-06/F2):
+      - the AQI entity every released installation already has is re-keyed
+        from `radoff-{device_id}-airqualityindex` to
+        `radoff-{device_id}-airqualityindex_average`, so it keeps receiving
+        the value it has always carried. See
+        `_async_migrate_aggregated_aqi_unique_ids` for why, and
+        `properties.py`'s docstring, point 3, for the payload evidence
+        behind it. A *minor* version bump: an entry that has been through it
+        is still readable by the code that came before, so this is not a
+        breaking change for a downgrade.
+
+    Both steps are idempotent: the first only touches entries still at
+    version 1, the second only entries below minor version 2, so a second
+    (or later) restart of an already-migrated entry is a no-op. The one case
+    that deliberately does run again is an entry whose AQI entity could not
+    be re-keyed because another entry holds the identifier: it stays below
+    minor version 2 so a later start can retry once that conflict clears.
     """
     _LOGGER.debug(
         "Checking radoff config entry %s for migration (version=%s)",
@@ -103,7 +118,155 @@ async def async_migrate_entry(hass: HomeAssistant, config_entry: ConfigEntry) ->
                 CONF_DOMAIN_ID,
             )
 
+    if (config_entry.version, config_entry.minor_version) < (2, 2):
+        if _async_migrate_aggregated_aqi_unique_ids(hass, config_entry):
+            hass.config_entries.async_update_entry(
+                config_entry,
+                version=2,
+                minor_version=2,
+            )
+        else:
+            # Something was left un-migrated because another config entry
+            # holds the identifier it needs (see the function's docstring).
+            # The entry deliberately stays below minor version 2 so that a
+            # later start retries: the conflict can clear on its own - the
+            # other entry gets removed, or its device does - and an entity
+            # that is only ever going to be orphaned is not something to
+            # record as "migrated" after a single warning line.
+            _LOGGER.warning(
+                "Config entry %s stays at minor version %s: its AQI entity "
+                "could not be migrated yet, and the migration will run again "
+                "on the next start",
+                config_entry.entry_id,
+                config_entry.minor_version,
+            )
+
     return True
+
+
+# The two identifiers this migration rewrites between: the bare property name
+# the released version used for the one AQI entity it created, and the slug
+# the AGGREGATED-bucket reading resolves to today.
+#
+# Both are frozen literals, deliberately, and the second is NOT derived from
+# `entity.py::reading_key_slug`. A migration records what it actually wrote,
+# at the time it wrote it: if a later card changes the AGGREGATED suffix, the
+# entities this step already renamed keep the string below - they are past
+# minor version 2 and never come back through here - while the sensor
+# platform would start building a different one, silently reproducing the
+# very orphaning this migration exists to undo. Pinning the literal turns
+# that into `tests/test_init.py::test_migration_target_still_matches_the_slug
+# _the_platform_builds`, which fails loudly and asks for a new migration step
+# instead.
+_AQI_PROPERTY = "airqualityindex"
+_LEGACY_AQI_SLUG = _AQI_PROPERTY
+_AGGREGATED_AQI_SLUG = "airqualityindex_average"
+
+
+@callback
+def _async_migrate_aggregated_aqi_unique_ids(
+    hass: HomeAssistant, config_entry: ConfigEntry
+) -> bool:
+    """
+    Re-key the pre-existing AQI entity onto the AGGREGATED-bucket slug (T-06/F2).
+
+    Returns whether every legacy AQI entity of this entry was dealt with, so
+    the caller knows whether it may record the entry as migrated.
+
+    The released version (30e0cde) indexed readings by bare property name and
+    iterated `MAPPING` in `data` -> `aggregatedData` order, so for the AQI the
+    aggregated sample won: every installation out there has exactly one AQI
+    entity, `radoff-{device_id}-airqualityindex`, showing the *aggregated*
+    value. S-10 gave that same reading the distinct slug
+    `airqualityindex_average`, which means the entity users already have stops
+    being fed by anything: it stays in the registry, healthy-looking and
+    permanently `unavailable`, while the value it used to show restarts on a
+    brand-new entity with no history. Measured on a copy of a real instance:
+    of 32 pre-existing entities, exactly the 2 AQI ones died this way, taking
+    60 and 74 hours of long-term statistics with them.
+
+    Renaming the `unique_id` - rather than the entity - is what preserves that
+    history: the registry keeps the same `entity_id`, so `states` and the
+    hourly `statistics` series stay attached to it, and S-10 no longer creates
+    a second entity for that device.
+
+    Collision case: an instance that already ran an intermediate build of this
+    milestone has *both* entities - the orphaned original, rich in history,
+    and a few days of `..._average`. The freshly-created one is removed and
+    the original renamed onto its identifier, because between two entities for
+    the same value the one worth keeping is the one that carries the history.
+    Only a dev or verification instance can be in this state; no released
+    version can produce it.
+
+    A target identifier held by an entity of *another* entry is a different
+    story: it is not this entry's to remove, so that entity is skipped and
+    `False` comes back, leaving the entry below minor version 2 so the next
+    start tries again.
+
+    The entity's `entity_id` is deliberately left alone (`sensor.*_qualita_aria`
+    keeps its name even though its displayed name becomes "Qualità aria
+    media"): Home Assistant never rewrites an `entity_id` on its own, and doing
+    it here would break every dashboard card and automation referring to it -
+    exactly the damage this migration exists to prevent.
+    """
+    registry = er.async_get(hass)
+    entity_entries = er.async_entries_for_config_entry(registry, config_entry.entry_id)
+
+    legacy_suffix = f"-{_LEGACY_AQI_SLUG}"
+    complete = True
+
+    for entity_entry in entity_entries:
+        if not entity_entry.unique_id.endswith(legacy_suffix):
+            continue
+
+        new_unique_id = (
+            entity_entry.unique_id.removesuffix(_LEGACY_AQI_SLUG) + _AGGREGATED_AQI_SLUG
+        )
+
+        # `unique_id` is unique per (domain, platform) across the *whole*
+        # registry, not per config entry, so the collision has to be looked
+        # up globally: `async_update_entity` raises on a duplicate, and an
+        # exception here would abort the migration and leave the entry
+        # unloadable - a worse outcome than the orphaning being fixed.
+        collision_entity_id = registry.async_get_entity_id(
+            entity_entry.domain, entity_entry.platform, new_unique_id
+        )
+        if collision_entity_id is not None:
+            collision = registry.async_get(collision_entity_id)
+            if collision is None or collision.config_entry_id != config_entry.entry_id:
+                # Not this entry's to remove (two accounts reporting the same
+                # device would be the only way to get here). Leave both alone
+                # and say so, rather than touching another entry's entities.
+                _LOGGER.warning(
+                    "Not migrating %s: unique_id %s already belongs to an entity "
+                    "of another config entry",
+                    entity_entry.entity_id,
+                    new_unique_id,
+                )
+                complete = False
+                continue
+
+            _LOGGER.warning(
+                "Removing %s (unique_id %s) so the pre-existing AQI entity %s "
+                "can take over its identifier and keep its history",
+                collision.entity_id,
+                new_unique_id,
+                entity_entry.entity_id,
+            )
+            registry.async_remove(collision.entity_id)
+
+        registry.async_update_entity(
+            entity_entry.entity_id, new_unique_id=new_unique_id
+        )
+
+        _LOGGER.info(
+            "Migrated AQI entity %s from unique_id %s to %s",
+            entity_entry.entity_id,
+            entity_entry.unique_id,
+            new_unique_id,
+        )
+
+    return complete
 
 
 async def async_setup_entry(
