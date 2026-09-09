@@ -16,9 +16,6 @@
       "tvoc": {
         "name": "VOCs"
       },
-      "airqualityindex": {
-        "name": "Qualità aria"
-      },
       "airqualityindex_average": {
         "name": "Qualità aria media"
       },

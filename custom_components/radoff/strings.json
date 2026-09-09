@@ -10,9 +10,6 @@
       "pressure": {
         "name": "Pressure"
       },
-      "airqualityindex": {
-        "name": "Air Quality"
-      },
       "airqualityindex_average": {
         "name": "Air Quality Average"
       },
