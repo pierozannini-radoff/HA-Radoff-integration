@@ -149,5 +149,38 @@
         }
       }
     }
+  },
+  "issues": {
+    "missing_domain_id": {
+      "title": "Radoff non sa quale dominio usare",
+      "fix_flow": {
+        "step": {
+          "confirm": {
+            "title": "Completa la configurazione di Radoff",
+            "description": "La configurazione {title} è stata creata prima che questa integrazione supportasse gli account con accesso a più di un dominio: nessun dominio è mai stato salvato e per questo non riesce a caricarsi. Conferma per accedere con le credenziali già memorizzate in questa configurazione e recuperare i domini raggiungibili dal tuo account; se è più di uno ti verrà chiesto quale usare. Fino ad allora non viene modificato nulla."
+          },
+          "domain": {
+            "title": "Seleziona dominio",
+            "description": "Il tuo account Radoff ha accesso a più di un dominio. Seleziona quello che Home Assistant deve usare.",
+            "data": {
+              "domain_id": "Dominio"
+            }
+          }
+        },
+        "abort": {
+          "entry_not_found": "Questa configurazione Radoff non esiste più: non c'è più nulla da riparare.",
+          "cannot_connect": "Impossibile raggiungere il servizio Radoff. Verifica la connessione e riavvia questa riparazione.",
+          "invalid_auth": "La password memorizzata in questa configurazione non è più valida. Riautentica prima Radoff, poi riavvia questa riparazione.",
+          "unsupported_challenge": "Il tuo account Radoff richiede un passaggio di verifica aggiuntivo (ad esempio l'impostazione di una nuova password o la conferma dell'autenticazione a più fattori) che questa integrazione non è ancora in grado di completare. Completa quel passaggio nell'app mobile Radoff, poi riavvia questa riparazione.",
+          "no_domains": "Questo account non ha nessun dominio disponibile. Contatta il supporto Radoff prima di riprovare.",
+          "unknown": "Errore inatteso"
+        }
+      }
+    }
+  },
+  "exceptions": {
+    "missing_domain_id": {
+      "message": "Questa configurazione Radoff è stata creata prima che l'integrazione supportasse gli account con più di un dominio: non sa quale dominio usare e non può caricarsi. Apri Impostazioni > Sistema > Riparazioni e completa la riparazione Radoff in sospeso."
+    }
   }
 }

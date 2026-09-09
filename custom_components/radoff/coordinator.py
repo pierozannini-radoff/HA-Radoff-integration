@@ -10,7 +10,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_PASSWORD, CONF_SCAN_INTERVAL, CONF_USERNAME
 from homeassistant.core import DOMAIN as HOMEASSISTANT_DOMAIN
 from homeassistant.core import HomeAssistant
-from homeassistant.exceptions import ConfigEntryAuthFailed
+from homeassistant.exceptions import ConfigEntryAuthFailed, ConfigEntryError
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from .api import (
@@ -28,6 +28,8 @@ from .const import (
     CONF_INDEX,
     DEFAULT_SCAN_INTERVAL,
     DEFAULT_STALE_MULTIPLIER,
+    DOMAIN,
+    ISSUE_MISSING_DOMAIN_ID,
     UPDATE_TIMEOUT_FACTOR,
 )
 
@@ -50,7 +52,26 @@ class RadoffCoordinator(DataUpdateCoordinator[RadoffData]):
         """Initialize coordinator."""
         self.username = config_entry.data[CONF_USERNAME]
         self.password = config_entry.data[CONF_PASSWORD]
-        self.domain_id = config_entry.data[CONF_DOMAIN_ID]
+
+        # Card RT-2926 / finding T-06/F1: this was
+        # `config_entry.data[CONF_DOMAIN_ID]`, and every entry created by
+        # the released version reaches it without that key - a bare
+        # `KeyError` that Home Assistant, unlike `ConfigEntryNotReady`,
+        # never retries and cannot report as anything but an unexpected
+        # crash. `__init__.py::async_setup_entry` now stops before ever
+        # constructing this coordinator, with the same translated error and
+        # a Repairs issue attached; the check is repeated here so that no
+        # other caller (a test, a future service, a reload path that skips
+        # the setup guard) can resurrect the `KeyError`.
+        domain_id = config_entry.data.get(CONF_DOMAIN_ID)
+        if not domain_id:
+            msg = f"Config entry {config_entry.entry_id} has no {CONF_DOMAIN_ID}"
+            raise ConfigEntryError(
+                msg,
+                translation_domain=DOMAIN,
+                translation_key=ISSUE_MISSING_DOMAIN_ID,
+            )
+        self.domain_id = domain_id
 
         # generate_index and scan_interval both live in options, not data,
         # since config entry VERSION 2 (S-02): they are user preferences, not

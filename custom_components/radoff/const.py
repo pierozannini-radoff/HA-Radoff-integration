@@ -33,6 +33,17 @@ MAX_SCAN_INTERVAL = 3600
 CONF_INDEX = "generate_index"
 CONF_DOMAIN_ID = "domain_id"
 
+# Repairs issue raised when a config entry carries no `domain_id` at all
+# (card RT-2926, finding T-06/F1). `domain_id` was born with the
+# multi-domain discovery of S-01/RT-2803, in the same milestone that
+# introduced config entry VERSION 2: no entry created by the released
+# version (30e0cde) can possibly contain it, and `async_migrate_entry`
+# (__init__.py) deliberately does not go online to invent one. The entry is
+# therefore left in an explicit setup error and this issue is what carries
+# the user to the fix flow in `repairs.py`, where the domain is discovered
+# (and, when ambiguous, chosen) interactively.
+ISSUE_MISSING_DOMAIN_ID = "missing_domain_id"
+
 # Multiplier used to derive the "stale after" freshness threshold consumed by
 # RadoffEntity.available (card S-07): a reading is considered fresh while its
 # age is below `update_interval * DEFAULT_STALE_MULTIPLIER`. Card S-11

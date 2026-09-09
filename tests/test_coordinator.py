@@ -13,9 +13,11 @@ from typing import Any
 
 import pytest
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import ConfigEntryError
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
-from custom_components.radoff.const import DOMAIN
+from custom_components.radoff.const import CONF_DOMAIN_ID, DOMAIN
+from custom_components.radoff.coordinator import RadoffCoordinator
 
 from .conftest import (
     load_device_fixture,
@@ -47,6 +49,28 @@ async def _setup_entry(
     assert await hass.config_entries.async_setup(entry.entry_id)
     await hass.async_block_till_done()
     return entry
+
+
+async def test_coordinator_without_domain_id_raises_config_entry_error(
+    hass: HomeAssistant,
+    config_entry_v2_data: dict[str, Any],
+) -> None:
+    """
+    Constructing the coordinator without a `domain_id` never raises `KeyError`.
+
+    Card RT-2926 / finding T-06/F1. `__init__.py::async_setup_entry` stops
+    before getting here, but this class must not be the thing that decides
+    whether the integration crashes: any caller reaching it without a
+    domain gets the same explicit, translated `ConfigEntryError`.
+    """
+    data = {k: v for k, v in config_entry_v2_data.items() if k != CONF_DOMAIN_ID}
+    entry = MockConfigEntry(domain=DOMAIN, data=data, version=2)
+    entry.add_to_hass(hass)
+
+    with pytest.raises(ConfigEntryError) as err:
+        RadoffCoordinator(hass, entry)
+
+    assert err.value.translation_key == "missing_domain_id"
 
 
 async def test_poll_nominal_produces_expected_entities(
