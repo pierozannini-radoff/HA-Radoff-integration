@@ -26,7 +26,12 @@ from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers import issue_registry as ir
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
-from custom_components.radoff import async_migrate_entry
+from custom_components.radoff import (
+    _AGGREGATED_AQI_SLUG,
+    _AQI_PROPERTY,
+    async_migrate_entry,
+)
+from custom_components.radoff.api.models import Bucket
 from custom_components.radoff.const import (
     CONF_DOMAIN_ID,
     CONF_INDEX,
@@ -35,6 +40,7 @@ from custom_components.radoff.const import (
     DOMAIN,
     ISSUE_MISSING_DOMAIN_ID,
 )
+from custom_components.radoff.entity import reading_key_slug
 
 from .conftest import (
     auth_result,
@@ -460,6 +466,60 @@ async def test_migrate_aqi_skips_a_collision_owned_by_another_entry(
         registry.async_get(foreign.entity_id).unique_id == _aggregated_aqi_unique_id()
     )
     assert "another config entry" in caplog.text
-    # The entry still reaches minor version 2: the pass ran, and re-running it
-    # on every restart would only repeat the same warning.
+    # And the entry is NOT recorded as migrated: the conflict can clear on its
+    # own (the other entry removed, or its device gone), and the next start
+    # has to try again rather than leave the entity orphaned for good.
+    assert entry.minor_version == 1
+
+
+async def test_migrate_retries_after_a_skipped_entry_conflict_clears(
+    hass: HomeAssistant, config_entry_v2_data: dict[str, Any]
+) -> None:
+    """The retry the previous test leaves room for actually succeeds."""
+    entry = MockConfigEntry(
+        domain=DOMAIN, version=2, minor_version=1, data=config_entry_v2_data
+    )
+    entry.add_to_hass(hass)
+    other = MockConfigEntry(
+        domain=DOMAIN, version=2, minor_version=2, data=config_entry_v2_data
+    )
+    other.add_to_hass(hass)
+
+    registry = er.async_get(hass)
+    legacy = registry.async_get_or_create(
+        domain="sensor",
+        platform=DOMAIN,
+        unique_id=_aqi_unique_id(),
+        config_entry=entry,
+    )
+    foreign = registry.async_get_or_create(
+        domain="sensor",
+        platform=DOMAIN,
+        unique_id=_aggregated_aqi_unique_id(),
+        config_entry=other,
+    )
+
+    assert await async_migrate_entry(hass, entry)
+    assert registry.async_get(legacy.entity_id).unique_id == _aqi_unique_id()
+
+    # The other entry goes away, as it can at any point.
+    registry.async_remove(foreign.entity_id)
+
+    assert await async_migrate_entry(hass, entry)
+
+    assert registry.async_get(legacy.entity_id).unique_id == _aggregated_aqi_unique_id()
     assert entry.minor_version == 2
+
+
+def test_migration_target_still_matches_the_slug_the_platform_builds() -> None:
+    """
+    The frozen identifier the migration writes is the one the platform builds.
+
+    `_AGGREGATED_AQI_SLUG` is a literal on purpose (see its comment): a
+    migration records what it wrote, not what today's code would compute.
+    This test is the tripwire that goes with that choice - if a later card
+    changes the AGGREGATED suffix, entities already past minor version 2 keep
+    the old string while the sensor platform starts building the new one, and
+    that needs its own migration step, not a silently updated constant.
+    """
+    assert _AGGREGATED_AQI_SLUG == reading_key_slug((Bucket.AGGREGATED, _AQI_PROPERTY))
