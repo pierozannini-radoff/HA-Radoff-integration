@@ -128,12 +128,14 @@ class ConfigPatternFlow(ConfigFlow, domain=DOMAIN):
 
         `config_entry` is passed explicitly to `RadoffOptionsFlow.__init__`
         rather than relying on `OptionsFlow` to set `self.config_entry`
-        automatically: that automatic assignment is a newer `ConfigFlow`
-        convenience not guaranteed present on the oldest Home Assistant
-        version this integration declares support for (`hacs.json`:
-        2024.6.0) - same baseline-compatibility reasoning already applied to
-        the re-auth flow in card S-08 (see that step's note on
-        `async_update_reload_and_abort`).
+        automatically - same baseline-compatibility reasoning already
+        applied to the re-auth flow in card S-08 (see that step's note on
+        `async_update_reload_and_abort`). Note that reasoning cited a
+        minimum of 2024.6.0: `hacs.json` actually declares **2025.1.4**
+        (corrected while working on RT-2926, where the same claim would
+        have ruled out a reconfigure flow that is in fact available). The
+        explicit argument is kept anyway - it costs one line and depends on
+        nothing.
         """
         return RadoffOptionsFlow(config_entry)
 
@@ -254,10 +256,12 @@ class ConfigPatternFlow(ConfigFlow, domain=DOMAIN):
         happens through the `update_listener` `__init__.py` registers on
         every config entry (`config_entry.add_update_listener(...)`), which
         fires on any `async_update_entry` call that actually changes the
-        entry's data - this avoids depending on `async_update_reload_and_abort`,
-        a newer ConfigFlow convenience not guaranteed present on the oldest
-        Home Assistant version this integration declares support for
-        (`hacs.json`: 2024.6.0).
+        entry's data - this avoids depending on `async_update_reload_and_abort`.
+        S-08 justified that by a declared minimum of 2024.6.0; `hacs.json`
+        actually declares **2025.1.4**, which does have that helper (noted
+        while working on RT-2926). The listener-driven reload is kept - it
+        is what the options flow relies on too - but it is a choice, not a
+        compatibility constraint.
 
         Card S-09 adds the same `UnsupportedChallengeError` handling used by
         `async_step_user`: a password change that leaves the account on a
