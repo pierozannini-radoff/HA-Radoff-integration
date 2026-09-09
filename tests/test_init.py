@@ -168,6 +168,9 @@ async def test_upgrade_of_a_real_v1_entry_raises_a_repair_not_a_keyerror(
     assert issue.is_fixable
     assert issue.severity is ir.IssueSeverity.ERROR
     assert issue.data == {"entry_id": entry.entry_id}
+    # Every Radoff entry is titled "Radoff": with two accounts configured,
+    # the username is the only thing that tells the two repair cards apart.
+    assert issue.translation_placeholders == {"username": "user@example.com"}
 
 
 async def test_setup_with_domain_id_clears_a_stale_repair(

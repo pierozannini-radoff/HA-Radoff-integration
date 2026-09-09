@@ -152,12 +152,12 @@
   },
   "issues": {
     "missing_domain_id": {
-      "title": "Radoff does not know which domain to use",
+      "title": "Radoff does not know which domain to use for {username}",
       "fix_flow": {
         "step": {
           "confirm": {
             "title": "Finish setting up Radoff",
-            "description": "The {title} configuration was created before this integration supported accounts with access to more than one domain, so no domain was ever saved for it and it cannot load. Submit to sign in with the credentials already stored for this configuration and look up the domains your account can reach; if there is more than one, you will be asked which to use. Nothing is changed until then."
+            "description": "The Radoff configuration for {username} was created before this integration supported accounts with access to more than one domain, so no domain was ever saved for it and it cannot load. Submit to sign in with the credentials already stored for this configuration and look up the domains your account can reach; if there is more than one, you will be asked which to use. Nothing is changed until then."
           },
           "domain": {
             "title": "[%key:component::radoff::config::step::domain::title%]",

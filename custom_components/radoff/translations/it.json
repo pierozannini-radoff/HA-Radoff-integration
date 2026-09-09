@@ -152,12 +152,12 @@
   },
   "issues": {
     "missing_domain_id": {
-      "title": "Radoff non sa quale dominio usare",
+      "title": "Radoff non sa quale dominio usare per {username}",
       "fix_flow": {
         "step": {
           "confirm": {
             "title": "Completa la configurazione di Radoff",
-            "description": "La configurazione {title} è stata creata prima che questa integrazione supportasse gli account con accesso a più di un dominio: nessun dominio è mai stato salvato e per questo non riesce a caricarsi. Conferma per accedere con le credenziali già memorizzate in questa configurazione e recuperare i domini raggiungibili dal tuo account; se è più di uno ti verrà chiesto quale usare. Fino ad allora non viene modificato nulla."
+            "description": "La configurazione Radoff di {username} è stata creata prima che questa integrazione supportasse gli account con accesso a più di un dominio: nessun dominio è mai stato salvato e per questo non riesce a caricarsi. Conferma per accedere con le credenziali già memorizzate in questa configurazione e recuperare i domini raggiungibili dal tuo account; se è più di uno ti verrà chiesto quale usare. Fino ad allora non viene modificato nulla."
           },
           "domain": {
             "title": "Seleziona dominio",

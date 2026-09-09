@@ -6,7 +6,7 @@ import logging
 from typing import TYPE_CHECKING
 
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import CONF_CLIENT_ID, Platform
+from homeassistant.const import CONF_CLIENT_ID, CONF_USERNAME, Platform
 from homeassistant.core import callback
 from homeassistant.exceptions import ConfigEntryError
 from homeassistant.helpers import issue_registry as ir
@@ -182,6 +182,14 @@ def _async_create_missing_domain_issue(
     value in keeping a stale copy across restarts. `data` carries the entry
     id, which is all `repairs.py::async_create_fix_flow` needs to find the
     entry it has to repair.
+
+    The placeholder is the account's username, not `config_entry.title`:
+    every Radoff entry is titled "Radoff" (see `config_flow.py`), so two
+    configured accounts would otherwise produce two repair cards with the
+    same words on them and nothing to tell which is which - seen while
+    checking the rendered strings against the two-entry verification
+    instance. The re-auth step already identifies an entry the same way
+    (`reauth_confirm`'s `{username}`).
     """
     ir.async_create_issue(
         hass,
@@ -192,7 +200,9 @@ def _async_create_missing_domain_issue(
         is_persistent=False,
         severity=ir.IssueSeverity.ERROR,
         translation_key=ISSUE_MISSING_DOMAIN_ID,
-        translation_placeholders={"title": config_entry.title},
+        translation_placeholders={
+            "username": config_entry.data.get(CONF_USERNAME, config_entry.title)
+        },
     )
 
 

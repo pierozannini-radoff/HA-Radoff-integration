@@ -30,6 +30,7 @@ from typing import TYPE_CHECKING, Any
 
 import voluptuous as vol
 from homeassistant.components.repairs import RepairsFlow
+from homeassistant.const import CONF_USERNAME
 
 from .config_flow import (
     CannotConnectError,
@@ -114,7 +115,11 @@ class MissingDomainIdRepairFlow(RepairsFlow):
             return self.async_show_form(
                 step_id="confirm",
                 data_schema=vol.Schema({}),
-                description_placeholders={"title": self._config_entry.title},
+                description_placeholders={
+                    "username": self._config_entry.data.get(
+                        CONF_USERNAME, self._config_entry.title
+                    )
+                },
             )
 
         return await self._async_discover()
