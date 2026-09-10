@@ -28,6 +28,10 @@ import pytest
 from pycognito.aws_srp import AWSSRP
 
 FIXTURES_DIR = Path(__file__).parent / "fixtures"
+# Fixture REALI, catturate su dev da `scripts/probe_arch2.py` (card M-01) e
+# redatte prima di toccare il disco - distinte da quelle sintetiche che
+# stanno un livello sopra. Vedi `fixtures/dev/README.md`.
+DEV_FIXTURES_DIR = FIXTURES_DIR / "dev"
 BASE_DOMAIN = "https://api.iot.radoff.life/api/v1/core"
 
 
@@ -39,6 +43,21 @@ def _auto_enable_custom_integrations(enable_custom_integrations: None) -> None:
 def load_fixture(name: str) -> dict[str, Any]:
     """Return the parsed JSON body of `tests/fixtures/<name>`."""
     return json.loads((FIXTURES_DIR / name).read_text(encoding="utf-8"))
+
+
+def load_dev_fixture(name: str) -> Any:
+    """
+    Return the parsed body of a real fixture captured on dev (card M-01).
+
+    `name` is the file's stem as recorded in `_manifest.json`, with or
+    without the `.json` suffix - e.g. `load_dev_fixture("devices__full")`.
+    Unlike `load_fixture` above these payloads were captured from the real
+    arch 2.0 API rather than written by hand, which is the whole point:
+    from M-02 onwards the client is written against what the API actually
+    returns, not against a payload we imagined.
+    """
+    filename = name if name.endswith(".json") else f"{name}.json"
+    return json.loads((DEV_FIXTURES_DIR / filename).read_text(encoding="utf-8"))
 
 
 def load_device_fixture(name: str) -> dict[str, Any]:

@@ -24,6 +24,12 @@ ignore = [
 
 "probe_reading_timestamp.py" = ["ALL"]
 
+# Ricognizione one-shot dell'API arch 2.0 su dev (card M-01): stessa
+# convenzione dei due probe qui sopra - vive in scripts/, non e' importata
+# da custom_components/, si esegue a mano con credenziali proprie e stampare
+# su stdout e' meta' del suo scopo.
+"probe_arch2.py" = ["ALL"]
+
 # Manual log-diagnostic script (S-08 follow-up): inspects a Home Assistant
 # log by hand to check the auth-error/re-auth and natural-token-expiry
 # timing described in api/auth.py's docstring. Not shipped code, same

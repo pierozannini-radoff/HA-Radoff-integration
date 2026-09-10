@@ -1,0 +1,610 @@
+{
+  "generated_at": "2026-09-10T09:21:51.599086+00:00",
+  "host": "https://v2.api.dev.iot.radoff.life",
+  "user_agent": "HomeAssistant-Radoff/0.1.0 (+https://github.com/radoff/ha-radoff-integration)",
+  "note": "Fixture reali raccolte da scripts/probe_arch2.py (card M-01). Ogni body e' redatto: vedi README.md in questa cartella.",
+  "pools": [
+    {
+      "label": "pool_current",
+      "pool_id": "eu-west-1_zD4CSIZ6i",
+      "client_id": "61ckd0c4qoq0ov7mmphrj7kstj",
+      "region": "eu-west-1",
+      "login_ok": false,
+      "login_error": "InvalidParameterException: An error occurred (InvalidParameterException) when calling the InitiateAuth operation: USER_PASSWORD_AUTH flow not enabled for this client",
+      "cognito_error_code": "InvalidParameterException",
+      "flusso_usato": null,
+      "token_expires_in_seconds": null,
+      "v2_domains_status": null,
+      "auth_header_format_accettato": null
+    },
+    {
+      "label": "pool_dev",
+      "pool_id": "eu-west-1_5SsvW9t6S",
+      "client_id": "2i63gbc9sim3b8paasaga7jb6g",
+      "region": "eu-west-1",
+      "login_ok": true,
+      "login_error": null,
+      "cognito_error_code": null,
+      "flusso_usato": "password",
+      "token_expires_in_seconds": 3600,
+      "v2_domains_status": 200,
+      "auth_header_format_accettato": "bearer"
+    }
+  ],
+  "auth_flows": [
+    {
+      "pool": "pool_current",
+      "client_id": "61ckd0c4qoq0ov7mmphrj7kstj",
+      "flussi": {
+        "USER_SRP_AUTH": "abilitato (risposta: NotAuthorizedException)",
+        "USER_PASSWORD_AUTH": "NON abilitato",
+        "REFRESH_TOKEN_AUTH": "abilitato (risposta: UnsupportedOperationException)"
+      }
+    },
+    {
+      "pool": "pool_dev",
+      "client_id": "2i63gbc9sim3b8paasaga7jb6g",
+      "flussi": {
+        "USER_SRP_AUTH": "NON abilitato",
+        "USER_PASSWORD_AUTH": "abilitato (risposta: NotAuthorizedException)",
+        "REFRESH_TOKEN_AUTH": "abilitato (risposta: NotAuthorizedException)"
+      }
+    }
+  ],
+  "accepted_pool": "pool_dev",
+  "domain_prefix_redacted": false,
+  "device_count": 2,
+  "calls": [
+    {
+      "name": "auth_domains__pool_dev",
+      "step": "D-24",
+      "method": "GET",
+      "url": "https://v2.api.dev.iot.radoff.life/data/user/me/domains",
+      "params": {},
+      "auth_style": "bearer",
+      "status": 200,
+      "elapsed_ms": 226,
+      "response_headers": {
+        "date": "Thu, 10 Sep 2026 09:21:34 GMT",
+        "content-type": "application/json",
+        "content-length": "398",
+        "connection": "keep-alive",
+        "x-amzn-requestid": "a4cf89d5-a24d-4cd5-9e33-31a0ffe4c583",
+        "access-control-allow-origin": "*",
+        "x-amz-apigw-id": "Ded4xEP2joEEdBw=",
+        "x-amzn-trace-id": "Root=1-6aa2769e-0fcf52053a5d520048d3c094;Parent=7f7df18d886e8c71;Sampled=0;Lineage=1:43968834:0"
+      },
+      "body_file": "auth_domains__pool_dev.json",
+      "error": null
+    },
+    {
+      "name": "domain_scan__875fe89b",
+      "step": "D-20",
+      "method": "GET",
+      "url": "https://v2.api.dev.iot.radoff.life/data/devices",
+      "params": {
+        "domain_prefix": "875fe89b",
+        "page_size": 5
+      },
+      "auth_style": "bearer",
+      "status": 200,
+      "elapsed_ms": 1341,
+      "response_headers": {
+        "date": "Thu, 10 Sep 2026 09:21:35 GMT",
+        "content-type": "application/json",
+        "content-length": "1740",
+        "connection": "keep-alive",
+        "x-amzn-requestid": "64631bc4-6047-49b0-b3d3-baaf14d68fca",
+        "access-control-allow-origin": "*",
+        "x-amz-apigw-id": "Ded41Hq7joEEjjw=",
+        "x-amzn-trace-id": "Root=1-6aa2769e-4d1e5c9b5774874013af4114;Parent=46d66a6d2362df09;Sampled=0;Lineage=1:43968834:0"
+      },
+      "body_file": null,
+      "error": null
+    },
+    {
+      "name": "measures_ranges__sense",
+      "step": "schema",
+      "method": "GET",
+      "url": "https://v2.api.dev.iot.radoff.life/analytics/measures-ranges",
+      "params": {
+        "device_type": "sense"
+      },
+      "auth_style": "bearer",
+      "status": 200,
+      "elapsed_ms": 120,
+      "response_headers": {
+        "date": "Thu, 10 Sep 2026 09:21:36 GMT",
+        "content-type": "application/json; charset=utf-8",
+        "content-length": "2678",
+        "connection": "keep-alive",
+        "x-amzn-requestid": "c706d126-d97a-49fc-91b1-35c9fa998069",
+        "access-control-allow-origin": "*",
+        "access-control-allow-headers": "Content-Type,Authorization,X-Amz-Date,X-Api-Key,X-Amz-Security-Token",
+        "x-amz-apigw-id": "Ded5FEpUjoEEMpA=",
+        "access-control-allow-methods": "GET,POST,OPTIONS",
+        "x-amzn-trace-id": "Root=1-6aa276a0-0244dc0b2696f8196bc7754c;Parent=576dc2324d01094e;Sampled=0;Lineage=1:be71999a:0"
+      },
+      "body_file": "measures_ranges__sense.json",
+      "error": null
+    },
+    {
+      "name": "measures_ranges__now",
+      "step": "schema",
+      "method": "GET",
+      "url": "https://v2.api.dev.iot.radoff.life/analytics/measures-ranges",
+      "params": {
+        "device_type": "now"
+      },
+      "auth_style": "bearer",
+      "status": 200,
+      "elapsed_ms": 62,
+      "response_headers": {
+        "date": "Thu, 10 Sep 2026 09:21:36 GMT",
+        "content-type": "application/json; charset=utf-8",
+        "content-length": "1475",
+        "connection": "keep-alive",
+        "x-amzn-requestid": "2aaa1ebb-7abf-4d37-9c28-4c54e35588f4",
+        "access-control-allow-origin": "*",
+        "access-control-allow-headers": "Content-Type,Authorization,X-Amz-Date,X-Api-Key,X-Amz-Security-Token",
+        "x-amz-apigw-id": "Ded5JFoBDoEEG1A=",
+        "access-control-allow-methods": "GET,POST,OPTIONS",
+        "x-amzn-trace-id": "Root=1-6aa276a0-6ee8366a16291d7f397aa9c9;Parent=3986d79a92dcf386;Sampled=0;Lineage=1:be71999a:0"
+      },
+      "body_file": "measures_ranges__now.json",
+      "error": null
+    },
+    {
+      "name": "measures_ranges__nowplus",
+      "step": "schema",
+      "method": "GET",
+      "url": "https://v2.api.dev.iot.radoff.life/analytics/measures-ranges",
+      "params": {
+        "device_type": "nowplus"
+      },
+      "auth_style": "bearer",
+      "status": 200,
+      "elapsed_ms": 87,
+      "response_headers": {
+        "date": "Thu, 10 Sep 2026 09:21:36 GMT",
+        "content-type": "application/json; charset=utf-8",
+        "content-length": "2381",
+        "connection": "keep-alive",
+        "x-amzn-requestid": "e3dbc2de-901d-4ed5-b9e0-c1382ec47b03",
+        "access-control-allow-origin": "*",
+        "access-control-allow-headers": "Content-Type,Authorization,X-Amz-Date,X-Api-Key,X-Amz-Security-Token",
+        "x-amz-apigw-id": "Ded5MH5fjoEEWEg=",
+        "access-control-allow-methods": "GET,POST,OPTIONS",
+        "x-amzn-trace-id": "Root=1-6aa276a0-71bcd1b2243ce0eb65b4f73d;Parent=632f42c5e95fba07;Sampled=0;Lineage=1:be71999a:0"
+      },
+      "body_file": "measures_ranges__nowplus.json",
+      "error": null
+    },
+    {
+      "name": "measures_ranges__city",
+      "step": "schema",
+      "method": "GET",
+      "url": "https://v2.api.dev.iot.radoff.life/analytics/measures-ranges",
+      "params": {
+        "device_type": "city"
+      },
+      "auth_style": "bearer",
+      "status": 200,
+      "elapsed_ms": 69,
+      "response_headers": {
+        "date": "Thu, 10 Sep 2026 09:21:37 GMT",
+        "content-type": "application/json; charset=utf-8",
+        "content-length": "2678",
+        "connection": "keep-alive",
+        "x-amzn-requestid": "9d2e9475-8dc1-45eb-a48d-7842fbb6b5ac",
+        "access-control-allow-origin": "*",
+        "access-control-allow-headers": "Content-Type,Authorization,X-Amz-Date,X-Api-Key,X-Amz-Security-Token",
+        "x-amz-apigw-id": "Ded5PGicjoEEG9w=",
+        "access-control-allow-methods": "GET,POST,OPTIONS",
+        "x-amzn-trace-id": "Root=1-6aa276a1-202490b365d26bcf6698f37b;Parent=34cf9584f84634e7;Sampled=0;Lineage=1:be71999a:0"
+      },
+      "body_file": "measures_ranges__city.json",
+      "error": null
+    },
+    {
+      "name": "measures_ranges__life",
+      "step": "schema",
+      "method": "GET",
+      "url": "https://v2.api.dev.iot.radoff.life/analytics/measures-ranges",
+      "params": {
+        "device_type": "life"
+      },
+      "auth_style": "bearer",
+      "status": 404,
+      "elapsed_ms": 63,
+      "response_headers": {
+        "date": "Thu, 10 Sep 2026 09:21:37 GMT",
+        "content-type": "application/json; charset=utf-8",
+        "content-length": "148",
+        "connection": "keep-alive",
+        "x-amzn-requestid": "e1aec860-5c9f-4d40-b8e1-113a5e00003d",
+        "access-control-allow-origin": "*",
+        "access-control-allow-headers": "Content-Type,Authorization,X-Amz-Date,X-Api-Key,X-Amz-Security-Token",
+        "x-amz-apigw-id": "Ded5SEp4DoEEbNw=",
+        "access-control-allow-methods": "GET,POST,OPTIONS",
+        "x-amzn-trace-id": "Root=1-6aa276a1-5587b7a569162619049023c6;Parent=2ba581b0d188cf92;Sampled=0;Lineage=1:be71999a:0"
+      },
+      "body_file": "measures_ranges__life.json",
+      "error": null
+    },
+    {
+      "name": "measures_ranges__sismoff",
+      "step": "schema",
+      "method": "GET",
+      "url": "https://v2.api.dev.iot.radoff.life/analytics/measures-ranges",
+      "params": {
+        "device_type": "sismoff"
+      },
+      "auth_style": "bearer",
+      "status": 200,
+      "elapsed_ms": 87,
+      "response_headers": {
+        "date": "Thu, 10 Sep 2026 09:21:37 GMT",
+        "content-type": "application/json; charset=utf-8",
+        "content-length": "2355",
+        "connection": "keep-alive",
+        "x-amzn-requestid": "5fb30ecd-ae4d-47aa-a44c-363862568c34",
+        "access-control-allow-origin": "*",
+        "access-control-allow-headers": "Content-Type,Authorization,X-Amz-Date,X-Api-Key,X-Amz-Security-Token",
+        "x-amz-apigw-id": "Ded5VGSvDoEEQJg=",
+        "access-control-allow-methods": "GET,POST,OPTIONS",
+        "x-amzn-trace-id": "Root=1-6aa276a1-17567e902854c3f140f881cd;Parent=652ee713ee00d7ae;Sampled=0;Lineage=1:be71999a:0"
+      },
+      "body_file": "measures_ranges__sismoff.json",
+      "error": null
+    },
+    {
+      "name": "measures_ranges__all",
+      "step": "schema",
+      "method": "GET",
+      "url": "https://v2.api.dev.iot.radoff.life/analytics/measures-ranges",
+      "params": {},
+      "auth_style": "bearer",
+      "status": 200,
+      "elapsed_ms": 67,
+      "response_headers": {
+        "date": "Thu, 10 Sep 2026 09:21:38 GMT",
+        "content-type": "application/json; charset=utf-8",
+        "content-length": "3261",
+        "connection": "keep-alive",
+        "x-amzn-requestid": "106522a9-77ee-4095-9296-66c5fde779a9",
+        "access-control-allow-origin": "*",
+        "access-control-allow-headers": "Content-Type,Authorization,X-Amz-Date,X-Api-Key,X-Amz-Security-Token",
+        "x-amz-apigw-id": "Ded5ZE20joEEq-g=",
+        "access-control-allow-methods": "GET,POST,OPTIONS",
+        "x-amzn-trace-id": "Root=1-6aa276a2-043002ac63e25b286292d7c4;Parent=7ac39995f377473b;Sampled=0;Lineage=1:be71999a:0"
+      },
+      "body_file": "measures_ranges__all.json",
+      "error": null
+    },
+    {
+      "name": "error__measures_ranges_unknown_type",
+      "step": "D-29",
+      "method": "GET",
+      "url": "https://v2.api.dev.iot.radoff.life/analytics/measures-ranges",
+      "params": {
+        "device_type": "not-a-real-device-type"
+      },
+      "auth_style": "bearer",
+      "status": 404,
+      "elapsed_ms": 67,
+      "response_headers": {
+        "date": "Thu, 10 Sep 2026 09:21:38 GMT",
+        "content-type": "application/json; charset=utf-8",
+        "content-length": "166",
+        "connection": "keep-alive",
+        "x-amzn-requestid": "79aa2d45-480b-4824-90c7-524d5cb8aa7e",
+        "access-control-allow-origin": "*",
+        "access-control-allow-headers": "Content-Type,Authorization,X-Amz-Date,X-Api-Key,X-Amz-Security-Token",
+        "x-amz-apigw-id": "Ded5cE3DjoEEA2A=",
+        "access-control-allow-methods": "GET,POST,OPTIONS",
+        "x-amzn-trace-id": "Root=1-6aa276a2-4db537140279b90d11fcbd3f;Parent=07c39d1e627acbdd;Sampled=0;Lineage=1:be71999a:0"
+      },
+      "body_file": "error__measures_ranges_unknown_type.json",
+      "error": null
+    },
+    {
+      "name": "devices__page1_small",
+      "step": "D-19",
+      "method": "GET",
+      "url": "https://v2.api.dev.iot.radoff.life/data/devices",
+      "params": {
+        "domain_prefix": "875fe89b",
+        "page": 1,
+        "page_size": 2
+      },
+      "auth_style": "bearer",
+      "status": 200,
+      "elapsed_ms": 1343,
+      "response_headers": {
+        "date": "Thu, 10 Sep 2026 09:21:39 GMT",
+        "content-type": "application/json",
+        "content-length": "1740",
+        "connection": "keep-alive",
+        "x-amzn-requestid": "aa7960ab-61d1-4794-838b-00830959c0b7",
+        "access-control-allow-origin": "*",
+        "x-amz-apigw-id": "Ded5fHCJDoEEXxQ=",
+        "x-amzn-trace-id": "Root=1-6aa276a2-09b9216f7b72510542087e17;Parent=3a168d581297c4a9;Sampled=0;Lineage=1:43968834:0"
+      },
+      "body_file": "devices__page1_small.json",
+      "error": null
+    },
+    {
+      "name": "devices__page2_small",
+      "step": "D-19",
+      "method": "GET",
+      "url": "https://v2.api.dev.iot.radoff.life/data/devices",
+      "params": {
+        "domain_prefix": "875fe89b",
+        "page": 2,
+        "page_size": 2
+      },
+      "auth_style": "bearer",
+      "status": 200,
+      "elapsed_ms": 178,
+      "response_headers": {
+        "date": "Thu, 10 Sep 2026 09:21:40 GMT",
+        "content-type": "application/json",
+        "content-length": "88",
+        "connection": "keep-alive",
+        "x-amzn-requestid": "ceb4915f-f56c-42fd-8d84-ec3d6b28ddef",
+        "access-control-allow-origin": "*",
+        "x-amz-apigw-id": "Ded5vGWcDoEEHEA=",
+        "x-amzn-trace-id": "Root=1-6aa276a4-7e42e2350acb8d30363a310f;Parent=0ca6ff97dfda09cb;Sampled=0;Lineage=1:43968834:0"
+      },
+      "body_file": "devices__page2_small.json",
+      "error": null
+    },
+    {
+      "name": "devices__page1_small_repeat",
+      "step": "D-19",
+      "method": "GET",
+      "url": "https://v2.api.dev.iot.radoff.life/data/devices",
+      "params": {
+        "domain_prefix": "875fe89b",
+        "page": 1,
+        "page_size": 2
+      },
+      "auth_style": "bearer",
+      "status": 200,
+      "elapsed_ms": 1095,
+      "response_headers": {
+        "date": "Thu, 10 Sep 2026 09:21:41 GMT",
+        "content-type": "application/json",
+        "content-length": "1740",
+        "connection": "keep-alive",
+        "x-amzn-requestid": "786ef752-d730-4f78-8335-1a6d34d3e1f0",
+        "access-control-allow-origin": "*",
+        "x-amz-apigw-id": "Ded5zHl-joEEs4g=",
+        "x-amzn-trace-id": "Root=1-6aa276a4-14dbcdc667f2d3a537777220;Parent=4afc229f0e12c459;Sampled=0;Lineage=1:43968834:0"
+      },
+      "body_file": "devices__page1_small_repeat.json",
+      "error": null
+    },
+    {
+      "name": "devices__full",
+      "step": "polling",
+      "method": "GET",
+      "url": "https://v2.api.dev.iot.radoff.life/data/devices",
+      "params": {
+        "domain_prefix": "875fe89b",
+        "page": 1,
+        "page_size": 200
+      },
+      "auth_style": "bearer",
+      "status": 200,
+      "elapsed_ms": 1023,
+      "response_headers": {
+        "date": "Thu, 10 Sep 2026 09:21:42 GMT",
+        "content-type": "application/json",
+        "content-length": "1742",
+        "connection": "keep-alive",
+        "x-amzn-requestid": "27e94d51-5366-45c9-9d07-7e9cbe5a4d7e",
+        "access-control-allow-origin": "*",
+        "x-amz-apigw-id": "Ded6AE7KjoEEZpw=",
+        "x-amzn-trace-id": "Root=1-6aa276a5-24347176302e53855b36dd99;Parent=7f16f5029c917409;Sampled=0;Lineage=1:43968834:0"
+      },
+      "body_file": "devices__full.json",
+      "error": null
+    },
+    {
+      "name": "devices__probe_sort",
+      "step": "D-19",
+      "method": "GET",
+      "url": "https://v2.api.dev.iot.radoff.life/data/devices",
+      "params": {
+        "domain_prefix": "875fe89b",
+        "page_size": 2,
+        "sort": "serial_number"
+      },
+      "auth_style": "bearer",
+      "status": 200,
+      "elapsed_ms": 1068,
+      "response_headers": {
+        "date": "Thu, 10 Sep 2026 09:21:44 GMT",
+        "content-type": "application/json",
+        "content-length": "1740",
+        "connection": "keep-alive",
+        "x-amzn-requestid": "1c10ca22-428c-4525-a702-5977aa27931c",
+        "access-control-allow-origin": "*",
+        "x-amz-apigw-id": "Ded6NGzNDoEETEA=",
+        "x-amzn-trace-id": "Root=1-6aa276a7-2090c52e13490860368adb81;Parent=4c89bb13b9ca4334;Sampled=0;Lineage=1:43968834:0"
+      },
+      "body_file": "devices__probe_sort.json",
+      "error": null
+    },
+    {
+      "name": "devices__probe_order_by",
+      "step": "D-19",
+      "method": "GET",
+      "url": "https://v2.api.dev.iot.radoff.life/data/devices",
+      "params": {
+        "domain_prefix": "875fe89b",
+        "page_size": 2,
+        "order_by": "serial_number"
+      },
+      "auth_style": "bearer",
+      "status": 200,
+      "elapsed_ms": 1410,
+      "response_headers": {
+        "date": "Thu, 10 Sep 2026 09:21:45 GMT",
+        "content-type": "application/json",
+        "content-length": "1740",
+        "connection": "keep-alive",
+        "x-amzn-requestid": "7b467c3a-5a9a-4369-9b92-0cce01c2f344",
+        "access-control-allow-origin": "*",
+        "x-amz-apigw-id": "Ded6aHArjoEEumg=",
+        "x-amzn-trace-id": "Root=1-6aa276a8-5759f22549e8931700bf7a43;Parent=027a8c31dc332a84;Sampled=0;Lineage=1:43968834:0"
+      },
+      "body_file": "devices__probe_order_by.json",
+      "error": null
+    },
+    {
+      "name": "devices__probe_order",
+      "step": "D-19",
+      "method": "GET",
+      "url": "https://v2.api.dev.iot.radoff.life/data/devices",
+      "params": {
+        "domain_prefix": "875fe89b",
+        "page_size": 2,
+        "order": "serial_number"
+      },
+      "auth_style": "bearer",
+      "status": 200,
+      "elapsed_ms": 1202,
+      "response_headers": {
+        "date": "Thu, 10 Sep 2026 09:21:47 GMT",
+        "content-type": "application/json",
+        "content-length": "1740",
+        "connection": "keep-alive",
+        "x-amzn-requestid": "fa8925e6-2a2a-47c2-9bab-4e3f23985638",
+        "access-control-allow-origin": "*",
+        "x-amz-apigw-id": "Ded6rHA2DoEEjzw=",
+        "x-amzn-trace-id": "Root=1-6aa276aa-288c374907d12f644834ae54;Parent=3844584abd04bfa2;Sampled=0;Lineage=1:43968834:0"
+      },
+      "body_file": "devices__probe_order.json",
+      "error": null
+    },
+    {
+      "name": "device_detail",
+      "step": "polling",
+      "method": "GET",
+      "url": "https://v2.api.dev.iot.radoff.life/data/devices/3D90E0",
+      "params": {},
+      "auth_style": "bearer",
+      "status": 200,
+      "elapsed_ms": 999,
+      "response_headers": {
+        "date": "Thu, 10 Sep 2026 09:21:48 GMT",
+        "content-type": "application/json",
+        "content-length": "948",
+        "connection": "keep-alive",
+        "x-amzn-requestid": "f4490e11-1036-4c77-a5a8-1a9c9a77b43f",
+        "access-control-allow-origin": "*",
+        "x-amz-apigw-id": "Ded65EjMDoEEbsA=",
+        "x-amzn-trace-id": "Root=1-6aa276ab-4e417fb402e6fb3b37a5a9fd;Parent=5662208130295894;Sampled=0;Lineage=1:43968834:0"
+      },
+      "body_file": "device_detail.json",
+      "error": null
+    },
+    {
+      "name": "error__device_detail_unknown_serial",
+      "step": "D-29",
+      "method": "GET",
+      "url": "https://v2.api.dev.iot.radoff.life/data/devices/RADOFF-NOT-A-REAL-SERIAL-0000",
+      "params": {},
+      "auth_style": "bearer",
+      "status": 404,
+      "elapsed_ms": 74,
+      "response_headers": {
+        "date": "Thu, 10 Sep 2026 09:21:48 GMT",
+        "content-type": "application/json",
+        "content-length": "61",
+        "connection": "keep-alive",
+        "x-amzn-requestid": "ae639f82-bf28-4128-82a0-7343459e17b5",
+        "access-control-allow-origin": "*",
+        "x-amz-apigw-id": "Ded7FGj1joEEDMA=",
+        "x-amzn-trace-id": "Root=1-6aa276ac-4826aa912841a5c20ff28f4d;Parent=6e77b3372ec5d2c5;Sampled=0;Lineage=1:43968834:0"
+      },
+      "body_file": "error__device_detail_unknown_serial.json",
+      "error": null
+    },
+    {
+      "name": "error__devices_foreign_domain",
+      "step": "D-29",
+      "method": "GET",
+      "url": "https://v2.api.dev.iot.radoff.life/data/devices",
+      "params": {
+        "domain_prefix": "radoff-hq",
+        "page_size": 2
+      },
+      "auth_style": "bearer",
+      "status": 403,
+      "elapsed_ms": 97,
+      "response_headers": {
+        "date": "Thu, 10 Sep 2026 09:21:49 GMT",
+        "content-type": "application/json",
+        "content-length": "63",
+        "connection": "keep-alive",
+        "x-amzn-requestid": "608cfff4-6e34-481c-a5ef-a7f2bb40e9b1",
+        "access-control-allow-origin": "*",
+        "x-amz-apigw-id": "Ded7IHRcjoEEHHw=",
+        "x-amzn-trace-id": "Root=1-6aa276ad-7f199f9c56d08679415dde51;Parent=12f5274f2e50dd48;Sampled=0;Lineage=1:43968834:0"
+      },
+      "body_file": "error__devices_foreign_domain.json",
+      "error": null
+    },
+    {
+      "name": "error__devices_no_domain_prefix",
+      "step": "D-29",
+      "method": "GET",
+      "url": "https://v2.api.dev.iot.radoff.life/data/devices",
+      "params": {
+        "page_size": 2
+      },
+      "auth_style": "bearer",
+      "status": 200,
+      "elapsed_ms": 1193,
+      "response_headers": {
+        "date": "Thu, 10 Sep 2026 09:21:50 GMT",
+        "content-type": "application/json",
+        "content-length": "1794",
+        "connection": "keep-alive",
+        "x-amzn-requestid": "1faa13e6-272f-4401-9ad7-d2650a9eaab7",
+        "access-control-allow-origin": "*",
+        "x-amz-apigw-id": "Ded7MH-FDoEEk1Q=",
+        "x-amzn-trace-id": "Root=1-6aa276ad-5b3f2c4755b6d68e4f1815c6;Parent=7762e77ab2f9edac;Sampled=0;Lineage=1:43968834:0"
+      },
+      "body_file": "error__devices_no_domain_prefix.json",
+      "error": null
+    },
+    {
+      "name": "error__unauthenticated",
+      "step": "D-29",
+      "method": "GET",
+      "url": "https://v2.api.dev.iot.radoff.life/data/devices",
+      "params": {
+        "page_size": 2
+      },
+      "auth_style": "none",
+      "status": 401,
+      "elapsed_ms": 44,
+      "response_headers": {
+        "date": "Thu, 10 Sep 2026 09:21:50 GMT",
+        "content-type": "application/json",
+        "content-length": "26",
+        "connection": "keep-alive",
+        "x-amzn-requestid": "01d93923-59f7-4c49-85be-ceac78c047f3",
+        "x-amzn-errortype": "UnauthorizedException",
+        "x-amz-apigw-id": "Ded7aGlBDoEEvRw="
+      },
+      "body_file": "error__unauthenticated.json",
+      "error": null
+    }
+  ]
+}
