@@ -30,6 +30,13 @@ fields the payload gained. `connection_status` in particular is here
 *before* anything consumes it (M-06 does): a support dump that shows a
 device `connected` with no telemetry, or `disconnected` with fresh
 telemetry, is what tells those two situations apart.
+
+Card M-06 adds `status` beside it, and now both are worth having for a
+second reason: entity availability is decided from `connection_status`
+alone, so a dump is where you check whether a device reported unavailable
+really said `disconnected` - or said something this version has never seen
+and was kept available on purpose (`ConnectionState.INDETERMINATE`,
+`api/models.py`).
 """
 
 from __future__ import annotations
@@ -106,6 +113,7 @@ def _dump_device(device: RadoffDevice) -> dict[str, Any]:
         "stale": device.stale,
         "connection_status": device.connection_status,
         "connection_status_updated_at": _iso(device.connection_status_updated_at),
+        "status": device.status,
         "firmware_version": device.firmware_version,
         "telemetry_timestamp": _iso(device.telemetry_timestamp),
         "readings": _dump_readings(device.readings),

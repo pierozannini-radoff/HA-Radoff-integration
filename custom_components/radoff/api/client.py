@@ -32,7 +32,13 @@ from .exceptions import (
     APIUnknownDeviceTypeError,
     DomainNotFoundError,
 )
-from .models import RadoffDevice, Reading
+from .models import (
+    KNOWN_CONNECTION_STATUSES,
+    ConnectionState,
+    RadoffDevice,
+    Reading,
+    classify_connection_status,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -337,6 +343,14 @@ class API:
         # `_check_response_status`), so an isolated rate limit costs the
         # ~5s floor and never a delay inherited from an older incident.
         self._consecutive_rate_limits = 0
+
+        # `connection_status` values this client has already warned about
+        # (card M-06). The enumeration is still open (T-08 D-17), so an
+        # unrecognised value is expected to show up one day and must be
+        # visible in the log - but once, not on every device of every poll:
+        # a domain where a hundred devices share a new state would
+        # otherwise write a hundred WARNINGs every five minutes.
+        self._unknown_connection_statuses: set[str] = set()
 
         self._session = CognitoSession(
             username=username,
@@ -741,6 +755,8 @@ class API:
             )
             return None
 
+        self._check_connection_status(raw_device, serial_number)
+
         telemetry = raw_device.get("telemetry")
         if isinstance(telemetry, dict):
             readings, telemetry_timestamp = _build_readings(telemetry, serial_number)
@@ -763,6 +779,7 @@ class API:
             connection_status_updated_at=_parse_timestamp(
                 raw_device.get("connection_status_updated_at")
             ),
+            status=raw_device.get("status"),
             firmware_version=raw_device.get("firmware_version"),
             room_name=raw_device.get("room_name"),
             room_slug=raw_device.get("room_slug"),
@@ -771,6 +788,59 @@ class API:
             domain_prefix=raw_device.get("domain_prefix"),
             telemetry_timestamp=telemetry_timestamp,
             stale=stale,
+        )
+
+    def _check_connection_status(
+        self, raw_device: dict[str, Any], serial_number: str
+    ) -> None:
+        """
+        Warn once about a `connection_status` value this client does not know.
+
+        Card M-06. Availability is decided from this field now, so a value
+        outside the enumeration we have (`connected`, `disconnected` - all
+        M-01 saw, and T-08 D-17 is still open) is something we want to hear
+        about the first time it appears: it is the signal that the
+        enumeration has grown and that `KNOWN_CONNECTION_STATUSES`
+        (`api/models.py`) needs the new member.
+
+        Warned here, at the one point where the raw string enters the
+        model, rather than in `RadoffEntity.available`: that property is
+        read on every state read of every entity, and a device with ten
+        entities would turn one new value into ten lines per poll. Deduped
+        by value rather than by device for the same reason - what is worth
+        reporting is the unseen string, not each device wearing it.
+
+        The reaction to the value itself is deliberately not here: an
+        unrecognised state leaves the entities available
+        (`ConnectionState.INDETERMINATE`). This method only makes it
+        visible.
+        """
+        raw = raw_device.get("connection_status")
+        if raw is None:
+            # An absent field is not a new state, and it is already visible
+            # in the diagnostics dump; INDETERMINATE covers it silently.
+            _LOGGER.debug(
+                "Device %s carries no connection_status this cycle", serial_number
+            )
+            return
+
+        if classify_connection_status(raw) is not ConnectionState.INDETERMINATE:
+            return
+
+        if raw in self._unknown_connection_statuses:
+            return
+
+        self._unknown_connection_statuses.add(raw)
+        _LOGGER.warning(
+            "Radoff reported connection_status '%s' on device %s, a value this "
+            "version does not know (it knows %s). The device's entities are "
+            "kept available rather than reported offline; if this value is "
+            "here to stay it belongs in KNOWN_CONNECTION_STATUSES "
+            "(api/models.py). The full enumeration is the open request T-08 "
+            "D-17",
+            raw,
+            serial_number,
+            ", ".join(sorted(KNOWN_CONNECTION_STATUSES)),
         )
 
     @staticmethod

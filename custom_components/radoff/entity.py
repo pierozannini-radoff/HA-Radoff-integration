@@ -22,6 +22,19 @@ disappears from one poll is reflected immediately (S-07 AC: "entro un ciclo
 di poll"), and one that reappears needs no reload to come back (S-07 AC),
 because there is no stale cached object left to clear.
 
+Card M-06 qualifies the paragraph above, and the qualification is worth
+reading before trusting it. What is not cached here is still not cached: the
+device object, the reading and `available` are all looked up fresh, so a
+device that leaves the poll takes its entities unavailable within one cycle
+exactly as before. What *is* now remembered, one level down in
+`sensor.py::RadoffSensor`, is the last *value* an entity published - because
+availability no longer implies that a value exists (a connected device can
+answer `telemetry: null` for hours by the API's own 6-hour window, T-02
+D-16), and an available entity has to show something. That cache is a value
+and its timestamp, never a `Device`, which is what makes it unable to
+resurrect the C1 defect S-07 removed: no code path reads identity or
+availability from it.
+
 Card M-03 removes the last layer of indirection between a reading and its
 identifier. S-10 keyed readings by a (bucket, property name) pair and
 needed `reading_key_slug()` to fold that tuple back into one string; arch
@@ -42,8 +55,8 @@ from homeassistant.core import callback
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .api.models import RadoffDevice, Reading
-from .const import DOMAIN
+from .api.models import ConnectionState, RadoffDevice, Reading
+from .const import CONNECTION_STATUS_STALE_WINDOW, DOMAIN
 from .coordinator import RadoffCoordinator
 
 _LOGGER = logging.getLogger(__name__)
@@ -145,76 +158,162 @@ class RadoffEntity(CoordinatorEntity[RadoffCoordinator]):
         """
         return f"{DOMAIN}-{self._serial_number}-{self.field}"
 
-    @staticmethod
-    def _freshness_reference(reading: Reading, device: RadoffDevice) -> datetime | None:
+    @property
+    def measured_at(self) -> datetime | None:
         """
-        Return the best available timestamp to judge this reading's age by.
+        Return the timestamp the API attached to this entity's own reading.
 
-        Prefers `reading.measured_at` and falls back to the device-level
-        `telemetry_timestamp`. In arch 2.0 the two are the *same value* -
-        the whole telemetry block carries one timestamp, which every reading
-        of that device copies (see `api/models.py::Reading`) - so the
-        fallback only matters for a device with no readings at all. It is
-        kept as two steps anyway: the day the API grows a per-field
-        timestamp, this method already prefers it.
+        `None` when this entity has no reading in the current poll, which
+        since card M-06 is a normal state rather than an unavailable one:
+        the device may be connected and simply have nothing to say (T-02
+        D-16 - the list looks at a 6-hour window and does not widen it).
 
-        Note what that identity implies, and what T-08 D-15 reserves on:
-        this check cannot notice one slow field going stale while the rest
-        of the block keeps refreshing. Radon is the case that will bite -
-        see `api/models.py::Reading.measured_at`.
+        Card M-06 changed what this is for, which is why it is no longer
+        called `_freshness_reference`. It used to be the input to an
+        availability decision; it is now published, as the
+        `last_measured_at` attribute, and read by nothing else. The
+        distinction matters because the value is coarse in a known way -
+        one timestamp for the whole telemetry block, the maximum over its
+        fields (T-08 D-15) - and a coarse number is a poor judge and a
+        perfectly good witness.
+
+        The device-level fallback S-07 had here (`telemetry_timestamp` when
+        the reading carried none) is gone with the same change, and its
+        removal is deliberate. That fallback answered "when did this
+        *device* last speak", which is a different question, and after
+        M-04 - entities come from the type's schema, so an entity exists
+        for a measure this poll never carried - answering it here would
+        stamp another field's timestamp on a value this entity does not
+        have. `RadoffSensor` overrides this to report the timestamp that
+        came with the value it is actually showing, including a remembered
+        one (see `sensor.py`).
         """
-        return reading.measured_at or device.telemetry_timestamp
+        reading = self._reading
+        return None if reading is None else reading.measured_at
 
     @property
     def available(self) -> bool:
         """
-        Return whether this entity's reading is available.
+        Return whether this entity's device is reachable (card M-06).
 
-        Three conditions, all required (card S-07, §"COSA FARE"):
+        Three conditions of card S-07 become two, and the one that leaves
+        is the one that was wrong:
 
         1. the coordinator's last update succeeded (`super().available`);
-        2. the device is not marked `stale`;
-        3. the reading exists and, when a freshness reference is known (see
-           `_freshness_reference`), its age is below `coordinator.stale_after`.
+        2. the device is present in the current poll;
+        3. the device's `connection_state` is not `DISCONNECTED`.
 
-        Condition 2 keeps its wording and changes its meaning with card
-        M-03: `stale` no longer means "this device's own fetch failed" (an
-        N+1 notion that died with the per-device call) but "this device
-        reported no telemetry this cycle" - `telemetry: null`. The reaction
-        is the same, and correct for both: no data means nothing to show.
+        What is gone is any judgement about *this entity's reading*. S-07
+        required the reading to exist and to be younger than
+        `update_interval * 3`, and both halves of that were the wrong
+        question asked of the wrong data. The backend told us so twice
+        (T-02 D-16, D-21): `GET /data/devices` looks at a 6-hour window and
+        does not widen it on a miss, so a device silent for longer answers
+        `telemetry: null` *while connected*, and the field to decide
+        availability from is `connection_status`. A missing reading now
+        means "no value to show right now", not "this device is gone" - and
+        since card M-04 that distinction is visible on every entity of a
+        silent device instead of on none, because the entities come from
+        the type's schema rather than from the payload.
 
-        What condition 2 is deliberately NOT is a connection check. A device
-        can be `connection_status: disconnected` and still have the API
-        serve its last telemetry, in which case these entities stay
-        available and condition 3 ages them out on its own schedule.
-        Deciding availability from `connection_status` is card M-06.
+        Condition 1 is what keeps a failed cycle from being read as a
+        device going offline, and it is why the 429 handling of card M-05
+        *skips* rather than fails: a skipped cycle keeps
+        `last_update_success` true and the previous cycle's data, so
+        entities stay available; a genuinely failed cycle sets it false and
+        takes them all unavailable, which is the honest "we do not know".
+
+        Condition 3 asks `connection_state`, not `connection_status`, and
+        that is the whole defence against the enumeration we do not have
+        yet (T-08 D-17): an unrecognised value classifies as
+        `INDETERMINATE` and leaves the entity available, with a WARNING
+        emitted once where the value enters the model
+        (`api/client.py::_build_device`). Only an explicit `disconnected`
+        takes entities down. A `status` of `active`/anything else plays no
+        part: it is administrative, coexists with this field, and is
+        exposed as an attribute precisely so nobody has to guess which of
+        the two means what.
         """
         if not super().available:
             return False
 
         device = self._device
-        if device is None or device.stale:
+        if device is None:
             return False
 
-        reading = device.readings.get(self.field)
-        if reading is None:
-            return False
-
-        freshness_reference = self._freshness_reference(reading, device)
-        if freshness_reference is None:
-            return True
-
-        age = datetime.now(UTC) - freshness_reference
-        return age < self.coordinator.stale_after
+        return device.connection_state is not ConnectionState.DISCONNECTED
 
     @property
     def extra_state_attributes(self) -> dict[str, Any] | None:
-        """Expose the reading's freshness reference, when known, for support."""
+        """
+        Expose the two timestamps and the two statuses a support case needs.
+
+        Card M-06's own acceptance criterion ("gli attributi diagnostici
+        espongono entrambi i timestamp"), and the reason it is a criterion
+        is that the two answer different questions and are routinely
+        confused: `last_measured_at` says when the device last produced
+        data, `connection_status_updated_at` when the backend last changed
+        its mind about the device being connected. A device reported
+        offline with a recent measurement, or connected with a measurement
+        from last week, are two different faults - and telling them apart
+        from a screenshot requires both numbers on the entity, not one in
+        the entity and one in a diagnostics download.
+
+        `status` rides along for the same reason: it is the administrative
+        status (`active`), a different field from `connection_status`, and
+        no decision in this integration reads it. Publishing it is how we
+        avoid having to choose between the two before T-08 D-17 tells us
+        what each one enumerates.
+
+        `connection_status_stale` appears only when it is true: the
+        connection status still claims `connected` but has not been updated
+        within the backend's own 6-hour list window
+        (`CONNECTION_STATUS_STALE_WINDOW`, const.py). It is a flag, not a
+        verdict - the entity stays available - and its absence therefore
+        means "not stale, or not knowable", never "checked and fine".
+
+        Keys whose value is unknown are omitted rather than published as
+        `None`, so an attribute that is present is always a fact.
+        """
         device = self._device
-        reading = self._reading
-        if device is None or reading is None:
+        if device is None:
             return None
-        freshness_reference = self._freshness_reference(reading, device)
-        if freshness_reference is None:
-            return None
-        return {"last_measured_at": freshness_reference.isoformat()}
+
+        attributes: dict[str, Any] = {}
+        measured_at = self.measured_at
+        if measured_at is not None:
+            attributes["last_measured_at"] = measured_at.isoformat()
+        if device.connection_status is not None:
+            attributes["connection_status"] = device.connection_status
+        if device.connection_status_updated_at is not None:
+            attributes["connection_status_updated_at"] = (
+                device.connection_status_updated_at.isoformat()
+            )
+        if device.status is not None:
+            attributes["status"] = device.status
+        if self._connection_status_is_stale(device):
+            attributes["connection_status_stale"] = True
+
+        return attributes or None
+
+    @staticmethod
+    def _connection_status_is_stale(device: RadoffDevice) -> bool:
+        """
+        Return whether a `connected` claim is older than the backend's window.
+
+        The read-side half of the safety net whose log line lives in
+        `coordinator.py::_check_connection_status_freshness` - same
+        condition, same constant, deliberately duplicated rather than
+        cached on the device: this one is evaluated per state read and must
+        stay a pure function of the current poll.
+
+        False for a device that is not claiming to be connected, and for
+        one with no `connection_status_updated_at` at all: neither is an
+        anomaly, and only an anomaly is worth an attribute.
+        """
+        updated_at = device.connection_status_updated_at
+        if device.connection_state is not ConnectionState.CONNECTED:
+            return False
+        if updated_at is None:
+            return False
+        return datetime.now(UTC) - updated_at >= CONNECTION_STATUS_STALE_WINDOW

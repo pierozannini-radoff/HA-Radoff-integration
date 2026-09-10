@@ -4,7 +4,7 @@ import asyncio
 import hashlib
 import logging
 from dataclasses import dataclass
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 
 import requests
 from homeassistant.config_entries import ConfigEntry
@@ -24,15 +24,16 @@ from .api import (
     AuthExpiredError,
     AuthInvalidError,
     AuthUnavailableError,
+    ConnectionState,
     RadoffDevice,
 )
 from .const import (
     CONF_BASE_URL,
     CONF_DOMAIN_ID,
     CONF_INDEX,
+    CONNECTION_STATUS_STALE_WINDOW,
     DEFAULT_BASE_URL,
     DEFAULT_SCAN_INTERVAL,
-    DEFAULT_STALE_MULTIPLIER,
     DOMAIN,
     ERROR_DOMAIN_ACCESS_DENIED,
     ISSUE_MISSING_DOMAIN_ID,
@@ -152,6 +153,13 @@ class RadoffCoordinator(DataUpdateCoordinator[RadoffData]):
         )
         self._rate_limit_delay: float | None = None
 
+        # Serials already reported for a `connection_status_updated_at`
+        # older than `CONNECTION_STATUS_STALE_WINDOW` (card M-06). Cleared
+        # per device the moment its timestamp comes back inside the window,
+        # so the WARNING marks the start of an episode rather than repeating
+        # every five minutes for as long as it lasts.
+        self._connection_status_stale_warned: set[str] = set()
+
         # client_id/pool_id/pool_region are no longer read from the config entry
         # (see S-02): API() falls back to this integration's own Cognito app
         # client constants (const.py) unless explicitly overridden.
@@ -255,20 +263,6 @@ class RadoffCoordinator(DataUpdateCoordinator[RadoffData]):
             )
 
     @property
-    def stale_after(self) -> timedelta:
-        """
-        Return the age above which a reading is considered stale (card S-07).
-
-        Derived from `update_interval` rather than stored separately, so it
-        always tracks the poll interval actually in effect (including one
-        changed later via the options flow, S-11) without needing its own
-        update listener. `DEFAULT_STALE_MULTIPLIER` (const.py) stays an
-        internal constant, not a user-facing option: S-11 considered exposing
-        it and decided against it (see const.py's comment on that constant).
-        """
-        return self.update_interval * DEFAULT_STALE_MULTIPLIER
-
-    @property
     def poll_jitter(self) -> timedelta:
         """
         Return this entry's fixed offset between one poll and the next (M-05).
@@ -297,9 +291,12 @@ class RadoffCoordinator(DataUpdateCoordinator[RadoffData]):
         and the unsubscribe bookkeeping - this swaps in the delay this cycle
         should actually use, delegates, and puts the nominal interval back.
 
-        Restoring it matters: `update_interval` is what `stale_after` (S-07)
-        and the cycle timeout budget (S-13) are derived from, and neither
-        should move because one cycle was rate limited. The only thing that
+        Restoring it matters: `update_interval` is what the cycle timeout
+        budget (S-13) and this entry's jitter share are derived from, and
+        neither should move because one cycle was rate limited. (Until card
+        M-06 the freshness threshold of `available` hung off it too, which
+        made the point sharper and was itself the problem - see
+        `CONNECTION_STATUS_STALE_WINDOW`, const.py.) The only thing that
         moves is when the next refresh fires.
 
         A pending 429 backoff *lengthens* the wait, it never shortens it.
@@ -356,10 +353,24 @@ class RadoffCoordinator(DataUpdateCoordinator[RadoffData]):
            one 429 asks for ~5s, and the next cycle was five minutes away
            anyway.
 
-        This is a *skip*, not a suppression. The readings keep ageing, so a
-        rate-limited stretch longer than `stale_after` (S-07, 3x the
-        interval) still takes the entities unavailable - by the honest
-        route of stale data rather than by a failed fetch.
+        This is a *skip*, not a suppression - and card M-06 is what makes
+        the distinction hold all the way to the entity. When S-13 wrote
+        this, a rate-limited stretch longer than 3x the interval still took
+        the entities unavailable on its own, through the freshness check
+        `available` used to run: the skip only delayed the verdict. That
+        check is gone. Availability is the device's `connection_status`
+        now, which a 429 does not touch, so a rate-limited stretch of any
+        length leaves the entities available with the readings of the last
+        successful cycle and their true `last_measured_at` - a rate limit
+        on our side is never reported as a device going offline (M-06 AC:
+        "un 429 o un ciclo fallito non vengono confusi con un device
+        offline").
+
+        What a 429 does *not* survive is a cycle that fails outright:
+        `UpdateFailed` still clears `last_update_success` and takes every
+        entity unavailable through `available`'s first condition. That is
+        the honest reading of "we do not know", and it is the difference
+        between skipping a cycle and losing one.
         """
         if self.data is None:
             # First refresh of the entry: there is no previous cycle to
@@ -624,11 +635,66 @@ class RadoffCoordinator(DataUpdateCoordinator[RadoffData]):
                 len(devices),
                 sum(1 for device in devices if device.stale),
             )
+            self._check_connection_status_freshness(devices)
 
             return RadoffData(
                 controller_name=self.api.controller_name,
                 devices=devices,
                 generate_index=self.generate_index,
+            )
+
+    def _check_connection_status_freshness(self, devices: list[RadoffDevice]) -> None:
+        """
+        Report a `connection_status` that has stopped being evidence (card M-06).
+
+        The safety net the card asks for, and only as far as the card lets
+        it go: a WARNING, never a verdict. Availability comes from
+        `connection_status`, which means the client now trusts a single
+        field it does not own; if that field freezes - the DynamoDB sync
+        behind it stalls, a device is deleted from the sync but not from the
+        list - every entity of the device stays available on the strength of
+        a value that stopped being updated. This is what makes that visible.
+
+        `CONNECTION_STATUS_STALE_WINDOW` (const.py) is the backend's own
+        6-hour list window (T-02 D-16), used here as a reference rather than
+        as a threshold of our own: what it says is "no fact newer than the
+        window the API itself looks at", which is a defensible thing to warn
+        about. It is deliberately not compared against the poll interval,
+        the mistake this card exists to undo.
+
+        Once per device per episode, and only for a device claiming to be
+        connected: a `disconnected` device with an old timestamp is not
+        anomalous at all - it went offline then, and the timestamp saying so
+        is supposed to stay put.
+        """
+        now = datetime.now(UTC)
+
+        for device in devices:
+            updated_at = device.connection_status_updated_at
+            age = None if updated_at is None else now - updated_at
+            if (
+                device.connection_state is not ConnectionState.CONNECTED
+                or age is None
+                or age < CONNECTION_STATUS_STALE_WINDOW
+            ):
+                self._connection_status_stale_warned.discard(device.serial_number)
+                continue
+
+            if device.serial_number in self._connection_status_stale_warned:
+                continue
+
+            self._connection_status_stale_warned.add(device.serial_number)
+            _LOGGER.warning(
+                "Device %s still reports connection_status 'connected', but "
+                "that status was last updated %.1f hours ago - older than the "
+                "%.0f-hour window the device list itself looks at. Its "
+                "entities stay available; if this persists, the connection "
+                "status may have stopped being refreshed rather than the "
+                "device staying online (cadence of that refresh is the open "
+                "request T-08 D-17)",
+                device.serial_number,
+                age.total_seconds() / 3600,
+                CONNECTION_STATUS_STALE_WINDOW.total_seconds() / 3600,
             )
 
     def get_device_by_serial(self, serial_number: str) -> RadoffDevice | None:

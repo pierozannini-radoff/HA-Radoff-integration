@@ -348,11 +348,12 @@ class RadoffOptionsFlow(OptionsFlow):
     was needed beyond passing the resolved interval through to `API` for the
     429 message (see `coordinator.py`, `api/client.py`).
 
-    A third field for the staleness multiplier (`DEFAULT_STALE_MULTIPLIER`,
-    const.py) was considered, per this card's own "COSA FARE" ("o la sua
-    esposizione va valutata, vedi S-07"), and deliberately left out - decided
-    with Piero: no acceptance criterion requires it, and it already tracks a
-    changed scan_interval automatically via `RadoffCoordinator.stale_after`.
+    A third field for S-07's staleness multiplier was considered, per this
+    card's own "COSA FARE" ("o la sua esposizione va valutata, vedi S-07"),
+    and deliberately left out - decided with Piero. Card M-06 settled the
+    question by removing the multiplier itself: entity availability comes
+    from the device's `connection_status`, so there is no longer a
+    freshness threshold for a user to tune, exposed or internal.
 
     Card M-02 adds a third field after all, but an **advanced** one: the API
     base URL (`CONF_BASE_URL`), shown only when Home Assistant's advanced
