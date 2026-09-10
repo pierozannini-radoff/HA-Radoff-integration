@@ -49,6 +49,12 @@ ignore = [
 # suite mockata sulle fixture non puo' verificare.
 "verify_m04_live.py" = ["ALL"]
 
+# Verifica dal vivo degli AC di M-05 (RT-2944): stessa convenzione. Misura
+# sull'API vera il budget di richieste che la card documenta - un ciclo, una
+# richiesta - perche' e' il numero su cui poggiano l'intervallo di default e
+# cio' che il README promette in pubblico.
+"verify_m05_live.py" = ["ALL"]
+
 # Standalone verification scripts (S-06, S-07, S-08, S-09, S-10, S-11, S-12,
 # S-13): run by hand with `python3 verify_sXX.py`, not shipped code, and
 # deliberately monkeypatch/stub homeassistant modules and private attributes

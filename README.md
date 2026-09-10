@@ -13,7 +13,7 @@ Assistant sensor entities.
 ## What this integration does
 
 The integration authenticates against the Radoff cloud API with your Radoff
-account credentials, then polls your account's devices (every 60 seconds by
+account credentials, then polls your account's devices (every 5 minutes by
 default - configurable, see "Options" below) and creates one Home Assistant
 sensor entity per measured property per device.
 
@@ -79,10 +79,11 @@ Once the integration is configured, open **Settings → Devices & Services →
 Radoff** and select **Configure** to change:
 
 - **Polling interval** - how often, in seconds, the integration polls the
-  Radoff API. Defaults to 60 seconds; the form enforces a minimum (30
-  seconds today - see "Known limitations") and a maximum of 3600 seconds
-  (one hour). Saving reloads the integration and the new interval takes
-  effect immediately, no restart needed.
+  Radoff API. Defaults to 300 seconds (5 minutes); the form enforces a
+  minimum of 60 seconds and a maximum of 3600 (one hour). Saving reloads the
+  integration and the new interval takes effect immediately, no restart
+  needed. See "How much this integration polls" below for why those are the
+  numbers.
 - **Generate index entities** - whether to also create a qualitative
   `*_index` sensor (Excellent, Good, Medium, Poor, Terrible) alongside each
   applicable measurement, in addition to its raw value. Enabled by default.
@@ -92,6 +93,42 @@ Radoff** and select **Configure** to change:
 If the Radoff API responds with a rate-limit error (HTTP 429), the log
 message names your account's currently configured polling interval and
 points you at this options page.
+
+## How much this integration polls
+
+The cost of one installation, in requests:
+
+- **one request every 300 seconds** (the configured interval), plus one more
+  per additional page if your account has more than 200 devices - the device
+  list carries each device's telemetry inline, so a cycle costs the same
+  whether you own one device or fifty;
+- **one request per device type, per restart** - the measurement schema of a
+  type, fetched once when the integration loads and then cached for as long
+  as it stays loaded. Radoff's catalogue has five types, so this is at most
+  five requests at startup and none afterwards.
+
+The two numbers behind the interval:
+
+- **60 seconds is the floor because of the device, not the API.** A Radoff
+  device emits one message per minute, and the radon value it carries is
+  aggregated over at least five minutes. Polling faster returns the same
+  reading again - it does not make your data fresher.
+- **300 seconds is the default because the quota is shared.** Radoff's API
+  allows 50 requests/second sustained (100 in a burst) *per environment*,
+  shared by the Radoff mobile app, the web app and every integration
+  together; there is no separate allowance per user or per installation.
+
+Each installation also polls on a small fixed offset of its own (up to 10% of
+the interval, derived from the config entry, so it is the same across
+restarts). Without it, every installation configured at the default would
+send its request on the same round minute and turn a load the shared quota
+absorbs comfortably into a periodic spike.
+
+On a rate-limit error the integration skips the cycle rather than retrying
+immediately, backing off from about 5 seconds and doubling while the errors
+continue. Your entities keep the readings from the previous cycle during a
+skipped one: a 429 means the request was not made, not that your device went
+offline.
 
 ## Entities produced
 
@@ -135,13 +172,6 @@ long-term statistics.
 - **Per-device configuration**: the measurement schema is published per device
   *type*, not per device. An individual unit with a measurement switched off
   in its Radoff configuration will still get that entity, permanently empty.
-- **Polling interval floor**: the options form currently enforces a 30-second
-  minimum. This is a conservative, provisional value, not one derived from
-  any rate limit Radoff has confirmed - the integration polls with an N+1
-  request pattern (one search call plus one per-device call every cycle),
-  so a lower floor risks tripping rate limits on accounts with several
-  devices. It will be revisited once Radoff's backend team confirms the
-  API's actual rate limits.
 - **Re-authentication timing**: if your Radoff account password changes, Home
   Assistant will prompt you to re-enter it (**Settings → Devices & Services →
   Radoff → Reconfigure**) without removing or re-adding the integration and
