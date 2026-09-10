@@ -37,6 +37,12 @@ ignore = [
 # to stdout is its entire purpose.
 "check_reauth_log.py" = ["ALL"]
 
+# Verifica dal vivo degli AC di M-03 (RT-2941) contro dev: stessa
+# convenzione dei probe qui sopra - vive in scripts/, non e' importata da
+# custom_components/, si esegue a mano con le proprie credenziali e
+# stampare un verdetto su stdout e' il suo intero scopo.
+"verify_m03_live.py" = ["ALL"]
+
 # Standalone verification scripts (S-06, S-07, S-08, S-09, S-10, S-11, S-12,
 # S-13): run by hand with `python3 verify_sXX.py`, not shipped code, and
 # deliberately monkeypatch/stub homeassistant modules and private attributes

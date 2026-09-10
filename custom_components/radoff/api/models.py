@@ -78,8 +78,12 @@ class RadoffDevice:
     - `connection_status` / `connection_status_updated_at`: availability
       based on them is M-06. This card only brings them into the model.
     - `firmware_version`: surfaced as `device_info.sw_version` (this card).
-    - `room_name`, `building_name`, `domain_prefix`: context for the device
-      registry and for diagnostics.
+    - `room_name`/`room_slug`, `building_name`/`building_slug`,
+      `domain_prefix`: context for the device registry and for diagnostics.
+      The pairs are kept both halves: the name is the label a person wrote
+      and is what a user recognises, the slug is the stable machine
+      identifier (`875fe89b-home`) that survives a rename. A card grouping
+      devices by room needs the second to key on and the first to show.
 
     `stale` survives from S-13 with a **different meaning**, and the change
     is easy to miss. It used to mean "this device's own fetch failed this
@@ -105,7 +109,9 @@ class RadoffDevice:
     connection_status_updated_at: datetime | None = None
     firmware_version: str | None = None
     room_name: str | None = None
+    room_slug: str | None = None
     building_name: str | None = None
+    building_slug: str | None = None
     domain_prefix: str | None = None
     telemetry_timestamp: datetime | None = None
     stale: bool = False

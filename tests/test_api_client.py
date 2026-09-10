@@ -131,6 +131,10 @@ def test_the_serial_is_the_identity_and_the_new_fields_are_carried(
     assert device.firmware_version == "0.2.8"
     assert device.domain_prefix == "875fe89b"
     assert device.room_name and device.building_name
+    # Both halves of each pair: the label a person wrote and the stable
+    # slug that survives a rename.
+    assert device.room_slug == "default-room"
+    assert device.building_slug == "default-building"
     assert device.stale is False
 
 
