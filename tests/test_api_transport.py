@@ -117,7 +117,9 @@ def test_every_request_carries_domain_prefix_and_no_domain_header(
     api = _api(monkeypatch)
     devices = api.get_devices()
 
-    assert len(devices) == 1
+    # Both devices of the captured page: card M-04 removed the type filter
+    # that used to leave the `sense` out.
+    assert len(devices) == 2
     assert requests_mock.request_history
     for request in requests_mock.request_history:
         assert request.qs["domain_prefix"] == [DOMAIN_PREFIX]

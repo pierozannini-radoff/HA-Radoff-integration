@@ -8,10 +8,15 @@ from typing import TYPE_CHECKING
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_CLIENT_ID, CONF_USERNAME, Platform
 from homeassistant.core import callback
-from homeassistant.exceptions import ConfigEntryError
+from homeassistant.exceptions import (
+    ConfigEntryAuthFailed,
+    ConfigEntryError,
+    ConfigEntryNotReady,
+)
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers import issue_registry as ir
 
+from .api import AuthChallengeRequiredError, AuthExpiredError, AuthInvalidError
 from .const import (
     CONF_DOMAIN_ID,
     CONF_INDEX,
@@ -313,6 +318,40 @@ async def async_setup_entry(
     # `if not coordinator.api.connected: raise ConfigEntryNotReady` that used
     # to follow this call was unreachable and has been removed.
     await coordinator.async_config_entry_first_refresh()
+
+    # Card M-04: the measurement schema, one call per device type seen in
+    # that first refresh, cached on the coordinator for the sensor platform
+    # forwarded below. The order is not incidental - the refresh is what
+    # makes the types known, and the platform is what consumes the schema,
+    # so this is the only point in the sequence where it fits.
+    #
+    # An unrecognised type is handled inside `async_load_schemas` (WARNING,
+    # device kept). What reaches here is the other kind of failure: the
+    # endpoint did not answer at all. That is a "not ready" state, not a
+    # broken installation - retrying is what Home Assistant does with
+    # `ConfigEntryNotReady`, and it is much better than completing a setup
+    # whose entities would stay nameless and unitless until the next
+    # restart. There is deliberately no hardcoded fallback schema to use
+    # instead: that table is what this card exists to delete.
+    try:
+        await coordinator.async_load_schemas()
+    except (AuthInvalidError, AuthExpiredError, AuthChallengeRequiredError) as err:
+        # The narrow window the first refresh cannot cover: a token that
+        # expires, or credentials that stop working, between that call and
+        # this one. Left to the clause below it would become "not ready"
+        # and retry forever without ever asking the user for a password -
+        # the exact defect S-08/C7 fixed on the poll path. The coordinator
+        # maps the same three to `ConfigEntryAuthFailed` for the same
+        # reason (see `_async_update_data`).
+        raise ConfigEntryAuthFailed(str(err)) from err
+    except Exception as err:
+        _LOGGER.warning(
+            "Radoff could not fetch the measurement schema at setup: %s. "
+            "Home Assistant will retry this entry",
+            err,
+        )
+        msg = f"Radoff measurement schema unavailable: {err}"
+        raise ConfigEntryNotReady(msg) from err
 
     # `async_on_unload` registers the listener's cancel callback to run when
     # this entry is unloaded (S-14), replacing the manual `RuntimeData.

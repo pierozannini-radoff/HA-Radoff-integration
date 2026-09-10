@@ -23,15 +23,20 @@ works while both Home Assistant and the device have internet access.
 
 ## Supported devices
 
-Currently supported, in this release:
+Officially supported and verified in this release:
 
 - **Radoff Now+**
 
-**Not yet supported:** Radoff Now (legacy) and Radoff Sense. Devices of these
-types are not detected by this version of the integration. Support for both
-is planned and tracked in the roadmap for a future release (see the `L`
-milestone in the project's internal planning); this README will be updated
-once they land.
+**Other device types (Now, Sense, City, Sismoff):** no longer hidden. Earlier
+versions dropped every device that was not a Now+, so they simply did not
+appear in Home Assistant. This version reads the measurement schema Radoff
+publishes for each device type, so a device of another type is created with
+the entities its type declares - units, labels and quality bands included.
+
+That is best effort, not a promise: only Now+ is tested end to end against a
+real device, entity names for other types may change as their schemas do, and
+a device whose type Radoff's catalogue does not know at all still appears,
+with its readings published as plain numbers and a warning in the log.
 
 ## Installation
 
@@ -90,19 +95,46 @@ points you at this options page.
 
 ## Entities produced
 
-For every Now+ device found on your account, the integration creates one
-sensor entity per measured property, currently: temperature, humidity,
-pressure, CO₂ (eCO₂), TVOC, PM1, PM2.5, PM10, and an air quality index.
+For every device found on your account, the integration creates one sensor
+entity per measurement its device type declares. It does not decide that list
+itself: it asks Radoff's API which measurements a device type has, and with
+which unit and which quality bands. On a Now+ that is temperature, humidity,
+pressure, CO₂ (eCO₂), TVOC, PM1, PM2.5, PM10 and an air quality index; a
+Sense adds radon, a Sismoff adds carbon monoxide and methane.
 
 If the "Generate index entities" option is enabled for the config entry
 (enabled by default - see "Options" above), an additional qualitative
-`*_index` sensor (e.g. Excellent, Good, ...) is created alongside each of the
-applicable measurements.
+`*_index` sensor (Excellent, High, Good, Poor, Terrible - Low, Good, High for
+temperature and humidity) is created alongside each measurement that has
+quality bands.
+
+Two entities behave differently on purpose:
+
+- **Air quality index**: created **disabled**. Radoff is aware of a defect in
+  how the index's temperature component is computed on their side, so the
+  published value is currently unreliable. The entity is there and can be
+  enabled from **Settings → Devices & Services → Radoff → entities**; it will
+  become enabled by default again once the calculation is fixed, with no
+  effect on installations that enabled it by hand.
+- **Pressure**: reported in pascals (Pa), the unit the API sends. To see it
+  in hPa or mbar, change the unit on the entity itself
+  (entity settings → **Unit of measurement**); Home Assistant converts it for
+  you and keeps the history.
+
+**TVOC** deserves a note: Radoff's API declares its unit as `V - Ix`, which is
+not a concentration, so the entity is published without a unit and without a
+device class. If you are upgrading from a version that showed TVOC in µg/m³,
+Home Assistant will treat the unit change as a break in that entity's
+long-term statistics.
 
 ## Known limitations
 
-- **Device coverage**: only Now+ is supported today; Now (legacy) and Sense
-  are not detected (see "Supported devices" above).
+- **Device coverage**: only Now+ is verified end to end. Devices of other
+  types are created from the schema their type declares, without that
+  verification (see "Supported devices" above).
+- **Per-device configuration**: the measurement schema is published per device
+  *type*, not per device. An individual unit with a measurement switched off
+  in its Radoff configuration will still get that entity, permanently empty.
 - **Polling interval floor**: the options form currently enforces a 30-second
   minimum. This is a conservative, provisional value, not one derived from
   any rate limit Radoff has confirmed - the integration polls with an N+1

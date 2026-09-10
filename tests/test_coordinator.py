@@ -128,10 +128,10 @@ async def test_poll_nominal_produces_expected_entities(
     assert humidity.state == "45.0"
     assert humidity.attributes["device_class"] == "humidity"
 
-    aqi = hass.states.get("sensor.living_room_air_quality")
-    assert aqi is not None
-    assert aqi.state == "1.15"
-    assert aqi.attributes["device_class"] == "aqi"
+    # The AQI entity is created disabled (card M-04, T-08 D-08: the backend
+    # computes its temperature component with the wrong divisor), so there
+    # is no state to poll. `test_sensor.py` asserts on it via the registry.
+    assert hass.states.get("sensor.living_room_air_quality") is None
 
 
 async def test_the_device_registry_entry_carries_the_firmware_version(
@@ -182,12 +182,24 @@ async def test_poll_degraded_missing_field_only_affects_that_reading(
     requests_mock: Any,
     config_entry_v2_data: dict[str, Any],
 ) -> None:
-    """A field missing from the telemetry block only affects that one entity."""
+    """
+    A field missing from the telemetry block only affects that one entity.
+
+    Card M-04 changes the shape of "affects", not the isolation. Entities
+    follow the device type's schema now, not the last payload, so the
+    missing field keeps its entity and that entity goes `unavailable`
+    where before it produced no entity at all. That is the better half of
+    the trade: a device that skips a field for one cycle no longer loses
+    and regains an entity, with the history that implies.
+    """
     register_devices(requests_mock, load_devices_fixture("devices_missing_field.json"))
 
     await _setup_entry(hass, monkeypatch, config_entry_v2_data)
 
-    assert hass.states.get("sensor.living_room_temperature") is None
+    temperature = hass.states.get("sensor.living_room_temperature")
+    assert temperature is not None
+    assert temperature.state == "unavailable"
+
     humidity = hass.states.get("sensor.living_room_humidity")
     assert humidity is not None
     assert humidity.state == "45.0"
@@ -200,18 +212,26 @@ async def test_a_device_without_telemetry_creates_no_entities_and_no_error(
     config_entry_v2_data: dict[str, Any],
 ) -> None:
     """
-    M-03 AC: `telemetry: null` sets up cleanly, with no entities and no error.
+    M-03 AC: `telemetry: null` sets up cleanly, with no data and no error.
 
     The condition of the majority of the devices M-01 censused (D-16). The
     entry must load: a domain where nothing is transmitting is a normal
     state of the world, not a failure of the integration.
+
+    Card M-04 moved where the entities come from - the device type's
+    schema, not the payload - so a silent device now shows the entities its
+    type declares, all `unavailable`, instead of none at all. The claim
+    being tested is unchanged and is the one that matters: no value is
+    invented and nothing raises.
     """
     register_devices(requests_mock, load_fixture("devices_no_telemetry.json"))
 
     entry = await _setup_entry(hass, monkeypatch, config_entry_v2_data)
 
     assert entry.state is ConfigEntryState.LOADED
-    assert hass.states.get("sensor.living_room_temperature") is None
+    temperature = hass.states.get("sensor.living_room_temperature")
+    assert temperature is not None
+    assert temperature.state == "unavailable"
     coordinator = entry.runtime_data
     assert [device.stale for device in coordinator.data.devices] == [True]
 

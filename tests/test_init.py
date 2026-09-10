@@ -49,10 +49,12 @@ from custom_components.radoff.const import (
 )
 from .conftest import (
     auth_result,
+    load_devices_fixture,
     load_fixture,
     make_id_token,
     patch_authenticate_user,
     register_devices,
+    register_measures_ranges,
 )
 
 DOMAIN_ID = "aaaaaaaa-0000-0000-0000-000000000001"
@@ -515,3 +517,76 @@ async def test_migrate_retries_after_a_skipped_entry_conflict_clears(
 
     assert registry.async_get(legacy.entity_id).unique_id == _aggregated_aqi_unique_id()
     assert entry.minor_version == 2
+
+
+# ---------------------------------------------------------------------------
+# The schema call at setup (card M-04)
+# ---------------------------------------------------------------------------
+
+
+async def test_the_schema_is_fetched_once_per_type_and_cached(
+    hass: HomeAssistant,
+    monkeypatch: pytest.MonkeyPatch,
+    requests_mock: Any,
+    config_entry_v2_data: dict[str, Any],
+) -> None:
+    """
+    M-04: one `measures-ranges` call per device *type*, kept in the runtime data.
+
+    Two devices on the page, both `nowplus`, and exactly one schema call:
+    the cache is keyed on the type, not on the device. On the 83-device
+    domain M-01 censused that is the difference between one request per
+    setup and eighty-three, against a quota shared with the Radoff apps
+    (T-02 D-21/D-22).
+    """
+    patch_authenticate_user(monkeypatch, result=auth_result(make_id_token([DOMAIN_ID])))
+    register_devices(requests_mock, load_fixture("devices_two_devices.json"))
+
+    entry = MockConfigEntry(
+        domain=DOMAIN, version=2, data=config_entry_v2_data, options={CONF_INDEX: True}
+    )
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    assert entry.state is ConfigEntryState.LOADED
+
+    schema_calls = [
+        request
+        for request in requests_mock.request_history
+        if request.path == "/analytics/measures-ranges"
+    ]
+    types_asked = [request.qs["device_type"][0] for request in schema_calls]
+
+    assert types_asked == ["nowplus"]
+    assert set(types_asked) == set(entry.runtime_data.schemas)
+    # And the cache holds real measures, not empty placeholders.
+    assert all(entry.runtime_data.schemas.values())
+
+
+async def test_a_schema_endpoint_that_is_down_retries_instead_of_loading(
+    hass: HomeAssistant,
+    monkeypatch: pytest.MonkeyPatch,
+    requests_mock: Any,
+    config_entry_v2_data: dict[str, Any],
+) -> None:
+    """
+    M-04: no schema, no setup - `ConfigEntryNotReady`, which Home Assistant retries.
+
+    Deliberately not a fallback to a built-in table: that table is what the
+    card exists to delete, and an entry that loaded without a schema would
+    give the user a full set of nameless, unitless entities that only a
+    restart could fix.
+    """
+    patch_authenticate_user(monkeypatch, result=auth_result(make_id_token([DOMAIN_ID])))
+    register_devices(requests_mock, load_devices_fixture("devices_one_device.json"))
+    register_measures_ranges(requests_mock, payloads={}, status_code=500)
+
+    entry = MockConfigEntry(
+        domain=DOMAIN, version=2, data=config_entry_v2_data, options={CONF_INDEX: True}
+    )
+    entry.add_to_hass(hass)
+    assert not await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    assert entry.state is ConfigEntryState.SETUP_RETRY

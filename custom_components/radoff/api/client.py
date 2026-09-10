@@ -36,17 +36,29 @@ from .models import RadoffDevice, Reading
 
 _LOGGER = logging.getLogger(__name__)
 
-# The arch 2.0 device types this integration models. The value is the
-# payload's own `type` field, lowercase and unversioned (`nowplus`, `sense`,
-# `city`, `life`, `now`, `sismoff` - the catalogue `/analytics/measures-
-# ranges` enumerates, see `tests/fixtures/dev/_findings.md`), where arch 1.x
-# sent a display name (`deviceTypeName: "Now+"`).
+# The arch 2.0 device type this integration is tested and supported on. The
+# value is the payload's own `type` field, lowercase and unversioned
+# (`nowplus`, `sense`, `city`, `life`, `now`, `sismoff` - the catalogue
+# `/analytics/measures-ranges` enumerates, see
+# `tests/fixtures/dev/_findings.md`), where arch 1.x sent a display name
+# (`deviceTypeName: "Now+"`).
 #
-# The set stays exactly as narrow as it was: Now+ is what this integration
-# supports and what the README promises (card M-03 kept the scope decision
-# of M-01, 2026-09-10: `sense`, `city` and `life` are out of this release).
-# Widening it needs the per-type schema of M-04, not just an entry here -
-# units and thresholds are what makes another type's telemetry meaningful.
+# Card M-04 changes what this constant *does*, and the change is the point.
+# It used to be a filter: `_build_device` returned `None` for anything not
+# in it, so a `sense` in the user's domain simply did not exist as far as
+# Home Assistant was concerned. It is now documentation - the type this
+# release promises (README) and the one the live verification runs against -
+# and nothing filters on it.
+#
+# The reason is T-02's decision, carried by M-04: `type` is a cache key for
+# the schema, not an eligibility test. Before this card the code had no way
+# to describe another type's telemetry, so dropping the device was at least
+# honest; now `/analytics/measures-ranges?device_type=<type>` describes any
+# type the catalogue holds, and a type it does not hold still leaves the
+# device's telemetry readable. Discarding a device the API returned would be
+# throwing away data we can render, and it is exactly what M-04's acceptance
+# criterion "an unknown device_type does not make the device disappear"
+# forbids.
 SUPPORTED_DEVICE_TYPES = frozenset({"nowplus"})
 
 # Paths of the arch 2.0 API, relative to the base URL (card M-02). The
@@ -64,6 +76,13 @@ SUPPORTED_DEVICE_TYPES = frozenset({"nowplus"})
 # signature - see that script's own comment.
 DISCOVERY_PATH = "/data/user/me/domains"
 DEVICES_PATH = "/data/devices"
+
+# The per-device-type measurement schema (card M-04). Under `/analytics/*`,
+# the second base path mapping this token is accepted on, and - unlike
+# `DEVICES_PATH` - **not** domain-scoped: M-01 called it with `device_type`
+# as its only parameter (`tests/fixtures/dev/_manifest.json`) and a schema
+# describes a product, not a customer's estate.
+MEASURES_RANGES_PATH = "/analytics/measures-ranges"
 
 # One call per cycle carries the whole domain's devices *and* their
 # telemetry, so `page_size` is deliberately large: the cost of a page is a
@@ -516,7 +535,10 @@ class API:
 
     def get_devices(self) -> list[RadoffDevice]:
         """
-        Return every supported device of this domain, telemetry included.
+        Return every device of this domain, telemetry included.
+
+        "Every" is literal since card M-04: the `type` filter that used to
+        drop anything but a Now+ is gone (see `_build_device`).
 
         Card M-03 replaces the 1 + N call pattern of arch 1.x - a
         `POST /data/devices/search` followed by one
@@ -590,7 +612,7 @@ class API:
             )
 
         _LOGGER.debug(
-            "Radoff device list: %d supported device(s) over %d page(s), "
+            "Radoff device list: %d device(s) over %d page(s), "
             "%d of them without telemetry this cycle",
             len(devices),
             min(page, MAX_DEVICE_PAGES),
@@ -622,29 +644,93 @@ class API:
         body = response.json()
         return body if isinstance(body, dict) else {}
 
+    def get_measures_ranges(self, device_type: str | None = None) -> dict[str, Any]:
+        """
+        Return the raw `measures-ranges` schema for one device type (card M-04).
+
+        One call per *type*, made once at setup and cached
+        (`coordinator.py::async_load_schemas`) - not one per device, and not
+        one per poll: the schema describes a product and changes at the pace
+        firmware does, while the request quota it would otherwise burn is
+        shared with the Radoff apps (T-02 D-21/D-22).
+
+        With `device_type` omitted the endpoint answers with every type's
+        measures merged into one object, which is useful for a census (M-01
+        captured it as `measures_ranges__all.json`) and is *not* what setup
+        asks for: merged, two types that disagree about a measure cannot be
+        told apart.
+
+        An unknown type answers 404 with the valid types in `available`, and
+        `_check_response_status` already turns exactly that body into
+        `APIUnknownDeviceTypeError` (card M-02). It is raised, not swallowed
+        here: whether an unrecognised type is fatal is a decision about
+        entities, not about transport, and it belongs to the caller - which
+        treats it as "type not recognised", logs it and keeps the device
+        (M-04 AC).
+
+        The response is returned raw. Parsing it into `MeasureSpec` objects
+        is `schema.py`'s job, deliberately kept out of the API package: this
+        module knows HTTP, that one knows Home Assistant's units and device
+        classes, and mixing the two is how the deleted `properties.py` came
+        to exist in the first place.
+        """
+        url = self._url(MEASURES_RANGES_PATH)
+        params = {} if device_type is None else {"device_type": device_type}
+        response = self.session.get(
+            url,
+            headers=self._get_headers(bearer_token=self._session.get_bearer()),
+            params=params,
+            timeout=self.DEFAULT_TIMEOUT,
+        )
+
+        self._check_response_status(response=response, url=url)
+
+        body = response.json()
+        if not isinstance(body, dict):
+            _LOGGER.warning(
+                "Radoff measures-ranges for device type '%s' answered with "
+                "%s instead of an object; treating it as an empty schema",
+                device_type,
+                type(body).__name__,
+            )
+            return {}
+        return body
+
     def _build_device(self, raw_device: dict[str, Any]) -> RadoffDevice | None:
         """
         Turn one entry of the device list into a `RadoffDevice`, or skip it.
 
-        `None` means "not this integration's device": an unsupported `type`
-        (see `SUPPORTED_DEVICE_TYPES`) or an entry with no `serial_number`,
+        `None` now means one thing only: an entry with no `serial_number`,
         which in arch 2.0 has no identity at all - `deviceId`,
         `serial_number` and `deviceSerial` are the same value (T-02 D-02),
         so there is no second field to fall back to.
 
-        The nested-slave check runs *before* the type filter on purpose. A
-        LIFE never appears as a top-level entry of its own: it arrives
-        inline, under the `controller_of_device` of its controller, and the
-        controller is a `city` - a type this release does not support. A
-        check placed after the filter would therefore never run, and the
-        card's requirement (do not lose a nested device silently) would be
-        satisfied only on paper.
+        Card M-04 removed the other reason, the `type` filter. Every device
+        the API returns is built, whatever its type: the schema that makes
+        another type's telemetry meaningful is now fetched per type
+        (`get_measures_ranges`), and a type the catalogue does not know
+        still leaves a device with readings worth showing. `type` is a cache
+        key for that schema, never an eligibility test (T-02, see
+        `SUPPORTED_DEVICE_TYPES`) - which is also M-04's acceptance
+        criterion: an unknown `device_type` must not make the device
+        disappear. What stays narrow is the *promise*: Now+ is the type this
+        release supports and verifies (README).
+
+        A device whose entry carries no `type` at all keeps an empty string
+        rather than `None`, so that `RadoffDevice.device_type` stays a `str`
+        for every consumer (`device_info.model`, diagnostics, the schema
+        cache key) and only the schema lookup misses.
+
+        The nested-slave check runs first, as it did when a filter followed
+        it. A LIFE never appears as a top-level entry of its own: it arrives
+        inline, under the `controller_of_device` of its controller, and
+        flattening it would create entities for a device that may belong to
+        a different domain (M-01, D-33).
         """
         self._log_nested_slave(raw_device)
 
-        device_type = raw_device.get("type")
-        if device_type not in SUPPORTED_DEVICE_TYPES:
-            return None
+        raw_type = raw_device.get("type")
+        device_type = raw_type if isinstance(raw_type, str) else ""
 
         serial_number = raw_device.get("serial_number")
         if not serial_number:

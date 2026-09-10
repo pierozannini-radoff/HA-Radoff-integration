@@ -1,6 +1,33 @@
 {
   "entity": {
     "sensor": {
+      "aqi_value": {
+        "name": "Air Quality"
+      },
+      "radon_bqm3": {
+        "name": "Radon"
+      },
+      "eco2": {
+        "name": "Co2"
+      },
+      "co": {
+        "name": "Carbon Monoxide"
+      },
+      "ch4": {
+        "name": "Methane"
+      },
+      "tvoc": {
+        "name": "VOCs"
+      },
+      "pm1": {
+        "name": "PM1"
+      },
+      "pm25": {
+        "name": "PM2.5"
+      },
+      "pm10": {
+        "name": "PM10"
+      },
       "internal_temperature": {
         "name": "Temperature"
       },
@@ -10,46 +37,22 @@
       "pressure": {
         "name": "Pressure"
       },
-      "aqi_value": {
-        "name": "Air Quality"
-      },
-      "eco2": {
-        "name": "Co2"
-      },
-      "tvoc": {
-        "name": "VOCs"
-      },
-      "pm10": {
-        "name": "PM10"
-      },
-      "pm25": {
-        "name": "PM2.5"
-      },
-      "pm1": {
-        "name": "PM1"
-      },
-      "internal_temperature_index": {
-        "name": "Temperature Index",
-        "state": {
-          "excellent": "Low",
-          "good": "Optimal",
-          "terrible": "High"
-        }
-      },
-      "relative_humidity_index": {
-        "name": "Humidity Index",
-        "state": {
-          "excellent": "Low",
-          "good": "Optimal",
-          "terrible": "High"
-        }
-      },
-      "tvoc_index": {
-        "name": "VOCs Index",
+      "aqi_value_index": {
+        "name": "Air Quality Index",
         "state": {
           "excellent": "Excellent",
+          "high": "High",
           "good": "Good",
-          "medium": "Medium",
+          "poor": "Poor",
+          "terrible": "Terrible"
+        }
+      },
+      "radon_bqm3_index": {
+        "name": "Radon Index",
+        "state": {
+          "excellent": "Excellent",
+          "high": "High",
+          "good": "Good",
           "poor": "Poor",
           "terrible": "Terrible"
         }
@@ -58,28 +61,38 @@
         "name": "CO2 Index",
         "state": {
           "excellent": "Excellent",
+          "high": "High",
           "good": "Good",
-          "medium": "Medium",
           "poor": "Poor",
           "terrible": "Terrible"
         }
       },
-      "pm10_index": {
-        "name": "PM10 Index",
+      "co_index": {
+        "name": "Carbon Monoxide Index",
         "state": {
           "excellent": "Excellent",
+          "high": "High",
           "good": "Good",
-          "medium": "Medium",
           "poor": "Poor",
           "terrible": "Terrible"
         }
       },
-      "pm25_index": {
-        "name": "PM2.5 Index",
+      "ch4_index": {
+        "name": "Methane Index",
         "state": {
           "excellent": "Excellent",
+          "high": "High",
           "good": "Good",
-          "medium": "Medium",
+          "poor": "Poor",
+          "terrible": "Terrible"
+        }
+      },
+      "tvoc_index": {
+        "name": "VOCs Index",
+        "state": {
+          "excellent": "Excellent",
+          "high": "High",
+          "good": "Good",
           "poor": "Poor",
           "terrible": "Terrible"
         }
@@ -88,10 +101,46 @@
         "name": "PM1 Index",
         "state": {
           "excellent": "Excellent",
+          "high": "High",
           "good": "Good",
-          "medium": "Medium",
           "poor": "Poor",
           "terrible": "Terrible"
+        }
+      },
+      "pm25_index": {
+        "name": "PM2.5 Index",
+        "state": {
+          "excellent": "Excellent",
+          "high": "High",
+          "good": "Good",
+          "poor": "Poor",
+          "terrible": "Terrible"
+        }
+      },
+      "pm10_index": {
+        "name": "PM10 Index",
+        "state": {
+          "excellent": "Excellent",
+          "high": "High",
+          "good": "Good",
+          "poor": "Poor",
+          "terrible": "Terrible"
+        }
+      },
+      "internal_temperature_index": {
+        "name": "Temperature Index",
+        "state": {
+          "low": "Low",
+          "good": "Optimal",
+          "high": "High"
+        }
+      },
+      "relative_humidity_index": {
+        "name": "Humidity Index",
+        "state": {
+          "low": "Low",
+          "good": "Optimal",
+          "high": "High"
         }
       }
     }

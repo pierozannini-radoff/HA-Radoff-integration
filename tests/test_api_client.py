@@ -101,8 +101,9 @@ def test_telemetry_becomes_readings_keyed_by_field_name(
 
     devices = _api(monkeypatch).get_devices()
 
-    assert len(devices) == 1
-    device = devices[0]
+    # Both devices of the page, since card M-04 removed the type filter.
+    assert len(devices) == 2
+    device = next(d for d in devices if d.serial_number == REPORTING_SERIAL)
     assert set(device.readings) == EXPECTED_FIELDS
     assert device.readings["internal_temperature"].value == 26.0583
     assert device.readings["pressure"].value == 100488.0
@@ -167,37 +168,62 @@ def test_telemetry_null_is_no_data_and_not_an_error(
     """
     M-03 AC: a device with `telemetry: null` is `stale=True` and raises nothing.
 
-    The real fixture's silent device is a `sense`, which this release
-    filters out by type, so the null is moved onto the supported device -
-    the payload shape is the captured one (M-01, D-16: the majority of the
-    120 devices censused are in this state), only the device it sits on is
-    chosen.
+    Asserted on the real silent device of the capture, a `sense` - which
+    card M-04 stopped filtering out, so the null no longer has to be moved
+    onto another device to be testable. The shape is the captured one (M-01,
+    D-16: the majority of the 120 devices censused are in this state).
     """
-    page = _real_page()
-    _devices_of(page)[REPORTING_SERIAL]["telemetry"] = None
-    register_devices(requests_mock, page)
-
-    devices = _api(monkeypatch).get_devices()
-
-    assert len(devices) == 1
-    assert devices[0].serial_number == REPORTING_SERIAL
-    assert devices[0].stale is True
-    assert devices[0].readings == {}
-    assert devices[0].telemetry_timestamp is None
-    # The identity fields still arrive: a silent device is still a device.
-    assert devices[0].connection_status == "connected"
-
-
-def test_unsupported_device_types_are_left_out(
-    monkeypatch: pytest.MonkeyPatch, requests_mock: Any
-) -> None:
-    """The `sense` of the real fixture produces no device: this release is Now+."""
     register_devices(requests_mock, _real_page())
 
-    serials = {device.serial_number for device in _api(monkeypatch).get_devices()}
+    devices = _api(monkeypatch).get_devices()
+    silent = next(d for d in devices if d.serial_number == SILENT_SERIAL)
 
-    assert serials == {REPORTING_SERIAL}
-    assert SILENT_SERIAL not in serials
+    assert silent.stale is True
+    assert silent.readings == {}
+    assert silent.telemetry_timestamp is None
+    # The identity fields still arrive: a silent device is still a device.
+    assert silent.device_type == "sense"
+
+
+def test_a_device_of_another_type_is_kept(
+    monkeypatch: pytest.MonkeyPatch, requests_mock: Any
+) -> None:
+    """
+    M-04 AC: `type` is a schema cache key, not an eligibility test.
+
+    The `sense` of the real fixture used to be dropped here, because
+    nothing in the code could describe another type's telemetry. The schema
+    is served per type now (`get_measures_ranges`), so discarding a device
+    the API returned would be throwing away data we can render - and the
+    card's acceptance criterion forbids it in as many words. What stays
+    narrow is the promise: Now+ is the supported type (README), not a
+    filter.
+    """
+    register_devices(requests_mock, _real_page())
+
+    devices = _api(monkeypatch).get_devices()
+    serials = {device.serial_number for device in devices}
+
+    assert serials == {REPORTING_SERIAL, SILENT_SERIAL}
+    assert {device.device_type for device in devices} == {"nowplus", "sense"}
+
+
+def test_a_device_with_no_type_keeps_an_empty_type_and_survives(
+    monkeypatch: pytest.MonkeyPatch, requests_mock: Any
+) -> None:
+    """A missing `type` leaves `device_type` an empty string, not `None`."""
+    page = _real_page()
+    del _devices_of(page)[REPORTING_SERIAL]["type"]
+    register_devices(requests_mock, page)
+
+    device = next(
+        d
+        for d in _api(monkeypatch).get_devices()
+        if d.serial_number == REPORTING_SERIAL
+    )
+
+    assert device.device_type == ""
+    assert set(device.readings) == EXPECTED_FIELDS
 
 
 def test_non_measurement_telemetry_keys_never_become_readings(
@@ -283,7 +309,11 @@ def test_the_loop_follows_total_pages(
 
     devices = _api(monkeypatch).get_devices()
 
-    assert {device.serial_number for device in devices} == {REPORTING_SERIAL, "3D90E1"}
+    assert {device.serial_number for device in devices} == {
+        REPORTING_SERIAL,
+        SILENT_SERIAL,
+        "3D90E1",
+    }
     assert [request.qs["page"] for request in requests_mock.request_history] == [
         ["1"],
         ["2"],
@@ -323,7 +353,10 @@ def test_a_serial_repeated_across_pages_is_collected_once(
     register_devices(requests_mock, first, second)
     devices = _api(monkeypatch).get_devices()
 
-    assert [device.serial_number for device in devices] == [REPORTING_SERIAL]
+    assert [device.serial_number for device in devices] == [
+        REPORTING_SERIAL,
+        SILENT_SERIAL,
+    ]
 
 
 def test_a_never_ending_pagination_stops_at_the_ceiling(
@@ -351,7 +384,8 @@ def test_a_never_ending_pagination_stops_at_the_ceiling(
         devices = _api(monkeypatch).get_devices()
 
     assert len(requests_mock.request_history) == MAX_DEVICE_PAGES
-    assert len(devices) == 1  # the same device, deduplicated by serial
+    # The same two devices over and over, deduplicated by serial.
+    assert len(devices) == 2
     assert "ceiling" in caplog.text
 
 
@@ -396,6 +430,12 @@ def test_a_nested_life_is_logged_and_produces_no_device(
     with caplog.at_level(logging.INFO, logger="custom_components.radoff.api.client"):
         devices = _api(monkeypatch).get_devices()
 
-    assert {device.serial_number for device in devices} == {REPORTING_SERIAL}
+    # The controller is a device like any other since M-04 dropped the type
+    # filter - what stays out is the *nested* one, which is only reported.
+    assert {device.serial_number for device in devices} == {
+        REPORTING_SERIAL,
+        SILENT_SERIAL,
+        "E754F0",
+    }
     assert "855894" in caplog.text
     assert "T-08 D-33" in caplog.text

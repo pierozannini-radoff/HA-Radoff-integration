@@ -193,6 +193,7 @@ def register_devices(
     *pages: dict[str, Any],
     status_code: int = 200,
     base_url: str = BASE_URL,
+    with_schema: bool = True,
 ) -> None:
     """
     Mock the one call a poll cycle makes: `GET /data/devices` (card M-03).
@@ -217,6 +218,61 @@ def register_devices(
         return bodies[min(requested, len(bodies)) - 1]
 
     requests_mock.get(f"{base_url}/data/devices", json=_page_body)
+
+    if with_schema:
+        register_measures_ranges(requests_mock, base_url=base_url)
+
+
+def register_measures_ranges(
+    requests_mock: Any,
+    *,
+    base_url: str = BASE_URL,
+    payloads: dict[str, Any] | None = None,
+    status_code: int | None = None,
+) -> None:
+    """
+    Mock `GET /analytics/measures-ranges`, the schema call of card M-04.
+
+    Answers each `device_type` with the real payload M-01 captured for it
+    (`tests/fixtures/dev/measures_ranges__<type>.json`), a type with no
+    fixture with the real 404 body carrying `available`, and a call with no
+    `device_type` with the merged `measures_ranges__all`. `life` needs no
+    special case: the fixture captured for it *is* a 404 body, because that
+    is what dev answered.
+
+    Registered by `register_devices` for every test that sets an entry up,
+    because from M-04 on a setup makes this call as surely as it makes the
+    device one. Pass `payloads`/`status_code` to override that (a schema
+    the suite invents, or an endpoint that is down), or re-register the same
+    URL afterwards - the last registration wins.
+    """
+
+    def _schema_body(request: Any, context: Any) -> Any:
+        device_type = request.qs.get("device_type", [None])[0]
+        if status_code is not None:
+            context.status_code = status_code
+        if payloads is not None:
+            context.status_code = status_code or HTTPStatus.OK
+            return payloads.get(device_type, {})
+
+        name = (
+            "measures_ranges__all"
+            if device_type is None
+            else f"measures_ranges__{device_type}"
+        )
+        try:
+            payload = load_dev_fixture(name)
+        except FileNotFoundError:
+            context.status_code = HTTPStatus.NOT_FOUND
+            return load_dev_fixture("error__measures_ranges_unknown_type")
+
+        # The `life` fixture is an error body, not a schema (M-01: that type
+        # has no schema on dev), and is recognisable by `available`.
+        if isinstance(payload, dict) and "available" in payload:
+            context.status_code = HTTPStatus.NOT_FOUND
+        return payload
+
+    requests_mock.get(f"{base_url}/analytics/measures-ranges", json=_schema_body)
 
 
 @pytest.fixture

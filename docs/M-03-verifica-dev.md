@@ -159,3 +159,24 @@ due override di pool spariscono e la passata verifica anche l'autenticazione:
 ```bash
 python3 scripts/verify_m03_live.py
 ```
+
+---
+
+## Nota successiva — cosa ha cambiato M-04 (RT-2942)
+
+Questo resta il verbale della passata di M-03 e non è stato riscritto: i
+numeri qui sopra sono quelli osservati quel giorno, con il codice di quel
+giorno. Una cosa però va letta diversamente da adesso in poi.
+
+Le colonne "device supportati (`nowplus`)" e la riga *"Ogni device modellato
+è di un tipo supportato"* misuravano un **filtro**: `_build_device` scartava
+ogni device che non fosse un Now+, quindi un `sense` nel dominio non
+esisteva né per il modello né per Home Assistant. M-04 ha tolto quel filtro —
+`type` è la chiave di cache dello schema, non un test di ammissibilità
+(decisione T-02, AC di M-04: *"un device_type sconosciuto non fa scomparire
+il device"*). Rifacendo oggi la stessa passata quei conteggi sarebbero più
+alti, e il controllo sul tipo non avrebbe più nulla da verificare.
+
+Cosa **non** è cambiato: Now+ resta l'unico tipo supportato e verificato,
+ed è quello che il README promette. Gli altri tipi ottengono le entità che
+il loro schema dichiara, senza garanzia di copertura.

@@ -18,6 +18,7 @@ from .api import (
     APIAuthError,
     APIDomainAccessError,
     APIRateLimitError,
+    APIUnknownDeviceTypeError,
     AuthChallengeRequiredError,
     AuthExpiredError,
     AuthInvalidError,
@@ -36,6 +37,7 @@ from .const import (
     ISSUE_MISSING_DOMAIN_ID,
     UPDATE_TIMEOUT_FACTOR,
 )
+from .schema import MeasureSpec, build_specs
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -121,6 +123,92 @@ class RadoffCoordinator(DataUpdateCoordinator[RadoffData]):
             scan_interval=self.poll_interval,
             base_url=self.base_url,
         )
+
+        # The measurement schema, keyed by device type (card M-04). Filled
+        # once at setup by `async_load_schemas` and read by `sensor.py`
+        # while it builds entities; empty for the lifetime of a coordinator
+        # nobody loads it for (a test that only drives a poll cycle, say),
+        # which is why every read goes through `.get(...)`.
+        #
+        # It lives on the coordinator rather than in a dedicated runtime
+        # data object because `config_entry.runtime_data` *is* this
+        # coordinator (`type RadoffConfigEntry = ConfigEntry[RadoffCoordinator]`,
+        # __init__.py) - so this is the entry's runtime data, reached the
+        # same way every other consumer already reaches it, with no second
+        # container to keep in sync.
+        #
+        # It is deliberately not refreshed per poll: a schema describes a
+        # product, not a reading. A device type appearing *after* setup
+        # therefore finds no schema here - and creates no entity either,
+        # since the sensor platform only runs at setup; both are resolved by
+        # the same reload, which is how a Home Assistant integration handles
+        # a device that appears while it is running.
+        self.schemas: dict[str, dict[str, MeasureSpec]] = {}
+
+    async def async_load_schemas(self) -> None:
+        """
+        Fetch and cache the measurement schema of every device type seen (M-04).
+
+        Called once by `__init__.py::async_setup_entry`, after the first
+        refresh (which is what makes the device types known) and before the
+        sensor platform runs (which is what consumes the result). One call
+        per distinct type, not per device: `/analytics/measures-ranges`
+        answers about a product.
+
+        An unknown type is not fatal, and that is an acceptance criterion of
+        this card rather than a defensive reflex. The backend answers 404
+        with the valid types in `available` (`APIUnknownDeviceTypeError`,
+        card M-02); this logs a WARNING naming both, caches an empty schema
+        so the type is not asked about again, and lets the device through -
+        `sensor.py` then builds what it can from the telemetry itself.
+
+        Every other failure propagates. A schema that cannot be fetched at
+        all is not a device-shaped problem but a "the backend is not
+        answering right now" one, and the caller turns it into
+        `ConfigEntryNotReady`, which Home Assistant retries - strictly
+        better than setting up an integration whose entities would all be
+        nameless and unitless for the rest of the session.
+        """
+        for device_type in sorted({device.device_type for device in self.data.devices}):
+            if device_type in self.schemas:
+                continue
+
+            if not device_type:
+                # `type` absent from the device entry (`_build_device` keeps
+                # it as ""). There is nothing to ask the schema endpoint
+                # about, and asking with an empty `device_type` would get
+                # the merged all-types answer, which is worse than none.
+                _LOGGER.warning(
+                    "A Radoff device carries no `type`: no measurement "
+                    "schema can be fetched for it, so its entities are "
+                    "built from its telemetry alone"
+                )
+                self.schemas[device_type] = {}
+                continue
+
+            try:
+                payload = await self.hass.async_add_executor_job(
+                    self.api.get_measures_ranges, device_type
+                )
+            except APIUnknownDeviceTypeError as err:
+                _LOGGER.warning(
+                    "Radoff does not recognise device type '%s' (the API "
+                    "lists %s): its devices are kept and their entities "
+                    "built from telemetry alone, without units or "
+                    "qualitative bands. %s",
+                    device_type,
+                    ", ".join(err.available) or "no type at all",
+                    err,
+                )
+                self.schemas[device_type] = {}
+                continue
+
+            self.schemas[device_type] = build_specs(payload, device_type=device_type)
+            _LOGGER.debug(
+                "Radoff schema for device type '%s': %d measure(s)",
+                device_type,
+                len(self.schemas[device_type]),
+            )
 
     @property
     def stale_after(self) -> timedelta:
