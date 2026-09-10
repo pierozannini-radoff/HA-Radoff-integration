@@ -100,6 +100,21 @@ non un timeout per richiesta (quello è `API.DEFAULT_TIMEOUT`). Il commento
 in `const.py` è stato riscritto: descriveva ancora il pattern N+1, che
 M-03 ha eliminato. Misurato dal vivo: **2.80 s, l'1.17% del budget**.
 
+## Rilanciare tutte le verifiche
+
+```bash
+./scripts/verify_m05            # lint, suite, AC uno per riga, passata su dev
+./scripts/verify_m05 --offline  # tutto tranne la passata su dev
+```
+
+Esce 1 al primo passo fallito e stampa l'elenco alla fine. Le credenziali
+vengono dal proprio `.env`; gli override di pool sono già dentro lo script
+e si cambiano con `M05_POOL_ID` / `M05_CLIENT_ID` / `M05_DOMAIN_PREFIX`.
+
+L'unica verifica che nessuno script può fare è guardare il form:
+`./scripts/develop`, poi **Impostazioni → Dispositivi e servizi → Radoff →
+Configura**, e controllare che il campo proponga 300 e rifiuti 59.
+
 ## La verifica dal vivo
 
 ```bash
