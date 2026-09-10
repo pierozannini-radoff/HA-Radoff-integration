@@ -1,6 +1,7 @@
 """Class which represent the Radoff Coordinator."""
 
 import asyncio
+import hashlib
 import logging
 from dataclasses import dataclass
 from datetime import timedelta
@@ -35,11 +36,34 @@ from .const import (
     DOMAIN,
     ERROR_DOMAIN_ACCESS_DENIED,
     ISSUE_MISSING_DOMAIN_ID,
+    POLL_JITTER_FRACTION,
     UPDATE_TIMEOUT_FACTOR,
 )
 from .schema import MeasureSpec, build_specs
 
 _LOGGER = logging.getLogger(__name__)
+
+
+def _stable_fraction(seed: str) -> float:
+    """
+    Return a number in [0, 1) that is always the same for the same `seed`.
+
+    Card M-05. Deliberately not `random.random()` and deliberately not the
+    `hash()` builtin: the first gives a different answer every restart, the
+    second a different answer every *process* (PYTHONHASHSEED is randomised
+    per interpreter), and this value has to survive both - an installation
+    that redraws its offset on every Home Assistant restart is back in
+    lockstep with everyone else who just restarted, which is precisely the
+    correlated event the offset exists to break up.
+
+    SHA-256 over the entry_id, first four bytes as an integer, scaled to
+    [0, 1). No cryptographic claim is being made here; what is needed is a
+    well-spread, stable mapping from an opaque id to a number, and hashlib
+    is the one hash in the stdlib that is guaranteed not to be re-seeded
+    behind our back.
+    """
+    digest = hashlib.sha256(seed.encode("utf-8")).digest()
+    return int.from_bytes(digest[:4], "big") / 2**32
 
 
 @dataclass
@@ -107,6 +131,26 @@ class RadoffCoordinator(DataUpdateCoordinator[RadoffData]):
             name=f"{HOMEASSISTANT_DOMAIN} ({config_entry.unique_id})",
             update_interval=timedelta(seconds=self.poll_interval),
         )
+
+        # Card M-05, the two pieces of scheduling state this coordinator
+        # owns. Both are consumed by `_schedule_refresh` below, which is the
+        # single place that decides when the next cycle starts.
+        #
+        # `_jitter_fraction` is this entry's own share of
+        # `POLL_JITTER_FRACTION` (const.py), drawn once from the entry_id so
+        # it is the same after every restart and different from the next
+        # installation's. Note Home Assistant already staggers coordinators
+        # by a random *microsecond* (`self._microsecond`, see
+        # DataUpdateCoordinator.__init__): that avoids a thundering herd
+        # inside one event loop, it does nothing about thousands of separate
+        # installations arriving at the API on the same round minute.
+        #
+        # `_rate_limit_delay` is a one-shot: set by the 429 clause of
+        # `_async_update_data`, spent by the next `_schedule_refresh`.
+        self._jitter_fraction = (
+            _stable_fraction(config_entry.entry_id) * POLL_JITTER_FRACTION
+        )
+        self._rate_limit_delay: float | None = None
 
         # client_id/pool_id/pool_region are no longer read from the config entry
         # (see S-02): API() falls back to this integration's own Cognito app
@@ -223,6 +267,124 @@ class RadoffCoordinator(DataUpdateCoordinator[RadoffData]):
         it and decided against it (see const.py's comment on that constant).
         """
         return self.update_interval * DEFAULT_STALE_MULTIPLIER
+
+    @property
+    def poll_jitter(self) -> timedelta:
+        """
+        Return this entry's fixed offset between one poll and the next (M-05).
+
+        A share of `update_interval` in [0, POLL_JITTER_FRACTION), constant
+        for this config entry: an entry at the 300s default polls every
+        300..330s, always the same value, and two entries created in the
+        same instant do not stay in step. Derived from `update_interval`
+        rather than stored in seconds so that it follows an interval changed
+        from the options flow.
+
+        Expressed as a period offset, not as a phase offset applied once at
+        startup: aligning the *first* poll only would let a shared restart -
+        a Home Assistant upgrade, a host reboot, an outage everyone recovers
+        from together - re-align every installation that shares it.
+        """
+        return self.update_interval * self._jitter_fraction
+
+    def _schedule_refresh(self) -> None:
+        """
+        Schedule the next cycle, honouring jitter and any pending 429 (M-05).
+
+        Home Assistant's own implementation schedules `update_interval` from
+        now, reading it through `self._update_interval_seconds`. Rather than
+        reimplement it - it also handles the debouncer, `pref_disable_polling`
+        and the unsubscribe bookkeeping - this swaps in the delay this cycle
+        should actually use, delegates, and puts the nominal interval back.
+
+        Restoring it matters: `update_interval` is what `stale_after` (S-07)
+        and the cycle timeout budget (S-13) are derived from, and neither
+        should move because one cycle was rate limited. The only thing that
+        moves is when the next refresh fires.
+
+        A pending 429 backoff *lengthens* the wait, it never shortens it.
+        The backoff starts at ~5s (RATE_LIMIT_BACKOFF_START, const.py) and
+        only reaches the poll interval after a streak of them, so honouring
+        it literally would have the perverse effect of polling a
+        rate-limited backend every few seconds instead of every five
+        minutes - the opposite of what the 429 asked for. Whichever delay is
+        longer is the one that wins.
+        """
+        if self.update_interval is None:
+            super()._schedule_refresh()
+            return
+
+        backoff = self._rate_limit_delay
+        self._rate_limit_delay = None
+
+        nominal = self.update_interval
+        delay = nominal + self.poll_jitter
+        if backoff is not None:
+            delay = max(delay, timedelta(seconds=backoff))
+
+        self.update_interval = delay
+        try:
+            super()._schedule_refresh()
+        finally:
+            self.update_interval = nominal
+
+    def _skip_cycle_for_rate_limit(self, err: APIRateLimitError) -> RadoffData:
+        """
+        Skip a cycle the API asked us to skip, keeping the entities alive.
+
+        Card M-02 classified the 429 and computed the backoff
+        (`err.retry_after`; API Gateway sends no `Retry-After` header, so
+        the delay is ours - exponential from RATE_LIMIT_BACKOFF_START,
+        jittered, reset on the first 200). Card M-05 is the half M-02 left
+        open: what the *scheduler* does with it.
+
+        Two departures from how `DataUpdateCoordinator` treats a failed
+        cycle, both deliberate:
+
+        1. This returns the previous cycle's data instead of raising
+           `UpdateFailed`. A 429 says "not now, you are one client among
+           many on a shared quota" - it says nothing about the devices,
+           which are still online and still emitting once a minute. Marking
+           every entity `unavailable` because someone else's traffic peaked
+           would be a lie, and one that propagates into automations and
+           history.
+        2. The delay is honoured as a floor: `_schedule_refresh` waits at
+           least `err.retry_after` before the next cycle, so a streak of
+           429s - where the backoff doubles past the poll interval - backs
+           this integration off instead of polling through it. Below the
+           interval the backoff changes nothing, which is the common case:
+           one 429 asks for ~5s, and the next cycle was five minutes away
+           anyway.
+
+        This is a *skip*, not a suppression. The readings keep ageing, so a
+        rate-limited stretch longer than `stale_after` (S-07, 3x the
+        interval) still takes the entities unavailable - by the honest
+        route of stale data rather than by a failed fetch.
+        """
+        if self.data is None:
+            # First refresh of the entry: there is no previous cycle to
+            # return, so this is the one case where a 429 has to fail.
+            # `async_config_entry_first_refresh` turns it into
+            # `ConfigEntryNotReady` and Home Assistant retries the setup
+            # with its own backoff - see the matching clause around
+            # `async_load_schemas` in __init__.py.
+            _LOGGER.warning(
+                "Radoff rate limit reached on the first poll of this entry; "
+                "setup will be retried: %s",
+                err,
+            )
+            msg = f"Rate limited by the Radoff API: {err}"
+            raise UpdateFailed(msg) from err
+
+        self._rate_limit_delay = err.retry_after
+        _LOGGER.warning(
+            "Radoff rate limit reached; this cycle is skipped, entities keep "
+            "the previous poll's readings and the next attempt waits at "
+            "least ~%.1fs: %s",
+            err.retry_after,
+            err,
+        )
+        return self.data
 
     async def _async_update_data(self) -> RadoffData:
         """
@@ -417,27 +579,12 @@ class RadoffCoordinator(DataUpdateCoordinator[RadoffData]):
             ) from err
 
         except APIRateLimitError as err:
-            # Card M-02: HTTP 429 on the shared per-environment quota. Stays
-            # `UpdateFailed` - the cycle is lost - but is logged as the
-            # expected, transient, not-our-fault condition it is, without a
-            # traceback, and carries the backoff the client computed
-            # (`err.retry_after`; API Gateway sends no `Retry-After`).
-            #
-            # What this clause does NOT do yet is honour that delay by
-            # actually rescheduling the next refresh, nor keep the entities
-            # available across the skipped cycle - a 429 is not a device
-            # going offline. Both are scheduling decisions and belong to the
-            # polling-interval card of this migration (decided with Piero);
-            # this card's job is to stop retrying immediately and to make
-            # the delay available to whoever will apply it.
-            _LOGGER.warning(
-                "Radoff rate limit reached; this cycle is skipped and the "
-                "next attempt should wait ~%.1fs: %s",
-                err.retry_after,
-                err,
-            )
-            msg = f"Rate limited by the Radoff API: {err}"
-            raise UpdateFailed(msg) from err
+            # Card M-05: a rate-limited cycle is skipped, not failed. The
+            # whole decision lives in `_skip_cycle_for_rate_limit` below -
+            # inline it made this method exceed ruff's branch and statement
+            # limits, and it is the one clause here that does not end in a
+            # raise, so it reads better named than buried in the chain.
+            return self._skip_cycle_for_rate_limit(err)
 
         except APIAuthError as err:
             # The catch-all of the M-02 taxonomy, for a status nobody has

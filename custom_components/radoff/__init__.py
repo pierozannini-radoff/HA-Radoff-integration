@@ -16,7 +16,12 @@ from homeassistant.exceptions import (
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers import issue_registry as ir
 
-from .api import AuthChallengeRequiredError, AuthExpiredError, AuthInvalidError
+from .api import (
+    APIRateLimitError,
+    AuthChallengeRequiredError,
+    AuthExpiredError,
+    AuthInvalidError,
+)
 from .const import (
     CONF_DOMAIN_ID,
     CONF_INDEX,
@@ -344,6 +349,28 @@ async def async_setup_entry(
         # maps the same three to `ConfigEntryAuthFailed` for the same
         # reason (see `_async_update_data`).
         raise ConfigEntryAuthFailed(str(err)) from err
+    except APIRateLimitError as err:
+        # Card M-05. The defect the poll path's 429 clause exists to avoid
+        # does not arise here - at setup there are no entities yet to mark
+        # unavailable - so this stays `ConfigEntryNotReady` and the retry is
+        # Home Assistant's, with its own backoff, not `err.retry_after`.
+        # What this clause adds over the catch-all below is that a 429 is
+        # named as a 429 in the log, with the delay the client computed, so
+        # a rate-limited stage is recognisable in a user's log instead of
+        # reading as "the schema endpoint is down".
+        #
+        # Note the schema call is not part of the poll budget: it runs once
+        # per device type at setup (five types in the whole catalogue), not
+        # once per cycle - see `RadoffCoordinator.async_load_schemas`.
+        _LOGGER.warning(
+            "Radoff rate limit reached while fetching the measurement "
+            "schema at setup (the API asked for ~%.1fs of room); Home "
+            "Assistant will retry this entry: %s",
+            err.retry_after,
+            err,
+        )
+        msg = f"Rate limited by the Radoff API: {err}"
+        raise ConfigEntryNotReady(msg) from err
     except Exception as err:
         _LOGGER.warning(
             "Radoff could not fetch the measurement schema at setup: %s. "

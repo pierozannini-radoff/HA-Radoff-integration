@@ -9,21 +9,37 @@ _LOGGER = logging.getLogger(__name__)
 DOMAIN = "radoff"
 CONF_POOL_ID = "pool_id"
 CONF_POOL_REGION = "pool_region"
-DEFAULT_SCAN_INTERVAL = 60
+# Default poll interval, in seconds (card M-05). Raised from 60 to 300 now
+# that T-02 has answered: five minutes is one request per cycle against a
+# quota of 50 req/s steady (100 burst) shared, per stage, by the mobile app,
+# the web app and every integration - and it is above the horizon at which
+# the device itself has anything new to say (see MIN_SCAN_INTERVAL below).
+# Polling faster does not produce fresher data, it only spends someone
+# else's quota.
+DEFAULT_SCAN_INTERVAL = 300
 
-# Card S-11: MIN_SCAN_INTERVAL was 10 seconds and dead code (no OptionsFlow
-# could ever write CONF_SCAN_INTERVAL - see finding F6). T-02's question 6
-# ("rate limit ufficiali dell'API, per definire un update_interval di
-# default difendibile") is still open in every analysis document in this
-# project - no answer has come back from the Radoff backend team. Per this
-# card's own instruction ("se non arriva risposta, alzarlo a un valore
-# difendibile e documentarlo"), raised from 10 to 30: with the N+1 polling
-# pattern (`get_devices()` = 1 search + 1 GET per device, see finding F5),
-# 10 seconds is aggressive even for a single-device account, let alone the
-# property-manager/multi-site accounts the analysis docs call out. 30 is a
-# provisional, defensible floor, not a value derived from any confirmed
-# rate limit - revisit once T-02 actually answers question 6.
-MIN_SCAN_INTERVAL = 30
+# Floor for the OptionsFlow's scan_interval, in seconds. Card S-11 raised it
+# from 10 to 30 and said so in as many words: "a provisional, defensible
+# floor, not a value derived from any confirmed rate limit - revisit once
+# T-02 actually answers question 6". T-02 has now answered (card M-05), and
+# the answer moves the floor to 60 for a reason that is not the one S-11
+# guessed at.
+#
+# The binding number is the *device* cadence, not a rate limit and not a
+# cache TTL: a Radoff device emits one message per minute, and the radon
+# figure it carries is aggregated over at least five minutes. Below 60s
+# there is simply nothing new to fetch - the same reading comes back, at
+# full price. (The 60s TTL quoted in the swagger docs is on Aurora's device
+# row, not on the telemetry; reading it as a freshness bound is what had led
+# this project to the wrong conclusion.)
+#
+# The rate limit T-02 did report - 50 req/s steady, 100 burst, per stage,
+# shared across every client of the API, with no per-user and no per-IP
+# allowance and no WAF - is what makes the floor non-negotiable rather than
+# advisory: there is no headroom reserved for this integration to spend, and
+# nothing upstream that would absorb a swarm of installations polling as
+# fast as the form lets them.
+MIN_SCAN_INTERVAL = 60
 
 # Upper bound for the OptionsFlow's scan_interval NumberSelector (card
 # S-11). Not a backend requirement, just a sane ceiling so the form can't be
@@ -80,6 +96,26 @@ RATE_LIMIT_BACKOFF_MAX = 300
 # more than a quarter.
 RATE_LIMIT_BACKOFF_JITTER = 0.25
 
+# Fraction of the poll interval drawn once per config entry and *added* to
+# every cycle, so that two installations configured identically do not poll
+# in lockstep (card M-05). An explicit request from the backend team, and
+# the reason is arithmetic rather than defensive: thousands of entries at a
+# flat 300s all fire on the round minute they happened to start on, which
+# turns a load the shared quota can absorb on average into a periodic spike
+# it cannot. Spreading the *period* (300s -> 300..330s per entry), not just
+# the first poll, keeps them apart permanently instead of only until a
+# restart re-aligns them.
+#
+# Deliberately one-sided, unlike RATE_LIMIT_BACKOFF_JITTER above which is
+# subtracted: a symmetric +-10% would put an entry configured at
+# MIN_SCAN_INTERVAL at 54s, under the device cadence that floor exists to
+# respect. Adding only ever costs the backend less than the nominal rate.
+#
+# The draw itself is stable per entry, not per cycle - see
+# `RadoffCoordinator.poll_jitter` (coordinator.py) for why it is derived
+# from the entry_id rather than from `random`.
+POLL_JITTER_FRACTION = 0.10
+
 # Repairs issue raised when a config entry carries no `domain_id` at all
 # (card RT-2926, finding T-06/F1). `domain_id` was born with the
 # multi-domain discovery of S-01/RT-2803, in the same milestone that
@@ -115,12 +151,23 @@ ERROR_DOMAIN_ACCESS_DENIED = "domain_access_denied"
 DEFAULT_STALE_MULTIPLIER = 3
 
 # Fraction of `update_interval` used as the overall wall-clock budget for one
-# coordinator update cycle (card S-13). The API client's per-device fetch is
-# still a synchronous, sequential N+1 pattern (1 search + 1 GET per device -
-# see `api/client.py::get_devices`), not yet converted to aiohttp (tracked
-# separately as an "L" item, see `architettura-target-sprint-m.md` §11), so
-# a slow or unresponsive backend could otherwise let a single update cycle
-# run well past `update_interval` itself with nothing to stop it.
+# coordinator update cycle (card S-13). The pattern this guards against is
+# not the one S-13 wrote it for: since card M-03 a cycle is a single
+# `GET /data/devices` plus one request per page beyond the first (page_size
+# 200, capped at 25 pages), not the 1 + N of arch 1.x. What has not changed
+# is that the fetch is still synchronous `requests` code run in the executor
+# and not yet converted to aiohttp (tracked separately as an "L" item, see
+# `architettura-target-sprint-m.md` §11), so a slow or unresponsive backend
+# could otherwise let a single update cycle run well past `update_interval`
+# itself with nothing to stop it.
+#
+# Card M-05 re-read the factor after moving the default interval from 60s to
+# 300s and left it at 0.8. It is a fraction, so it scaled with the interval
+# on its own: the budget went from 48s to 240s, which is generous for one to
+# a few requests but is meant to be - it is a backstop against a hung cycle
+# overlapping the next one, not a per-request timeout (that one lives in
+# `API.DEFAULT_TIMEOUT`). At the 60s floor it is 48s, still several times a
+# healthy cycle.
 # `RadoffCoordinator.async_update_data` wraps its work in
 # `asyncio.timeout(update_interval * UPDATE_TIMEOUT_FACTOR)` and raises
 # `UpdateFailed` with an explicit message if that budget is exceeded,

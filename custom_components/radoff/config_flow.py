@@ -363,6 +363,13 @@ class RadoffOptionsFlow(OptionsFlow):
     parameters S-02 removed from the config flow, it deliberately does not
     come back as a setup-time question: it belongs to a working entry's
     options, not to its identity.
+
+    Card M-05 changes no code here and that is the point: the form's bounds
+    are `MIN_SCAN_INTERVAL`/`DEFAULT_SCAN_INTERVAL` (const.py), so moving
+    the floor to 60s and the default to 300s moved the form with them. Only
+    the field's description had to be rewritten - it now says what the two
+    numbers mean, since "how often to poll" is not what a user needs to
+    know when the honest answer is "the device only speaks once a minute".
     """
 
     def __init__(self, config_entry: ConfigEntry) -> None:
