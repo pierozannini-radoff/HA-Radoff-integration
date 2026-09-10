@@ -22,6 +22,7 @@ coordinator asks for, not Home Assistant's ability to honour a timer.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import pytest
@@ -200,12 +201,16 @@ async def test_poll_degraded_missing_field_only_affects_that_reading(
     """
     A field missing from the telemetry block only affects that one entity.
 
-    Card M-04 changes the shape of "affects", not the isolation. Entities
+    Card M-04 changed the shape of "affects", not the isolation: entities
     follow the device type's schema now, not the last payload, so the
-    missing field keeps its entity and that entity goes `unavailable`
-    where before it produced no entity at all. That is the better half of
-    the trade: a device that skips a field for one cycle no longer loses
-    and regains an entity, with the history that implies.
+    missing field keeps its entity instead of producing none at all.
+
+    Card M-06 changes it again, and this time it is what the entity
+    *shows*. The device says `connected`, so nothing about it is
+    unavailable; the one field it did not send has no value to show and no
+    earlier value to fall back on, which is `unknown`. The isolation is
+    unchanged and is still the claim: the sibling that did arrive is
+    unaffected.
     """
     register_devices(requests_mock, load_devices_fixture("devices_missing_field.json"))
 
@@ -213,40 +218,51 @@ async def test_poll_degraded_missing_field_only_affects_that_reading(
 
     temperature = hass.states.get("sensor.living_room_temperature")
     assert temperature is not None
-    assert temperature.state == "unavailable"
+    assert temperature.state == "unknown"
 
     humidity = hass.states.get("sensor.living_room_humidity")
     assert humidity is not None
     assert humidity.state == "45.0"
 
 
-async def test_a_device_without_telemetry_creates_no_entities_and_no_error(
+async def test_a_connected_device_without_telemetry_keeps_its_entities_available(
     hass: HomeAssistant,
     monkeypatch: pytest.MonkeyPatch,
     requests_mock: Any,
     config_entry_v2_data: dict[str, Any],
 ) -> None:
     """
-    M-03 AC: `telemetry: null` sets up cleanly, with no data and no error.
+    M-06 AC1: `connected` plus `telemetry: null` is not unavailable.
 
-    The condition of the majority of the devices M-01 censused (D-16). The
-    entry must load: a domain where nothing is transmitting is a normal
-    state of the world, not a failure of the integration.
+    The condition of the majority of the devices M-01 censused (D-16), and
+    the card's first acceptance criterion. The entry must load - a domain
+    where nothing is transmitting is a normal state of the world - and the
+    entities must stay available: `GET /data/devices` looks at a 6-hour
+    window and does not widen it on a miss, so silence this long is a fact
+    about the query, not about the device, and the device itself says
+    `connected`.
 
-    Card M-04 moved where the entities come from - the device type's
-    schema, not the payload - so a silent device now shows the entities its
-    type declares, all `unavailable`, instead of none at all. The claim
-    being tested is unchanged and is the one that matters: no value is
-    invented and nothing raises.
+    Three assertions, and each one failed before this card in a different
+    way. The state is `unknown` rather than `unavailable` (there is no
+    earlier value on a device that has never transmitted, so there is
+    nothing to remember). `stale` is still `True`, because it never meant
+    offline and still does not. And `last_measured_at` is absent rather
+    than borrowed from somewhere: nothing was ever measured.
+
+    Only observable at all since card M-04 - before it, a device with
+    `telemetry: null` had no entities, so the criterion had no subject.
     """
-    register_devices(requests_mock, load_fixture("devices_no_telemetry.json"))
+    register_devices(requests_mock, load_devices_fixture("devices_no_telemetry.json"))
 
     entry = await _setup_entry(hass, monkeypatch, config_entry_v2_data)
 
     assert entry.state is ConfigEntryState.LOADED
     temperature = hass.states.get("sensor.living_room_temperature")
     assert temperature is not None
-    assert temperature.state == "unavailable"
+    assert temperature.state == "unknown"
+    assert "last_measured_at" not in temperature.attributes
+    assert temperature.attributes["connection_status"] == "connected"
+
     coordinator = entry.runtime_data
     assert [device.stale for device in coordinator.data.devices] == [True]
 
@@ -258,16 +274,27 @@ async def test_a_device_falling_silent_only_affects_its_own_entities(
     config_entry_v2_data: dict[str, Any],
 ) -> None:
     """
-    One device's `telemetry: null` leaves the other device's entities alone.
+    A device that falls silent keeps its last value; the other one updates.
 
     This is what per-device degradation looks like after card M-03: not a
     device whose own request failed (there is no per-device request any
     more), but a device the API answered about and that has nothing to say.
+
+    Card M-06 decides what that device shows, and this test is where the
+    decision and its cost are both pinned. The state stays the last value
+    the device sent - decided with Piero, so that history stays continuous
+    and automations do not meet `unknown` on every gap - while
+    `last_measured_at` keeps the timestamp that value arrived with. That
+    pair is the whole design: the state looks current and the attribute
+    says it is not. The sibling device, which did report, moves both.
     """
     two_devices = load_devices_fixture("devices_two_devices.json")
     register_devices(requests_mock, two_devices)
     await _setup_entry(hass, monkeypatch, config_entry_v2_data)
-    assert hass.states.get("sensor.bedroom_temperature").state != "unavailable"
+
+    bedroom_before = hass.states.get("sensor.bedroom_temperature")
+    assert bedroom_before.state != "unavailable"
+    measured_at_before = bedroom_before.attributes["last_measured_at"]
 
     silent = load_devices_fixture("devices_two_devices.json")
     silent["devices"][1]["telemetry"] = None
@@ -280,7 +307,11 @@ async def test_a_device_falling_silent_only_affects_its_own_entities(
 
     bedroom = hass.states.get("sensor.bedroom_temperature")
     assert bedroom is not None
-    assert bedroom.state == "unavailable"
+    assert bedroom.state == bedroom_before.state
+    assert bedroom.attributes["last_measured_at"] == measured_at_before
+    # The device that did report has moved on: the two timestamps are the
+    # evidence that one value is fresh and the other is being remembered.
+    assert living_room.attributes["last_measured_at"] != measured_at_before
 
 
 async def test_a_500_costs_the_whole_cycle(
@@ -505,9 +536,11 @@ async def test_a_long_backoff_pushes_only_the_next_cycle_out(
     A backoff longer than the interval delays one cycle, and only one.
 
     Card M-05, the scheduling half of M-02's 429 work. `update_interval`
-    itself must not move while this happens: `stale_after` (S-07) and the
-    cycle timeout budget (S-13) are both derived from it, and neither has
-    any business changing because one cycle was rate limited.
+    itself must not move while this happens: the cycle timeout budget
+    (S-13) and this entry's jitter share are both derived from it, and
+    neither has any business changing because one cycle was rate limited.
+    (S-07's freshness threshold hung off it too, and was asserted here
+    until card M-06 removed the threshold itself.)
     """
     coordinator = _make_coordinator(hass, config_entry_v2_data, entry_id="entry-one")
     nominal = coordinator.update_interval
@@ -516,7 +549,6 @@ async def test_a_long_backoff_pushes_only_the_next_cycle_out(
 
     assert _next_delay(coordinator, monkeypatch) == DEFAULT_SCAN_INTERVAL * 3.0
     assert coordinator.update_interval == nominal
-    assert coordinator.stale_after == nominal * 3
 
     assert _next_delay(coordinator, monkeypatch) < DEFAULT_SCAN_INTERVAL * 1.5
 
@@ -557,10 +589,23 @@ async def test_a_429_skips_the_cycle_without_making_entities_unavailable(
     and still emitting once a minute, so their entities keep the previous
     poll's readings instead of going `unavailable` - and the backoff the
     client computed is carried into the next scheduling decision.
+
+    Card M-06 AC4 ("un 429 o un ciclo fallito non vengono confusi con un
+    device offline") lands on this test, and makes it stronger than M-05
+    could: back then the entities kept their readings only until those
+    readings aged past the freshness threshold, so a long rate-limited
+    stretch still ended in `unavailable`. There is no threshold now.
+    Availability is the device's `connection_status`, which a 429 does not
+    touch, so the entities also keep reporting `connected` with the
+    `last_measured_at` of the last cycle that succeeded - the rate limit is
+    visible as data that has stopped moving, never as a device that has
+    gone away.
     """
     register_devices(requests_mock, load_devices_fixture("devices_two_devices.json"))
     await _setup_entry(hass, monkeypatch, config_entry_v2_data)
-    before = hass.states.get("sensor.bedroom_temperature").state
+    before_state = hass.states.get("sensor.bedroom_temperature")
+    before = before_state.state
+    measured_at_before = before_state.attributes["last_measured_at"]
     assert before != "unavailable"
 
     register_devices(requests_mock, RATE_LIMIT_BODY, status_code=429)
@@ -570,6 +615,11 @@ async def test_a_429_skips_the_cycle_without_making_entities_unavailable(
     assert coordinator.last_update_success is True
     assert hass.states.get("sensor.bedroom_temperature").state == before
     assert hass.states.get("sensor.living_room_temperature").state != "unavailable"
+
+    # M-06 AC4: nothing about the rate limit reads as the device being gone.
+    bedroom = hass.states.get("sensor.bedroom_temperature")
+    assert bedroom.attributes["connection_status"] == "connected"
+    assert bedroom.attributes["last_measured_at"] == measured_at_before
 
     register_devices(requests_mock, load_devices_fixture("devices_two_devices.json"))
     await _repoll(hass)
@@ -609,3 +659,75 @@ async def test_a_429_on_the_very_first_poll_retries_the_setup(
     await hass.async_block_till_done()
 
     assert entry.state is ConfigEntryState.SETUP_RETRY
+
+
+async def test_a_frozen_connection_status_is_flagged_not_hidden(
+    hass: HomeAssistant,
+    monkeypatch: pytest.MonkeyPatch,
+    requests_mock: Any,
+    config_entry_v2_data: dict[str, Any],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """
+    M-06: a `connected` older than the backend's own window warns, once.
+
+    The safety net that replaces the staleness multiplier, and the reason
+    it is only a net. Availability now rests on a single field this client
+    does not own, so the case where that field stops being updated - the
+    DynamoDB sync behind it stalls, a device leaves the sync but not the
+    list - has to be visible. `CONNECTION_STATUS_STALE_WINDOW` is six
+    hours because that is the window `GET /data/devices` itself looks at
+    (T-02 D-16), not a multiple of anything we chose.
+
+    What it deliberately does not do is decide - decided with Piero. The
+    entities stay available and the state keeps its value: the cadence at
+    which the backend refreshes that field is exactly what T-08 D-17 still
+    has open, so turning an old timestamp into "offline" would put a second
+    invented threshold where the first one has just been removed. The
+    warning and the attribute are the whole reaction.
+
+    Warned once per episode, and it stops when the status comes back inside
+    the window - that is the second half of this test, and the difference
+    between a signal and 288 lines a day.
+    """
+    stale_payload = load_devices_fixture("devices_one_device.json")
+    stale_payload["devices"][0]["connection_status_updated_at"] = (
+        datetime.now(UTC) - timedelta(hours=9)
+    ).isoformat()
+
+    caplog.clear()
+    register_devices(requests_mock, stale_payload)
+    await _setup_entry(hass, monkeypatch, config_entry_v2_data)
+
+    def _warnings() -> list[str]:
+        return [
+            record.getMessage()
+            for record in caplog.records
+            if record.levelname == "WARNING"
+            and "connection_status" in record.getMessage()
+        ]
+
+    assert len(_warnings()) == 1
+    assert "9.0 hours" in _warnings()[0]
+
+    state = hass.states.get("sensor.living_room_temperature")
+    assert state is not None
+    assert state.state == "20.9"
+    assert state.attributes["connection_status_stale"] is True
+
+    # A second cycle in the same condition adds nothing to the log.
+    register_devices(requests_mock, stale_payload)
+    await _repoll(hass)
+    assert len(_warnings()) == 1
+
+    # The status is refreshed: the flag clears, and so does the dedup - a
+    # later episode is reported again rather than swallowed.
+    register_devices(requests_mock, load_devices_fixture("devices_one_device.json"))
+    await _repoll(hass)
+
+    state = hass.states.get("sensor.living_room_temperature")
+    assert "connection_status_stale" not in state.attributes
+
+    register_devices(requests_mock, stale_payload)
+    await _repoll(hass)
+    assert len(_warnings()) == 2

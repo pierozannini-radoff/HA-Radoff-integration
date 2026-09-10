@@ -71,13 +71,21 @@ def load_dev_fixture(name: str) -> Any:
 
 def load_devices_fixture(name: str) -> dict[str, Any]:
     """
-    Return a `devices_*.json` fixture with freshly-computed telemetry timestamps.
+    Return a `devices_*.json` fixture with its two timestamps moved to "now".
 
-    The synthetic fixtures carry a fixed, illustrative
-    `telemetry.timestamp`. Overwriting it with "now" at load time is what
-    makes `RadoffEntity.available`'s freshness check (entity.py, based on
-    `coordinator.stale_after`) see these readings as fresh regardless of
-    when the suite actually runs.
+    The synthetic fixtures carry fixed, illustrative timestamps. Both are
+    rewritten at load time so that no assertion in the suite depends on how
+    long ago the fixture was written:
+
+    - `telemetry.timestamp`, which is published as the `last_measured_at`
+      attribute of every entity of that device (card M-06; until that card
+      it also fed the freshness check `RadoffEntity.available` used to run).
+    - `connection_status_updated_at`, which card M-06 compares against
+      `CONNECTION_STATUS_STALE_WINDOW` (6 hours): left as written, every
+      fixture device would be permanently past that window and every test
+      would carry the `connection_status_stale` attribute and its WARNING
+      as background noise. A test that wants a frozen connection status
+      sets the timestamp itself.
 
     Card M-03 renamed this from `load_device_fixture` along with what it
     loads: a `GET /data/devices` page holding every device with its
@@ -88,6 +96,8 @@ def load_devices_fixture(name: str) -> dict[str, Any]:
     for device in payload.get("devices", []):
         if isinstance(device.get("telemetry"), dict):
             device["telemetry"]["timestamp"] = now
+        if device.get("connection_status_updated_at") is not None:
+            device["connection_status_updated_at"] = now
     return payload
 
 

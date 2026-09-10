@@ -34,12 +34,16 @@ through the entity registry instead of through `hass.states`.
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 import pytest
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, State
 from homeassistant.helpers import entity_registry as er
-from pytest_homeassistant_custom_component.common import MockConfigEntry
+from pytest_homeassistant_custom_component.common import (
+    MockConfigEntry,
+    mock_restore_cache_with_extra_data,
+)
 
 from custom_components.radoff.const import DOMAIN
 
@@ -431,3 +435,277 @@ async def test_a_unit_outside_the_map_costs_the_unit_not_the_setup(
         record.levelname == "WARNING" and "parsecs per fortnight" in record.message
         for record in caplog.records
     )
+
+
+# --------------------------------------------------------------------------
+# Card M-06: availability comes from `connection_status`
+# --------------------------------------------------------------------------
+#
+# One helper for this group instead of the inline boilerplate the tests
+# above repeat: every case below is "set the entry up against a payload
+# with one field changed", and six copies of the same fifteen lines would
+# bury the one line that differs.
+
+
+async def _setup_with(
+    hass: HomeAssistant,
+    monkeypatch: pytest.MonkeyPatch,
+    requests_mock: Any,
+    config_entry_v2_data: dict[str, Any],
+    payload: dict[str, Any],
+) -> MockConfigEntry:
+    """Set one entry up against `payload` as the device list."""
+    patch_authenticate_user(
+        monkeypatch,
+        result=auth_result(make_id_token(["aaaaaaaa-0000-0000-0000-000000000001"])),
+    )
+    register_devices(requests_mock, payload)
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data=config_entry_v2_data,
+        options={"generate_index": True},
+        version=2,
+    )
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+    return entry
+
+
+@pytest.mark.parametrize(
+    ("connection_status", "expected_available"),
+    [
+        ("connected", True),
+        # M-06 AC2: not connected, with a full and fresh telemetry block -
+        # the fixture's - and unavailable all the same. Availability is the
+        # connection, not the data.
+        ("disconnected", False),
+        # M-06 AC3: a value from outside the enumeration we have. Available,
+        # because "not connected" is a claim we can only make about a value
+        # we recognise (T-08 D-17 is still open).
+        ("evaporated", True),
+        # Same string as the first case, spelled differently. Matched, not
+        # treated as new: see `classify_connection_status`.
+        ("CONNECTED", True),
+        # No field at all: nothing is known, so nothing is asserted.
+        (None, True),
+    ],
+)
+async def test_availability_follows_connection_status(
+    hass: HomeAssistant,
+    monkeypatch: pytest.MonkeyPatch,
+    requests_mock: Any,
+    config_entry_v2_data: dict[str, Any],
+    connection_status: str | None,
+    expected_available: bool,
+) -> None:
+    """
+    M-06: `connection_status` decides availability, and only two values can.
+
+    The whole card in one parametrisation. Every case uses the nominal
+    payload - a device with complete, current telemetry - so the only
+    variable is the connection field, which is exactly the claim being
+    made: an entity is unavailable when its device says `disconnected`, and
+    at no other time.
+
+    The two rows that matter most are the ones that were impossible before:
+    a value we have never seen, and a missing field, both leave the entity
+    working. S-07's rule ("anything that is not fresh data is unavailable")
+    would have taken every entity of the device down in both cases, on the
+    strength of a string.
+    """
+    payload = load_devices_fixture("devices_one_device.json")
+    payload["devices"][0]["connection_status"] = connection_status
+
+    await _setup_with(hass, monkeypatch, requests_mock, config_entry_v2_data, payload)
+
+    state = hass.states.get("sensor.living_room_temperature")
+    assert state is not None
+    assert (state.state != "unavailable") is expected_available
+    if expected_available:
+        # Available *and* showing the value, not merely not-unavailable.
+        assert state.state == "20.9"
+
+
+async def test_an_unknown_connection_status_warns_once(
+    hass: HomeAssistant,
+    monkeypatch: pytest.MonkeyPatch,
+    requests_mock: Any,
+    config_entry_v2_data: dict[str, Any],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """
+    M-06 AC3: an unseen `connection_status` is a WARNING, not an outage.
+
+    The other half of the AC the parametrisation above covers: the value
+    must be *reported*, because the enumeration is an open request (T-08
+    D-17) and a new state arriving silently would leave us deciding
+    availability from a vocabulary we no longer know.
+
+    Warned once, and this is where that is pinned: both devices of the
+    fixture carry the same new value, and one line comes out. Deduped by
+    value rather than by device on purpose - a domain migrating to a new
+    state would otherwise write one WARNING per device per poll, which is
+    how a useful signal becomes a log to be ignored.
+    """
+    payload = load_devices_fixture("devices_two_devices.json")
+    for device in payload["devices"]:
+        device["connection_status"] = "evaporated"
+
+    caplog.clear()
+    await _setup_with(hass, monkeypatch, requests_mock, config_entry_v2_data, payload)
+
+    warnings = [
+        record
+        for record in caplog.records
+        if record.levelname == "WARNING" and "evaporated" in record.getMessage()
+    ]
+    assert len(warnings) == 1
+    assert "T-08" in warnings[0].getMessage()
+
+    for entity_id in (
+        "sensor.living_room_temperature",
+        "sensor.bedroom_temperature",
+    ):
+        state = hass.states.get(entity_id)
+        assert state is not None
+        assert state.state != "unavailable"
+
+
+async def test_the_diagnostic_attributes_carry_both_timestamps(
+    hass: HomeAssistant,
+    monkeypatch: pytest.MonkeyPatch,
+    requests_mock: Any,
+    config_entry_v2_data: dict[str, Any],
+) -> None:
+    """
+    M-06 AC6: the entity carries the measurement time and the status time.
+
+    Two timestamps that answer two different questions - when did the
+    device last produce data, and when did the backend last change its mind
+    about the device being connected - plus the two status fields that are
+    routinely mistaken for each other (`status` is administrative,
+    `connection_status` operational). A user report has to arrive with all
+    four, on the entity, or telling "reported offline but measuring" from
+    "connected but measuring nothing" needs a diagnostics download.
+
+    `connection_status_stale` is absent here: the fixture's status was
+    updated moments ago (see `conftest.load_devices_fixture`). It appears
+    only when the 6-hour window is exceeded - see the coordinator test that
+    covers that case.
+    """
+    payload = load_devices_fixture("devices_one_device.json")
+    telemetry_timestamp = payload["devices"][0]["telemetry"]["timestamp"]
+    connection_timestamp = payload["devices"][0]["connection_status_updated_at"]
+
+    await _setup_with(hass, monkeypatch, requests_mock, config_entry_v2_data, payload)
+
+    state = hass.states.get("sensor.living_room_temperature")
+    assert state is not None
+    assert state.attributes["last_measured_at"] == telemetry_timestamp
+    assert state.attributes["connection_status_updated_at"] == connection_timestamp
+    assert state.attributes["connection_status"] == "connected"
+    assert state.attributes["status"] == "active"
+    assert "connection_status_stale" not in state.attributes
+
+
+async def test_a_restart_restores_the_last_known_value(
+    hass: HomeAssistant,
+    monkeypatch: pytest.MonkeyPatch,
+    requests_mock: Any,
+    config_entry_v2_data: dict[str, Any],
+) -> None:
+    """
+    M-06: a value survives a restart onto a device that is still silent.
+
+    The consequence of the decision this card made about "no value right
+    now" (decided with Piero: the last known value, not `unknown`), taken
+    to the case where it costs the most to implement and matters most to
+    get right. Without the restore, every Home Assistant restart would
+    punch an `unknown` into the history of every quiet device - which is
+    the outcome the decision was meant to avoid, showing up once a week
+    instead of once a poll.
+
+    Both halves are restored and both are asserted: the value, so the state
+    is continuous, and its timestamp, so the state does not come back
+    claiming to have been measured at the moment of the restart. The
+    timestamp is deliberately old here - a fixture value from before this
+    suite ran, not "now" - because a restored value with a fresh timestamp
+    is precisely the lie the attribute exists to prevent.
+    """
+    restored_measured_at = "2026-09-07T08:15:00+00:00"
+    mock_restore_cache_with_extra_data(
+        hass,
+        (
+            (
+                State(
+                    "sensor.living_room_temperature",
+                    "19.5",
+                    attributes={"last_measured_at": restored_measured_at},
+                ),
+                {"native_value": 19.5, "native_unit_of_measurement": "°C"},
+            ),
+        ),
+    )
+
+    payload = load_devices_fixture("devices_no_telemetry.json")
+    await _setup_with(hass, monkeypatch, requests_mock, config_entry_v2_data, payload)
+
+    state = hass.states.get("sensor.living_room_temperature")
+    assert state is not None
+    assert state.state == "19.5"
+    assert state.attributes["last_measured_at"] == restored_measured_at
+
+
+async def test_a_connected_device_with_no_status_timestamp_is_not_flagged(
+    hass: HomeAssistant,
+    monkeypatch: pytest.MonkeyPatch,
+    requests_mock: Any,
+    config_entry_v2_data: dict[str, Any],
+) -> None:
+    """
+    M-06: no `connection_status_updated_at` is not the same as a stale one.
+
+    The absent-timestamp case, kept separate because the two ways of
+    "having no recent evidence" deserve different treatment. A status whose
+    timestamp is older than the backend's 6-hour window is an anomaly worth
+    flagging; a status with no timestamp at all is simply a field the
+    payload did not carry, and flagging it would train a reader to ignore
+    the flag. So the attribute is omitted, `connection_status_stale` never
+    appears, and the entity is available on the strength of the status
+    itself - which is present, and says `connected`.
+    """
+    payload = load_devices_fixture("devices_one_device.json")
+    payload["devices"][0]["connection_status_updated_at"] = None
+
+    await _setup_with(hass, monkeypatch, requests_mock, config_entry_v2_data, payload)
+
+    state = hass.states.get("sensor.living_room_temperature")
+    assert state is not None
+    assert state.state == "20.9"
+    assert "connection_status_updated_at" not in state.attributes
+    assert "connection_status_stale" not in state.attributes
+
+
+def test_the_staleness_multiplier_is_gone_from_the_codebase() -> None:
+    """
+    M-06 AC5: the staleness multiplier does not exist any more.
+
+    Written as a text search over the integration rather than as an
+    `hasattr` check on `const.py`, because the criterion is about the
+    codebase and not only about the module: the name surviving in a
+    docstring, a comment or a dead import would mean the reasoning it stood
+    for is still being handed to the next reader as current.
+
+    The constant was `3`, multiplying the poll interval to produce a
+    freshness threshold. Nothing about it came from the devices or from the
+    backend - see `CONNECTION_STATUS_STALE_WINDOW` (const.py) for what
+    replaced it and why six hours is a different kind of number.
+    """
+    integration = Path("custom_components/radoff")
+    offenders = [
+        path.name
+        for path in sorted(integration.rglob("*.py"))
+        if "DEFAULT_STALE_MULTIPLIER" in path.read_text(encoding="utf-8")
+    ]
+    assert offenders == []
