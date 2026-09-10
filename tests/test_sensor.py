@@ -254,6 +254,12 @@ def _schema_slugs(fixture_name: str, *, with_index: bool) -> set[str]:
     return slugs
 
 
+# `sismoff` manca da questa lista deliberatamente: le fixture di M-01
+# contengono il suo *schema* ma nessun device di quel tipo, e la card lo
+# esclude per decisione del 2026-09-10 (vedi
+# `docs/M-04-verifica-dev.md`, "Scostamenti"). Aggiungerlo qui e' una riga,
+# il giorno che una passata su dev cattura un sismoff: la funzione e' gia'
+# parametrica sul tipo.
 @pytest.mark.parametrize(
     ("serial", "fixture_name"),
     [

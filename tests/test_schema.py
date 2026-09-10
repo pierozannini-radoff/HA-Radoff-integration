@@ -35,6 +35,12 @@ from .conftest import load_dev_fixture
 
 # Every type the catalogue holds, as M-01 captured it. `life` is excluded:
 # the fixture of that name is the 404 body dev answered with, not a schema.
+#
+# `sismoff` *is* here, and only here. Its schema is read like every other
+# type's - that costs nothing and keeps `co`/`ch4` covered - but the card
+# excludes it from the entity-level checks, because M-01 captured no
+# sismoff device to run them against (decision of 2026-09-10, see
+# `docs/M-04-verifica-dev.md`).
 SCHEMA_TYPES = ("nowplus", "sense", "city", "now", "sismoff")
 
 
