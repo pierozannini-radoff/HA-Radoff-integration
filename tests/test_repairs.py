@@ -23,6 +23,7 @@ from homeassistant.setup import async_setup_component
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.radoff.const import (
+    CONF_BASE_URL,
     CONF_DOMAIN_ID,
     CONF_INDEX,
     DOMAIN,
@@ -30,7 +31,7 @@ from custom_components.radoff.const import (
 )
 
 from .conftest import (
-    BASE_DOMAIN,
+    BASE_URL,
     auth_result,
     load_fixture,
     make_id_token,
@@ -44,12 +45,16 @@ OTHER_DOMAIN_ID = "bbbbbbbb-0000-0000-0000-000000000002"
 
 
 async def _setup_broken_entry(
-    hass: HomeAssistant, config_entry_v1_data: dict[str, Any]
+    hass: HomeAssistant,
+    config_entry_v1_data: dict[str, Any],
+    options: dict[str, Any] | None = None,
 ) -> MockConfigEntry:
     """Add a real-shaped v1 entry (no `domain_id`) and let its setup fail."""
     await async_setup_component(hass, "repairs", {})
 
-    entry = MockConfigEntry(domain=DOMAIN, version=1, data=config_entry_v1_data)
+    entry = MockConfigEntry(
+        domain=DOMAIN, version=1, data=config_entry_v1_data, options=options or {}
+    )
     entry.add_to_hass(hass)
 
     assert not await hass.config_entries.async_setup(entry.entry_id)
@@ -224,7 +229,7 @@ async def test_repair_aborts_when_the_backend_is_unreachable(
 ) -> None:
     """A failing discovery call is a transient problem: abort, keep the repair."""
     patch_authenticate_user(monkeypatch, result=auth_result(make_id_token([DOMAIN_ID])))
-    requests_mock.get(f"{BASE_DOMAIN}/auth/user/me/domains", status_code=500, json={})
+    requests_mock.get(f"{BASE_URL}/data/user/me/domains", status_code=500, json={})
 
     entry = await _setup_broken_entry(hass, config_entry_v1_data)
 
@@ -281,3 +286,42 @@ async def test_repair_aborts_when_the_entry_is_gone(
 
     assert result["type"] is FlowResultType.ABORT
     assert result["reason"] == "entry_not_found"
+
+
+async def test_repair_discovers_on_the_environment_the_entry_points_at(
+    hass: HomeAssistant,
+    monkeypatch: pytest.MonkeyPatch,
+    requests_mock: Any,
+    config_entry_v1_data: dict[str, Any],
+) -> None:
+    """
+    Card M-02: the repair looks the domains up on this entry's own base URL.
+
+    An entry carrying the advanced `base_url` option polls that
+    environment, so discovering its domains against the default one would
+    be checking a different account universe - a domain that exists on dev
+    and not on the entry's environment would be written onto it and fail on
+    the very next poll. Nothing is registered on the default host here, so a
+    repair that ignored the option would abort instead of passing.
+    """
+    other_host = "https://api.int.iot.radoff.life"
+    patch_authenticate_user(monkeypatch, result=auth_result(make_id_token([DOMAIN_ID])))
+    requests_mock.get(
+        f"{other_host}/data/user/me/domains", json=load_fixture("domains_single.json")
+    )
+    requests_mock.post(f"{other_host}/data/devices/search", json={"devices": []})
+
+    entry = await _setup_broken_entry(
+        hass, config_entry_v1_data, options={CONF_BASE_URL: other_host}
+    )
+
+    result = await _start_fix_flow(hass, entry)
+    result = await _configure(hass, result["flow_id"], {})
+    await hass.async_block_till_done()
+
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert entry.data[CONF_DOMAIN_ID] == DOMAIN_ID
+    assert entry.state is ConfigEntryState.LOADED
+    assert {request.netloc for request in requests_mock.request_history} == {
+        "api.int.iot.radoff.life"
+    }

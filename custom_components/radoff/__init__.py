@@ -51,7 +51,7 @@ async def async_migrate_entry(hass: HomeAssistant, config_entry: ConfigEntry) ->
     the released version, 30e0cde - never contains it, because `domain_id`
     only came into existence with the multi-domain discovery of S-01/RT-2803,
     in this very same milestone. Obtaining it means authenticating against
-    Cognito and calling `/auth/user/me/domains`, and the choice is genuinely
+    Cognito and calling `/data/user/me/domains`, and the choice is genuinely
     ambiguous for an account with access to more than one domain. Decided
     with Piero: no network I/O happens here. A migration is executed during
     Home Assistant startup, cannot ask the user anything, and would have to

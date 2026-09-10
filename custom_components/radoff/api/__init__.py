@@ -15,7 +15,11 @@ module - `AuthChallengeRequiredError` and `AuthUnavailableError` - so
 distinct, translated user-facing message instead of falling through to
 "unknown" (findings C8/C9). Card S-13 adds `DeviceFetchError`
 (`api/models.py`) so `coordinator.py` can type the per-device errors
-`API.get_devices()` now returns instead of raising.
+`API.get_devices()` now returns instead of raising. Card M-02 adds the five
+classes of the arch 2.0 error taxonomy (`api/exceptions.py`), so
+`coordinator.py` can react differently to "domain access revoked", "rate
+limited", "transient backend failure" and the two kinds of 404 instead of
+treating every non-200 as the same `APIAuthError`.
 
 Every name below is listed in `__all__`, which is what tells ruff's
 pyflakes-derived unused-import check (F401) that these imports are the
@@ -32,6 +36,11 @@ from .client import API
 from .exceptions import (
     APIAuthError,
     APIConnectionError,
+    APIDeviceNotFoundError,
+    APIDomainAccessError,
+    APIRateLimitError,
+    APIServerError,
+    APIUnknownDeviceTypeError,
     BearerTokenNotFoundError,
     DomainNotFoundError,
 )
@@ -41,6 +50,11 @@ __all__ = [
     "API",
     "APIAuthError",
     "APIConnectionError",
+    "APIDeviceNotFoundError",
+    "APIDomainAccessError",
+    "APIRateLimitError",
+    "APIServerError",
+    "APIUnknownDeviceTypeError",
     "AuthChallengeRequiredError",
     "AuthExpiredError",
     "AuthInvalidError",

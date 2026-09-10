@@ -135,14 +135,16 @@
     "step": {
       "init": {
         "title": "Radoff options",
-        "description": "Changing either option reloads the integration to apply it immediately.",
+        "description": "Changing any of these options reloads the integration to apply it immediately.",
         "data": {
           "scan_interval": "Polling interval (seconds)",
-          "generate_index": "Generate index entities"
+          "generate_index": "Generate index entities",
+          "base_url": "API base URL (advanced)"
         },
         "data_description": {
           "scan_interval": "How often to poll the Radoff API, in seconds.",
-          "generate_index": "Also create a qualitative *_index sensor (e.g. Excellent, Good, ...) alongside applicable measurements."
+          "generate_index": "Also create a qualitative *_index sensor (e.g. Excellent, Good, ...) alongside applicable measurements.",
+          "base_url": "Which Radoff environment this configuration talks to. Leave it as it is unless Radoff support asked you to change it: in this API version the environment is the hostname, so a wrong value makes the integration stop loading. Clear the field to go back to the default."
         }
       }
     }
@@ -178,6 +180,9 @@
   "exceptions": {
     "missing_domain_id": {
       "message": "This Radoff configuration was created before the integration supported accounts with more than one domain, so it does not know which domain to use and cannot load. Open Settings > System > Repairs and complete the pending Radoff repair."
+    },
+    "domain_access_denied": {
+      "message": "The Radoff account can no longer access the domain saved in this configuration, so its devices cannot be read. The credentials are still valid - it is the domain that changed. Remove this configuration and add it again to select a domain the account can reach."
     }
   }
 }

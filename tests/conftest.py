@@ -27,12 +27,20 @@ from typing import Any
 import pytest
 from pycognito.aws_srp import AWSSRP
 
+from custom_components.radoff.const import DEFAULT_BASE_URL
+
 FIXTURES_DIR = Path(__file__).parent / "fixtures"
 # Fixture REALI, catturate su dev da `scripts/probe_arch2.py` (card M-01) e
 # redatte prima di toccare il disco - distinte da quelle sintetiche che
 # stanno un livello sopra. Vedi `fixtures/dev/README.md`.
 DEV_FIXTURES_DIR = FIXTURES_DIR / "dev"
-BASE_DOMAIN = "https://api.iot.radoff.life/api/v1/core"
+
+# Base URL the mocked transport answers on (card M-02). Read from const.py
+# instead of being spelled out again: the integration is allowed exactly one
+# host, and a suite that hardcoded its own copy would keep passing after a
+# change that never reached the client. The *paths* below stay literal on
+# purpose - those are what the tests are pinning.
+BASE_URL = DEFAULT_BASE_URL
 
 
 @pytest.fixture(autouse=True)
@@ -79,19 +87,17 @@ def make_id_token(domain_ids: list[str]) -> str:
     """
     Build a syntactically-valid, unsigned Cognito IdToken carrying `d_<uuid>` claims.
 
-    Only the payload segment is real base64url JSON - `_extract_domain_claims`
-    (api/client.py) only ever reads that segment without verifying the
-    signature, matching how a real, signed IdToken would be handled by this
-    integration (it never verifies Cognito's signature either).
+    Only the payload segment is real base64url JSON, which was enough while
+    the client decoded its own token to bootstrap the arch 1.x domain header
+    (`_extract_domain_claims`, removed by card M-02 - arch 2.0's discovery
+    endpoint needs nothing but the bearer token). Nothing reads the claims
+    any more: the tokens these tests build now only have to be shaped like a
+    JWT and carry a plausible payload, and the `d_*` claims are kept because
+    a real Radoff IdToken has them.
     """
     header = _b64url({"alg": "none", "typ": "JWT"})
     payload = {f"d_{domain_id}": True for domain_id in domain_ids}
     return f"{header}.{_b64url(payload)}.fake-signature"
-
-
-def make_malformed_id_token() -> str:
-    """Return a token with a payload segment that is not valid base64/JSON."""
-    return "header.not-valid-base64!!!.signature"
 
 
 def _b64url(obj: dict[str, Any]) -> str:
@@ -162,13 +168,28 @@ def patch_cognito_refresh(
 
 
 def register_domains(requests_mock: Any, payload: dict[str, Any]) -> None:
-    """Mock `GET /auth/user/me/domains`."""
-    requests_mock.get(f"{BASE_DOMAIN}/auth/user/me/domains", json=payload)
+    """
+    Mock `GET /data/user/me/domains`.
+
+    Under `/data/`, not `/auth/`: that is where the discovery endpoint
+    actually lives in arch 2.0 (M-01 probed both - see
+    `custom_components/radoff/api/client.py::DISCOVERY_PATH`), and pinning
+    it here is what makes a regression to the documented-but-absent path
+    fail the suite instead of only failing against dev.
+    """
+    requests_mock.get(f"{BASE_URL}/data/user/me/domains", json=payload)
 
 
-def register_search(requests_mock: Any, payload: dict[str, Any]) -> None:
-    """Mock `POST /data/devices/search`."""
-    requests_mock.post(f"{BASE_DOMAIN}/data/devices/search", json=payload)
+def register_search(
+    requests_mock: Any,
+    payload: dict[str, Any],
+    *,
+    status_code: int = 200,
+) -> None:
+    """Mock `POST /data/devices/search`, optionally with an error status."""
+    requests_mock.post(
+        f"{BASE_URL}/data/devices/search", json=payload, status_code=status_code
+    )
 
 
 def register_device(
@@ -180,7 +201,7 @@ def register_device(
 ) -> None:
     """Mock `GET /data/devices/{device_id}`."""
     requests_mock.get(
-        f"{BASE_DOMAIN}/data/devices/{device_id}",
+        f"{BASE_URL}/data/devices/{device_id}",
         json=payload or {},
         status_code=status_code,
     )

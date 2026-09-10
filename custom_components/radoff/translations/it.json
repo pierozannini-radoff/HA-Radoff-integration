@@ -135,14 +135,16 @@
     "step": {
       "init": {
         "title": "Opzioni Radoff",
-        "description": "Cambiando una qualsiasi delle due opzioni l'integrazione viene ricaricata per applicarla subito.",
+        "description": "Cambiando una qualsiasi di queste opzioni l'integrazione viene ricaricata per applicarla subito.",
         "data": {
           "scan_interval": "Intervallo di polling (secondi)",
-          "generate_index": "Genera entità indice"
+          "generate_index": "Genera entità indice",
+          "base_url": "URL base dell'API (avanzato)"
         },
         "data_description": {
           "scan_interval": "Ogni quanto interrogare l'API Radoff, in secondi.",
-          "generate_index": "Crea anche un sensore qualitativo *_index (es. Ottimo, Buono, ...) accanto alle misure per cui è disponibile."
+          "generate_index": "Crea anche un sensore qualitativo *_index (es. Ottimo, Buono, ...) accanto alle misure per cui è disponibile.",
+          "base_url": "L'ambiente Radoff con cui parla questa configurazione. Lascialo come è, a meno che l'assistenza Radoff non ti abbia chiesto di cambiarlo: in questa versione dell'API l'ambiente è l'hostname, quindi un valore sbagliato impedisce all'integrazione di caricarsi. Svuota il campo per tornare al valore predefinito."
         }
       }
     }
@@ -178,6 +180,9 @@
   "exceptions": {
     "missing_domain_id": {
       "message": "Questa configurazione Radoff è stata creata prima che l'integrazione supportasse gli account con più di un dominio: non sa quale dominio usare e non può caricarsi. Apri Impostazioni > Sistema > Riparazioni e completa la riparazione Radoff in sospeso."
+    },
+    "domain_access_denied": {
+      "message": "L'account Radoff non ha più accesso al dominio salvato in questa configurazione, quindi i suoi dispositivi non possono essere letti. Le credenziali sono ancora valide: è il dominio che è cambiato. Rimuovi questa configurazione e aggiungila di nuovo per scegliere un dominio raggiungibile dall'account."
     }
   }
 }

@@ -62,7 +62,7 @@ def test_one_property_in_two_buckets_yields_two_readings(
     )
     register_device(requests_mock, DEVICE_ID, payload)
 
-    api = API(username="user@example.com", password="hunter2", domain_id=DOMAIN_ID)
+    api = API(username="user@example.com", password="hunter2", domain_prefix=DOMAIN_ID)
     readings, _ = api._get_data(DEVICE_ID)  # noqa: SLF001
 
     assert readings[(Bucket.DATA, "tvoc")].value == 50
@@ -87,7 +87,7 @@ def test_aqi_comes_only_from_the_aggregated_bucket(
     payload["data"]["data"].append({"propertyName": "airqualityindex", "value": 20})
     register_device(requests_mock, DEVICE_ID, payload)
 
-    api = API(username="user@example.com", password="hunter2", domain_id=DOMAIN_ID)
+    api = API(username="user@example.com", password="hunter2", domain_prefix=DOMAIN_ID)
     readings, _ = api._get_data(DEVICE_ID)  # noqa: SLF001
 
     assert (Bucket.DATA, "airqualityindex") not in readings

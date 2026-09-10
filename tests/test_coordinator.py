@@ -12,14 +12,21 @@ from __future__ import annotations
 from typing import Any
 
 import pytest
+from homeassistant.config_entries import ConfigEntryState
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryError
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
-from custom_components.radoff.const import CONF_DOMAIN_ID, DOMAIN
+from custom_components.radoff.const import (
+    CONF_BASE_URL,
+    CONF_DOMAIN_ID,
+    DOMAIN,
+    ERROR_DOMAIN_ACCESS_DENIED,
+)
 from custom_components.radoff.coordinator import RadoffCoordinator
 
 from .conftest import (
+    load_dev_fixture,
     load_device_fixture,
     load_fixture,
     make_id_token,
@@ -202,3 +209,90 @@ async def test_poll_degraded_500_isolated_to_one_device(
     bedroom = hass.states.get("sensor.bedroom_temperature")
     assert bedroom is not None
     assert bedroom.state == "unavailable"
+
+
+async def test_a_403_stops_the_entry_instead_of_retrying_forever(
+    hass: HomeAssistant,
+    monkeypatch: pytest.MonkeyPatch,
+    requests_mock: Any,
+    config_entry_v2_data: dict[str, Any],
+) -> None:
+    """
+    Card M-02: a 403 on the poll is a reconfiguration, not a lost cycle.
+
+    The API refusing the domain persisted on this entry cannot be fixed by
+    retrying (the token is fine, the domain is not), so the coordinator
+    raises `ConfigEntryError` and Home Assistant stops polling - the entry
+    goes to `setup_error` with the translated message, instead of failing an
+    update every interval forever. It is deliberately not
+    `ConfigEntryAuthFailed`: no re-auth prompt appears, because the password
+    is not the problem.
+    """
+    register_search(
+        requests_mock,
+        load_dev_fixture("error__devices_foreign_domain"),
+        status_code=403,
+    )
+
+    patch_authenticate_user(
+        monkeypatch,
+        result=auth_result(make_id_token(["aaaaaaaa-0000-0000-0000-000000000001"])),
+    )
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data=config_entry_v2_data,
+        options={"generate_index": True},
+        version=2,
+    )
+    entry.add_to_hass(hass)
+
+    assert not await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    assert entry.state is ConfigEntryState.SETUP_ERROR
+    assert entry.error_reason_translation_key == ERROR_DOMAIN_ACCESS_DENIED
+    assert not hass.config_entries.flow.async_progress_by_handler(DOMAIN)
+
+
+async def test_the_base_url_option_is_what_the_poll_talks_to(
+    hass: HomeAssistant,
+    monkeypatch: pytest.MonkeyPatch,
+    requests_mock: Any,
+    config_entry_v2_data: dict[str, Any],
+) -> None:
+    """
+    Card M-02: an entry with `base_url` in its options polls that host.
+
+    The wiring the advanced option exists for, asserted end to end:
+    options -> `RadoffCoordinator` -> `API`. Nothing is registered on the
+    default host, so a request that ignored the option would fail the poll
+    rather than quietly pass.
+    """
+    other_host = "https://api.int.iot.radoff.life"
+    requests_mock.post(
+        f"{other_host}/data/devices/search", json=load_fixture("search_one_device.json")
+    )
+    requests_mock.get(
+        f"{other_host}/data/devices/device-0000-0001",
+        json=load_device_fixture("device_0001_nominal.json"),
+    )
+
+    patch_authenticate_user(
+        monkeypatch,
+        result=auth_result(make_id_token(["aaaaaaaa-0000-0000-0000-000000000001"])),
+    )
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data=config_entry_v2_data,
+        options={"generate_index": True, CONF_BASE_URL: other_host},
+        version=2,
+    )
+    entry.add_to_hass(hass)
+
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    assert hass.states.get("sensor.living_room_temperature").state == "20.9"
+    assert {request.netloc for request in requests_mock.request_history} == {
+        "api.int.iot.radoff.life"
+    }

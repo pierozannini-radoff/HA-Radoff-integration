@@ -38,7 +38,7 @@ from .config_flow import (
     UnsupportedChallengeError,
     validate_input,
 )
-from .const import CONF_DOMAIN_ID
+from .const import CONF_BASE_URL, CONF_DOMAIN_ID, DEFAULT_BASE_URL
 
 if TYPE_CHECKING:
     from homeassistant.config_entries import ConfigEntry
@@ -135,7 +135,13 @@ class MissingDomainIdRepairFlow(RepairsFlow):
         with the cause.
         """
         try:
-            info = await validate_input(self.hass, dict(self._config_entry.data))
+            info = await validate_input(
+                self.hass,
+                dict(self._config_entry.data),
+                # Card M-02: the environment this entry actually polls, not
+                # necessarily the default one.
+                self._config_entry.options.get(CONF_BASE_URL, DEFAULT_BASE_URL),
+            )
         except (
             UnsupportedChallengeError,
             InvalidAuthError,

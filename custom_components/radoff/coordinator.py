@@ -16,6 +16,8 @@ from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, Upda
 from .api import (
     API,
     APIAuthError,
+    APIDomainAccessError,
+    APIRateLimitError,
     AuthChallengeRequiredError,
     AuthExpiredError,
     AuthInvalidError,
@@ -24,11 +26,14 @@ from .api import (
     RadoffDevice,
 )
 from .const import (
+    CONF_BASE_URL,
     CONF_DOMAIN_ID,
     CONF_INDEX,
+    DEFAULT_BASE_URL,
     DEFAULT_SCAN_INTERVAL,
     DEFAULT_STALE_MULTIPLIER,
     DOMAIN,
+    ERROR_DOMAIN_ACCESS_DENIED,
     ISSUE_MISSING_DOMAIN_ID,
     UPDATE_TIMEOUT_FACTOR,
 )
@@ -85,6 +90,15 @@ class RadoffCoordinator(DataUpdateCoordinator[RadoffData]):
             CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL
         )
 
+        # Card M-02: which environment this entry talks to. An advanced
+        # option, absent from `options` for every normal installation, in
+        # which case the client falls back to `DEFAULT_BASE_URL` (const.py) -
+        # dev, for the duration of the migration. Read here rather than in
+        # `API.__init__` so that changing it takes effect on the reload the
+        # options flow already triggers (see `_async_update_listener`,
+        # __init__.py), like the two options above.
+        self.base_url = config_entry.options.get(CONF_BASE_URL, DEFAULT_BASE_URL)
+
         super().__init__(
             hass,
             _LOGGER,
@@ -104,8 +118,9 @@ class RadoffCoordinator(DataUpdateCoordinator[RadoffData]):
         self.api = API(
             username=self.username,
             password=self.password,
-            domain_id=self.domain_id,
+            domain_prefix=self.domain_id,
             scan_interval=self.poll_interval,
+            base_url=self.base_url,
         )
 
     @property
@@ -186,9 +201,16 @@ class RadoffCoordinator(DataUpdateCoordinator[RadoffData]):
             )
         return merged
 
-    async def _async_update_data(self) -> RadoffData:
+    async def _async_update_data(self) -> RadoffData:  # noqa: PLR0915
         """
         Fetch data from API endpoint.
+
+        Over ruff's statement limit (PLR0915) since card M-02 added the two
+        clauses for the arch 2.0 taxonomy: the method is one deliberately
+        flat `try`/`except` chain, one clause per failure this integration
+        knows how to react to, each carrying the card history of why it
+        reacts that way. Splitting it into helpers would scatter that chain
+        without shortening it - the length is the exhaustiveness.
 
         Card S-12: no longer checks `self.api.connected` or calls
         `self.api.connect()` before fetching - `API.get_devices()`
@@ -336,6 +358,60 @@ class RadoffCoordinator(DataUpdateCoordinator[RadoffData]):
                 err,
             )
             msg = f"Authentication service temporarily unavailable: {err}"
+            raise UpdateFailed(msg) from err
+
+        except APIDomainAccessError as err:
+            # Card M-02: the API answered 403 - this account does not belong
+            # to the domain persisted on this entry (in arch 1.x the same
+            # situation arrived as a 401 and was indistinguishable from an
+            # expired session; see `api/client.py::_check_response_status`).
+            #
+            # `ConfigEntryError`, not `UpdateFailed`: retrying re-sends a
+            # request that will be refused identically, so the entry stops
+            # with a translated, actionable error instead of failing a poll
+            # every interval forever. And not `ConfigEntryAuthFailed`
+            # either: the credentials are valid, so the re-auth flow would
+            # ask for a password that is not the problem. Home Assistant's
+            # DataUpdateCoordinator handles `ConfigEntryError` from an update
+            # by stopping, which is exactly the intent.
+            # Logged at WARNING, without a traceback: this is an expected
+            # end-user situation and not a bug, same reasoning as
+            # `AuthInvalidError` above. The one ERROR line about it is
+            # emitted where the status is classified, with the domain and
+            # the backend's own detail (`api/client.py`); repeating it at
+            # ERROR here would only double the noise.
+            _LOGGER.warning(
+                "Radoff denied access to the configured domain, "
+                "reconfiguration needed: %s",
+                err,
+            )
+            raise ConfigEntryError(
+                str(err),
+                translation_domain=DOMAIN,
+                translation_key=ERROR_DOMAIN_ACCESS_DENIED,
+            ) from err
+
+        except APIRateLimitError as err:
+            # Card M-02: HTTP 429 on the shared per-environment quota. Stays
+            # `UpdateFailed` - the cycle is lost - but is logged as the
+            # expected, transient, not-our-fault condition it is, without a
+            # traceback, and carries the backoff the client computed
+            # (`err.retry_after`; API Gateway sends no `Retry-After`).
+            #
+            # What this clause does NOT do yet is honour that delay by
+            # actually rescheduling the next refresh, nor keep the entities
+            # available across the skipped cycle - a 429 is not a device
+            # going offline. Both are scheduling decisions and belong to the
+            # polling-interval card of this migration (decided with Piero);
+            # this card's job is to stop retrying immediately and to make
+            # the delay available to whoever will apply it.
+            _LOGGER.warning(
+                "Radoff rate limit reached; this cycle is skipped and the "
+                "next attempt should wait ~%.1fs: %s",
+                err.retry_after,
+                err,
+            )
+            msg = f"Rate limited by the Radoff API: {err}"
             raise UpdateFailed(msg) from err
 
         except APIAuthError as err:

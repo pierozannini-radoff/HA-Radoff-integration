@@ -74,14 +74,18 @@ pytestmark = pytest.mark.skipif(
 )
 
 
-@pytest.mark.parametrize("path", _FIXTURE_FILES, ids=lambda p: getattr(p, "stem", "nessuna-fixture"))
+@pytest.mark.parametrize(
+    "path", _FIXTURE_FILES, ids=lambda p: getattr(p, "stem", "nessuna-fixture")
+)
 def test_dev_fixture_is_valid_json(path: Path) -> None:
     """Ogni fixture reale e' JSON valido e caricabile dall'helper."""
     parsed = json.loads(path.read_text(encoding="utf-8"))
     assert load_dev_fixture(path.stem) == parsed
 
 
-@pytest.mark.parametrize("path", _FIXTURE_FILES, ids=lambda p: getattr(p, "stem", "nessuna-fixture"))
+@pytest.mark.parametrize(
+    "path", _FIXTURE_FILES, ids=lambda p: getattr(p, "stem", "nessuna-fixture")
+)
 def test_dev_fixture_carries_no_identifiers(path: Path) -> None:
     """Nessun JWT, mail o UUID e' sopravvissuto alla redazione."""
     text = path.read_text(encoding="utf-8")
@@ -93,7 +97,9 @@ def test_dev_fixture_carries_no_identifiers(path: Path) -> None:
     )
 
 
-@pytest.mark.parametrize("path", _FIXTURE_FILES, ids=lambda p: getattr(p, "stem", "nessuna-fixture"))
+@pytest.mark.parametrize(
+    "path", _FIXTURE_FILES, ids=lambda p: getattr(p, "stem", "nessuna-fixture")
+)
 def test_dev_fixture_carries_no_precise_coordinates(path: Path) -> None:
     """Le coordinate sono arrotondate, non a piena precisione."""
     parsed = json.loads(path.read_text(encoding="utf-8"))
@@ -107,24 +113,27 @@ def test_dev_fixture_carries_no_precise_coordinates(path: Path) -> None:
         )
 
 
-@pytest.mark.parametrize("path", _FIXTURE_FILES, ids=lambda p: getattr(p, "stem", "nessuna-fixture"))
+@pytest.mark.parametrize(
+    "path", _FIXTURE_FILES, ids=lambda p: getattr(p, "stem", "nessuna-fixture")
+)
 def test_dev_fixture_secret_keys_are_redacted(path: Path) -> None:
     """Nessuna chiave che suona come un segreto porta ancora un valore."""
     parsed = json.loads(path.read_text(encoding="utf-8"))
     for node_path, key, value in _iter_nodes(parsed):
         if not any(hint in key.lower() for hint in _SECRET_KEY_HINTS):
             continue
-        assert value in (None, "**REDACTED**"), (
-            f"{path.name}: {node_path} sembra un segreto ma non e' redatto"
-        )
+        assert value in (
+            None,
+            "**REDACTED**",
+        ), f"{path.name}: {node_path} sembra un segreto ma non e' redatto"
 
 
 def test_dev_fixtures_have_a_manifest() -> None:
     """Le fixture sono accompagnate dal manifest e dagli esiti."""
     for name in ("_manifest.json", "_findings.json"):
-        assert (DEV_FIXTURES_DIR / name).is_file(), (
-            f"{name} manca: rigenera con `python3 scripts/probe_arch2.py`"
-        )
+        assert (
+            DEV_FIXTURES_DIR / name
+        ).is_file(), f"{name} manca: rigenera con `python3 scripts/probe_arch2.py`"
 
 
 def test_dev_manifest_records_response_headers() -> None:
@@ -139,6 +148,6 @@ def test_dev_manifest_records_response_headers() -> None:
     )
     calls = manifest["calls"]
     assert calls, "il manifest non registra nessuna chiamata"
-    assert any(call["response_headers"] for call in calls), (
-        "nessuna chiamata nel manifest porta header di risposta"
-    )
+    assert any(
+        call["response_headers"] for call in calls
+    ), "nessuna chiamata nel manifest porta header di risposta"

@@ -1,8 +1,7 @@
 """Class which represent the Radoff API."""
 
-import base64
-import json
 import logging
+import random
 from datetime import UTC, datetime
 from http import HTTPStatus
 from typing import Any
@@ -12,20 +11,50 @@ import requests
 from requests.adapters import HTTPAdapter, Retry
 
 from ..const import (
+    DEFAULT_BASE_URL,
     DEFAULT_CLIENT_ID,
     DEFAULT_POOL_ID,
     DEFAULT_POOL_REGION,
     DEFAULT_SCAN_INTERVAL,
+    RATE_LIMIT_BACKOFF_JITTER,
+    RATE_LIMIT_BACKOFF_MAX,
+    RATE_LIMIT_BACKOFF_START,
     USER_AGENT,
 )
 from ..properties import MAPPING
 from .auth import AuthExpiredError, CognitoSession
-from .exceptions import APIAuthError, APIConnectionError
+from .exceptions import (
+    APIAuthError,
+    APIConnectionError,
+    APIDeviceNotFoundError,
+    APIDomainAccessError,
+    APIRateLimitError,
+    APIServerError,
+    APIUnknownDeviceTypeError,
+    DomainNotFoundError,
+)
 from .models import DeviceFetchError, RadoffDevice, Reading, ReadingKey
 
 _LOGGER = logging.getLogger(__name__)
 
 DEVICE_TYPES = ["Now+"]
+
+# Paths of the arch 2.0 API, relative to the base URL (card M-02). The
+# version is in the hostname, not here (T-02 D-01: no `/v2/...`), and the
+# leading segment is the API Gateway base path mapping: `/data/*`,
+# `/analytics/*`, `/auth/*`, `/admin/*` all live on the same host.
+#
+# The discovery path is `/data/...`, NOT `/auth/user/me/domains` as T-02
+# D-03 stated: M-01 probed both and only the `data` one exists on arch 2.0
+# (`scripts/probe_arch2.py`, `tests/fixtures/dev/_findings.md` D-24-surface:
+# the token is accepted on `/data/*` and `/analytics/*` only). Trusting the
+# answer over the probe here would have produced a 403 that looks like an
+# authorization problem, because API Gateway answers a non-existent route
+# that carries an `Authorization` header by trying to read it as a SigV4
+# signature - see that script's own comment.
+DISCOVERY_PATH = "/data/user/me/domains"
+DEVICES_SEARCH_PATH = "/data/devices/search"
+DEVICE_DETAIL_PATH = "/data/devices/{device_id}"
 
 # T-02 CONFIRMED (probe run 2026-09-02 against a real account): objects in
 # `data`, `aggregatedData` and `recalculatedData` carry only `propertyName`
@@ -61,6 +90,23 @@ _EPOCH_MS_THRESHOLD = 4_102_444_800
 # catches them - no special-casing needed.
 _ISOLATABLE_DEVICE_ERRORS = (APIAuthError, requests.exceptions.RequestException)
 
+# The two members of the arch 2.0 taxonomy that must NOT be isolated per
+# device even though they are `APIAuthError` subclasses (card M-02):
+#
+# - `APIDomainAccessError` (403): the account does not belong to the domain
+#   being queried, so every device of that domain fails identically.
+#   Isolating it would turn a "reconfigure the integration" situation into
+#   N stale devices and hide the only actionable error there is.
+# - `APIRateLimitError` (429): the quota is per environment, not per device.
+#   The instruction is to skip the whole cycle and back off, so continuing
+#   the loop would spend the remaining devices' requests against a quota
+#   that has already been exceeded - the retry pattern this card removes.
+#
+# Everything else in the taxonomy stays isolatable, exactly as S-13 left it:
+# a 5xx (`APIServerError`) or a 404 (`APIDeviceNotFoundError`) really is
+# about that one device or that one request.
+_NON_ISOLATABLE_API_ERRORS = (APIDomainAccessError, APIRateLimitError)
+
 
 def _safe_url(url: str) -> str:
     """
@@ -76,13 +122,51 @@ def _get_request_id(response: requests.Response) -> str | None:
     """
     Return a backend request id from the response headers, if present.
 
-    The exact header name used by the Radoff backend has not been confirmed
-    with the API team (tracked in T-02); this checks the header names commonly
-    used by AWS-fronted APIs and returns None rather than guessing further.
+    `x-amzn-requestid` first because that is the one arch 2.0 actually
+    sends: M-01 (T-02 D-30) found it on *every* response captured on dev,
+    success and error alike, alongside `x-amz-apigw-id` and
+    `x-amzn-trace-id` - see `tests/fixtures/dev/_manifest.json`, which
+    records the full response headers of each call. The other two names are
+    kept as fallbacks, unchanged: they cost one dict lookup each and cover
+    an application-level id should the backend ever add one.
     """
-    for header in ("x-request-id", "x-amzn-requestid", "x-amz-request-id"):
+    for header in ("x-amzn-requestid", "x-request-id", "x-amz-request-id"):
         value = response.headers.get(header)
         if value:
+            return value
+    return None
+
+
+def _error_body(response: requests.Response) -> dict[str, Any]:
+    """
+    Return the parsed error body of a non-200 response, or `{}`.
+
+    The arch 2.0 error body is deliberately treated as untrusted shape: T-02
+    D-29 is still open on the complete form of `ErrorResponse`, and M-01
+    alone captured three different shapes - `{"message": ...}` (401, and the
+    429 API Gateway generates), `{"error": ...}` (403, 404 on a device) and
+    `{"error": ..., "message": ..., "available": [...]}` (404 on an unknown
+    device type). A body that is missing, empty or not even JSON must never
+    turn a classifiable HTTP status into a parse error.
+    """
+    try:
+        body = response.json()
+    except ValueError:
+        return {}
+    return body if isinstance(body, dict) else {}
+
+
+def _error_detail(body: dict[str, Any]) -> str | None:
+    """
+    Return the backend's own error text from a parsed error body, if any.
+
+    Reads both keys arch 2.0 uses (`error` for application errors, `message`
+    for the ones API Gateway itself produces) so the log line carries what
+    the backend said instead of only the status code.
+    """
+    for key in ("error", "message"):
+        value = body.get(key)
+        if isinstance(value, str) and value:
             return value
     return None
 
@@ -144,7 +228,6 @@ def _parse_measured_at(obj: dict[str, Any]) -> datetime | None:
 class API:
     """API platform."""
 
-    BASE_DOMAIN = "https://api.iot.radoff.life/api/v1/core"
     DEFAULT_TIMEOUT = (10, 30)
 
     def __init__(  # noqa: PLR0913
@@ -154,8 +237,9 @@ class API:
         client_id: str = DEFAULT_CLIENT_ID,
         pool_id: str = DEFAULT_POOL_ID,
         pool_region: str = DEFAULT_POOL_REGION,
-        domain_id: str = "",
+        domain_prefix: str = "",
         scan_interval: int = DEFAULT_SCAN_INTERVAL,
+        base_url: str = DEFAULT_BASE_URL,
     ) -> None:
         """
         Initialise.
@@ -167,9 +251,26 @@ class API:
         Callers may still override them explicitly (e.g. for a staging
         environment or in tests), but there is no user-facing UI for that.
 
-        `domain_id` is the tenant domain already chosen for this account (persisted
-        in the config entry after the config flow's discovery/selection step). It is
-        used as-is for every subsequent call; no domain discovery happens here.
+        `domain_prefix` is the tenant domain already chosen for this account
+        (persisted in the config entry after the config flow's
+        discovery/selection step). It is used as-is for every subsequent
+        call; no domain discovery happens here.
+
+        Card M-02 renames it from `domain_id`: in arch 2.0 the domain is no
+        longer a UUID sent in the domain header of arch 1.x (that header does
+        not exist any more) but a human-readable prefix sent as the
+        `domain_prefix` query parameter, always explicitly. Only this
+        client's parameter and attribute are renamed - the config entry key
+        stays `domain_id` (`CONF_DOMAIN_ID`, const.py), so no entry
+        migration is needed; rewriting what the config flow discovers and
+        persists belongs to the config-flow card of this migration.
+
+        `base_url` is the environment to talk to, defaulting to
+        `DEFAULT_BASE_URL` (const.py - dev, for the duration of the
+        migration) and overridable per config entry from the options flow's
+        advanced field. In arch 2.0 the API version is part of the hostname,
+        so this one value is the whole difference between environments; a
+        trailing slash is stripped so `_url()` can join paths blindly.
 
         `scan_interval` (card S-11) is the poll interval currently in effect
         for this account, in seconds, as resolved by the coordinator from
@@ -187,8 +288,17 @@ class API:
         composition. Every method below that needs a bearer token asks
         `self._session.get_bearer()` for one instead of reading `self.tokens`.
         """
-        self.domain: str = domain_id
+        self.domain_prefix: str = domain_prefix
         self.scan_interval = scan_interval
+        self.base_url = base_url.rstrip("/")
+
+        # Number of consecutive 429s seen on this client, i.e. the exponent
+        # of the backoff `_rate_limit_backoff` hands to `APIRateLimitError`.
+        # Reset by the first successful response (see
+        # `_check_response_status`), so an isolated rate limit costs the
+        # ~5s floor and never a delay inherited from an older incident.
+        self._consecutive_rate_limits = 0
+
         self._session = CognitoSession(
             username=username,
             password=password,
@@ -214,10 +324,19 @@ class API:
         # and an overrun cycle - reduced to total=2 (two retries, three
         # attempts total) so a single stuck device leaves more of that
         # overall budget for the other devices in the same poll.
+        # Card M-02: 429 is gone from `status_forcelist`. urllib3 retried it
+        # here after a 0.5s backoff, which is precisely the "retry now" the
+        # backend asked us not to do (T-02 D-22): the quota is per
+        # environment and shared with the Radoff apps, so an immediate retry
+        # spends more of an already-exceeded budget and makes the saturation
+        # worse. A 429 now surfaces at once as `APIRateLimitError` carrying
+        # the delay to honour, and the cycle is skipped instead. The 5xx
+        # entries stay: those are transient failures where retrying is the
+        # right reflex.
         retry_strategy = Retry(
             total=2,
             backoff_factor=0.5,
-            status_forcelist=[429, 500, 502, 503, 504],
+            status_forcelist=[500, 502, 503, 504],
             allowed_methods=["GET", "POST"],
         )
 
@@ -267,6 +386,48 @@ class API:
         self._session.get_bearer()
         return True
 
+    def _url(self, path: str) -> str:
+        """
+        Return the absolute URL of `path` on this client's environment.
+
+        The single place a request URL is built (card M-02 AC: "il base URL è
+        un solo valore in const.py; nessun host è ripetuto altrove"). `path`
+        always starts with its API Gateway base path (`/data/...`,
+        `/analytics/...`) and never with a version segment: in arch 2.0 the
+        version is in `self.base_url`'s hostname.
+        """
+        return f"{self.base_url}{path}"
+
+    def _domain_params(self, **extra: Any) -> dict[str, Any]:
+        """
+        Return the query params of a domain-scoped request, `domain_prefix` included.
+
+        Card M-02. `domain_prefix` replaces the domain header of arch 1.x and
+        is passed **always, explicitly**, as the backend asked (T-02
+        D-03/D-04) - which is also why this method refuses to build params
+        without one instead of quietly omitting it. M-01 measured what
+        omitting it does: `GET /data/devices` answers 200 with every device
+        of every domain the account can reach (120 of them on the dev
+        account, across several domains - see
+        `tests/fixtures/dev/error__devices_no_domain_prefix.json`). A missing
+        prefix is therefore not a narrower query, it is a cross-domain read,
+        and it must fail loudly.
+
+        `coordinator.py` already refuses to build a client for an entry with
+        no domain at all (`ConfigEntryError` + a Repairs issue, RT-2926), so
+        this is the defensive floor under that check, not the user-facing
+        one.
+        """
+        if not self.domain_prefix:
+            msg = (
+                "Refusing to call a domain-scoped Radoff endpoint without a "
+                "domain_prefix: the API would answer with every device of "
+                "every domain this account can reach."
+            )
+            raise DomainNotFoundError(msg)
+
+        return {"domain_prefix": self.domain_prefix, **extra}
+
     def list_domains(self, bearer_token: str | None = None) -> list[dict[str, Any]]:
         """
         Return every domain the authenticated user has access to, unfiltered.
@@ -274,39 +435,49 @@ class API:
         No `parentDomainId` filtering is applied here anymore (see S-01): the
         caller (config flow) decides what to do with 1, more than 1, or 0 domains.
 
-        The discovery endpoint requires a valid `x-domain` header to be sent even
-        for the very first call: it responds 401 "Missing Domain Header" without
-        one, and 401 "Authorization Validation Error" for a syntactically valid
-        but unauthorized UUID. To bootstrap this without hardcoding any
-        production UUID, we decode (without signature verification - these are
-        public claims of the caller's own token) the Cognito IdToken and read the
-        domain ids embedded in its "d_<domain-uuid>" claims, then use the first
-        one as the initial `x-domain`. This was verified empirically against the
-        real API (see card S-01).
+        Card M-02 removed the chicken-and-egg dance this method used to
+        perform. In arch 1.x the discovery endpoint itself required the
+        domain header (401 "Missing Domain Header" without one), so the
+        client decoded the `d_<domain-uuid>` claims of its own Cognito
+        IdToken just to have a domain id to bootstrap the call with. In arch
+        2.0 the header does not exist and the endpoint needs nothing but the
+        bearer token - verified on dev by M-01 (T-02 D-03: "chiamabile con il
+        solo bearer token") - so both the claim decoding and its
+        `_extract_domain_claims` helper are gone.
+
+        One consequence worth stating: an account with no accessible domain
+        is now discovered from the response (200 with an empty `domains`
+        list) instead of from the absence of claims in the token, which is
+        the authoritative answer rather than an inference about it.
 
         Only ever called from the config flow (initial setup or re-auth
         validation) - `RadoffCoordinator`'s periodic polling never calls this
         (card S-12 AC: "Nessuna chiamata a /auth/user/me/domains dopo il
-        primo setup"): the `domain_id` it needs is the one already persisted
-        on the config entry (see S-01), and `get_devices()` below never
+        primo setup" - the path that AC named in arch 1.x, `DISCOVERY_PATH`
+        here): the domain it needs is the one already persisted on
+        the config entry (see S-01), and `get_devices()` below never
         re-discovers it.
+
+        The response *shape* of arch 2.0 differs from 1.x - each entry is now
+        `{"domain": {"prefix": ..., "name": ...}, "role": ...}` rather than a
+        flat domain object (M-01, V6) - and the top-level `domains` key is
+        returned as-is here for the caller to read. Teaching the config flow
+        to read the new shape (and to persist `prefix` rather than a UUID) is
+        that card's job, not this one's: this card migrates the transport.
+
+        A non-200 stays an `APIConnectionError` rather than going through
+        `_check_response_status`'s taxonomy: this call happens inside the
+        config flow, where every failure has the same single remedy
+        ("cannot_connect", see config_flow.py) - there is no session to
+        invalidate, no cycle to skip and no domain to reconfigure yet.
         """
         if bearer_token is None:
             bearer_token = self._session.get_bearer()
 
-        candidate_domain_ids = self._extract_domain_claims(bearer_token)
-        if not candidate_domain_ids:
-            _LOGGER.info(
-                "No domain claims found in IdToken; user has no accessible domains"
-            )
-            return []
-
-        url = f"{self.BASE_DOMAIN}/auth/user/me/domains"
+        url = self._url(DISCOVERY_PATH)
         response = self.session.get(
             url,
-            headers=self._get_headers(
-                bearer_token=bearer_token, x_domain=candidate_domain_ids[0]
-            ),
+            headers=self._get_headers(bearer_token=bearer_token),
             timeout=self.DEFAULT_TIMEOUT,
         )
 
@@ -322,30 +493,6 @@ class API:
 
         resp_json = response.json()
         return resp_json.get("domains", [])
-
-    def _extract_domain_claims(self, id_token: str) -> list[str]:
-        """
-        Extract candidate domain ids from the "d_<uuid>" claims of an IdToken.
-
-        These are public (unsigned-read) claims of the caller's own Cognito
-        IdToken; no signature verification is performed or needed, as this is
-        only used to bootstrap the `x-domain` header for the discovery call, not
-        to establish trust.
-        """
-        try:
-            payload_segment = id_token.split(".")[1]
-            padding = "=" * (-len(payload_segment) % 4)
-            payload = json.loads(base64.urlsafe_b64decode(payload_segment + padding))
-        except (IndexError, ValueError, TypeError, UnicodeDecodeError) as err:
-            _LOGGER.warning("Unable to decode IdToken claims: %s", err)
-            return []
-
-        if not isinstance(payload, dict):
-            return []
-
-        return sorted(
-            key[2:] for key in payload if isinstance(key, str) and key.startswith("d_")
-        )
 
     def get_devices(self) -> tuple[list[RadoffDevice], list[DeviceFetchError]]:
         """
@@ -379,18 +526,27 @@ class API:
         `coordinator.py::RadoffCoordinator._merge_device_errors` is what
         turns the returned `device_errors` into `RadoffDevice` entries with
         `stale=True`, reusing the previous poll's readings when available.
+
+        Card M-02 narrows that isolation: a 403 (`APIDomainAccessError`) and
+        a 429 (`APIRateLimitError`) are re-raised instead of being recorded
+        per device, since neither is about the device - see
+        `_NON_ISOLATABLE_API_ERRORS`. It also keeps the endpoints of arch
+        1.x (`search` plus one GET per device) while moving them onto the
+        arch 2.0 host and base path: replacing them with the single
+        `GET /data/devices?domain_prefix=...&page_size=200` call that carries
+        telemetry inline is the next card of this migration, deliberately
+        left out of this one.
         """
         devices_ok: list[RadoffDevice] = []
         device_errors: list[DeviceFetchError] = []
 
-        url = f"{self.BASE_DOMAIN}/data/devices/search"
+        url = self._url(DEVICES_SEARCH_PATH)
         post_obj = {"filter": {}, "take": 99}
 
         response = self.session.post(
             url,
-            headers=self._get_headers(
-                bearer_token=self._session.get_bearer(), x_domain=self.domain
-            ),
+            headers=self._get_headers(bearer_token=self._session.get_bearer()),
+            params=self._domain_params(),
             json=post_obj,
             timeout=self.DEFAULT_TIMEOUT,
         )
@@ -413,6 +569,12 @@ class API:
 
             try:
                 readings, last_data_received_at = self._get_data(device_id)
+            except _NON_ISOLATABLE_API_ERRORS:
+                # Card M-02: a 403 or a 429 is never about this one device -
+                # see `_NON_ISOLATABLE_API_ERRORS` for why isolating either
+                # would be wrong. Re-raised before the isolating clause
+                # below can catch it as the `APIAuthError` subclass it is.
+                raise
             except _ISOLATABLE_DEVICE_ERRORS as err:
                 _LOGGER.debug(
                     "Isolated per-device fetch error for device %s (%s): %s",
@@ -466,12 +628,11 @@ class API:
         """
         readings: dict[ReadingKey, Reading] = {}
 
-        url = f"{self.BASE_DOMAIN}/data/devices/{device_id}"
+        url = self._url(DEVICE_DETAIL_PATH.format(device_id=device_id))
         response = self.session.get(
             url,
-            headers=self._get_headers(
-                bearer_token=self._session.get_bearer(), x_domain=self.domain
-            ),
+            headers=self._get_headers(bearer_token=self._session.get_bearer()),
+            params=self._domain_params(),
             timeout=self.DEFAULT_TIMEOUT,
         )
 
@@ -522,30 +683,88 @@ class API:
 
         return readings, last_data_received_at
 
-    def _get_headers(self, bearer_token: str, x_domain: str) -> dict[str, str]:
+    def _get_headers(self, bearer_token: str) -> dict[str, str]:
+        """
+        Return the headers every arch 2.0 request carries.
+
+        Card M-02 removed the arch 1.x domain header: it does not exist in
+        arch 2.0 (T-02 #10) and the domain travels as the `domain_prefix`
+        query param instead (see `_domain_params`).
+
+        `USER_AGENT` is kept exactly as S-03 defined it: there is no WAF in
+        arch 2.0 (T-02 D-21/D-22), so identifying our own traffic honestly
+        carries no risk of being blocked, and being identifiable is what
+        lets the backend tell this integration's load apart from the mobile
+        app's on a quota the two share.
+
+        `bearer` is the accepted `Authorization` format, confirmed against
+        the real host by M-01 (`auth_header_format_accettato: "bearer"`).
+        """
         return {
             "user-agent": USER_AGENT,
-            "x-domain": x_domain,
             "accept-encoding": "gzip",
             "authorization": "Bearer " + bearer_token,
             "content-type": "application/json",
         }
 
+    def _rate_limit_backoff(self) -> float:
+        """
+        Return the delay, in seconds, to honour after a 429 - and count it.
+
+        Exponential from `RATE_LIMIT_BACKOFF_START` (~5s, as the backend
+        asked in T-02 D-22), doubling per consecutive 429, capped at
+        `RATE_LIMIT_BACKOFF_MAX`, minus a jitter of up to
+        `RATE_LIMIT_BACKOFF_JITTER` of the nominal value. There is no
+        `Retry-After` to read: API Gateway does not send one, so this delay
+        is ours to choose and ours alone to honour.
+
+        The jitter is the point of using randomness here, and it is why
+        `random` rather than `secrets` is right: thousands of installations
+        rate-limited by the same saturated stage must not come back in
+        lockstep and re-create the peak they were told to back away from.
+        Nothing here is a secret or a token.
+        """
+        nominal = min(
+            RATE_LIMIT_BACKOFF_START * 2**self._consecutive_rate_limits,
+            RATE_LIMIT_BACKOFF_MAX,
+        )
+        self._consecutive_rate_limits += 1
+        jitter = random.uniform(0, RATE_LIMIT_BACKOFF_JITTER)  # noqa: S311
+        return nominal * (1 - jitter)
+
     def _check_response_status(
         self, response: requests.Response, url: str = ""
     ) -> bool:
-        """Check response status."""
+        """
+        Classify one response, raising the arch 2.0 error taxonomy (card M-02).
+
+        One exception class per semantic the caller can actually react to
+        differently, instead of the single `APIAuthError` every non-200 used
+        to collapse into (finding F3). The classification is driven by the
+        HTTP **status**, with the body read only to tell the two shapes of
+        404 apart: T-02 D-29 is still open on the complete form of
+        `ErrorResponse`, and M-01 captured three different body shapes
+        already, so a taxonomy keyed on body contents would be built on
+        sand.
+        """
         if response.status_code == HTTPStatus.OK:
+            # Any success clears the 429 streak: the next rate limit, if it
+            # comes, starts its backoff from the ~5s floor again rather than
+            # inheriting an exponent from an incident already over.
+            self._consecutive_rate_limits = 0
             return True
 
         safe_url = _safe_url(url or response.url)
         request_id = _get_request_id(response)
+        body = _error_body(response)
+        detail = _error_detail(body)
 
         _LOGGER.warning(
-            "API request failed: status=%d, url=%s, request_id=%s",
+            "API request failed: status=%d, url=%s, request_id=%s, detail=%s",
             response.status_code,
             safe_url,
             request_id or "n/a",
+            detail or "n/a",
         )
 
         if response.status_code == HTTPStatus.UNAUTHORIZED:
@@ -571,52 +790,121 @@ class API:
             # device - a 401 on a single device's GET means the whole
             # session's token is bad, not that one device, so it must
             # propagate and abort the rest of that poll cycle.
+            #
+            # Card M-02 deliberately keeps this behaviour, against the card's
+            # own text ("401 -> APIAuthError, che il coordinator traduce in
+            # ConfigEntryAuthFailed"): decided with Piero, because routing a
+            # plain expired token straight to the re-auth prompt is exactly
+            # the defect S-08 fixed. What did change in arch 2.0 is what a
+            # 401 now *means*: the "you do not belong to this domain" case,
+            # which 1.x also reported as a 401, is a 403 here (see below), so
+            # this branch is now only ever about the session. The body is
+            # `{"message": "Unauthorized"}` and carries an
+            # `x-amzn-errortype` header, i.e. it comes from the API Gateway
+            # authorizer, not from the application (M-01, D-29).
             _LOGGER.debug(
                 "Authentication token invalid (401) for domain %s, "
                 "will reconnect on next request",
-                self.domain,
+                self.domain_prefix,
             )
             self._session.invalidate()
             msg = "Authentication failed (HTTP 401 Unauthorized). Token may be expired."
             raise AuthExpiredError(msg)
 
         if response.status_code == HTTPStatus.FORBIDDEN:
-            # Deliberately NOT reclassified as AuthInvalidError by card S-08: a 403
-            # here is ambiguous (could mean the token's domain access changed,
-            # not necessarily "credentials no longer valid"), and the card's
-            # own coordinator step only names AuthInvalidError/AuthExpiredError coming
-            # from api/auth.py's Cognito handshake, not from this branch. The
-            # pre-existing over-broad "everything auth-adjacent is APIAuthError"
-            # classification for 403 (see finding F3) is tracked separately.
-            msg = "Access forbidden (HTTP 403). Check account permissions."
-            raise APIAuthError(msg)
+            # Card M-02, and a real change of behaviour from arch 1.x, where
+            # this same situation arrived as a 401 and was indistinguishable
+            # from an expired session (which is why the old comment here
+            # called the 403 "ambiguous" and left it as a generic
+            # APIAuthError - finding F3). In arch 2.0 the 403 has exactly one
+            # cause (T-02 D-29, reproduced by M-01 against dev): the request
+            # carried a `domain_prefix` this account does not belong to.
+            #
+            # Nothing about that is transient: the token is fine, a reconnect
+            # changes nothing, and retrying re-sends a request that will be
+            # refused identically. The remedy is a reconfiguration, so this
+            # is raised as its own class, logged at ERROR naming the domain
+            # (the 401 above logs at DEBUG and names no domain: the two are
+            # told apart in the log by more than their status code), never
+            # retried by `Retry` (403 is not in `status_forcelist`) and never
+            # isolated per device (`_NON_ISOLATABLE_API_ERRORS`).
+            _LOGGER.error(
+                "Radoff refused access to domain '%s' (HTTP 403): %s. The "
+                "account does not belong to this domain - this needs a "
+                "reconfiguration, not a retry",
+                self.domain_prefix,
+                detail or "no detail in the response body",
+            )
+            msg = (
+                f"Access to Radoff domain '{self.domain_prefix}' was refused "
+                f"(HTTP 403). This account does not belong to that domain: "
+                f"reconfigure the integration to select a domain it can reach."
+            )
+            raise APIDomainAccessError(msg)
+
+        if response.status_code == HTTPStatus.NOT_FOUND:
+            # Two different 404s, told apart by the body rather than by the
+            # path, because the body is what actually distinguishes them and
+            # M-01 captured both (see `_error_body`). `available` is only
+            # ever present on the `/analytics/measures-ranges` one, where it
+            # lists the device types the backend's catalogue holds.
+            available = body.get("available")
+            if isinstance(available, list):
+                msg = (
+                    f"Unknown device type (HTTP 404 on {safe_url}): "
+                    f"{detail or 'no detail in the response body'}. The API "
+                    f"lists these types as valid: {', '.join(available)}."
+                )
+                raise APIUnknownDeviceTypeError(msg, available=available)
+
+            msg = (
+                f"Device unknown or without data (HTTP 404 on {safe_url}): "
+                f"{detail or 'no detail in the response body'}."
+            )
+            raise APIDeviceNotFoundError(msg)
 
         if response.status_code == HTTPStatus.TOO_MANY_REQUESTS:
-            # Card S-11: this used to suggest raising the interval "above 60
-            # seconds" while the default itself already was 60 (finding, see
-            # analisi-codebase-radoff-ha-presa-in-carico.md §5.2 "ironia
-            # dell'error handling"). S-03 already made it stop naming a fixed
-            # number; this card goes one step further and names the interval
-            # actually configured for this entry (`self.scan_interval`, set
-            # from `config_entry.options` by the coordinator - see
-            # `API.__init__`), so the message is never wrong for this
-            # installation, and points at the option that now actually exists
-            # (before S-11, RadoffOptionsFlow did not exist, so this advice
-            # was inapplicable - finding F6).
-            msg = (
-                f"API rate limit exceeded (HTTP 429). The current polling "
-                f"interval for this account is {self.scan_interval} seconds; "
-                "increase it from the integration's options (Settings > "
-                "Devices & Services > Radoff > Configure)."
+            # Card M-02 / T-02 D-21-D-22: API Gateway generates this one, not
+            # the application - body `{"message": "Too Many Requests"}`, no
+            # `Retry-After` - and the quota it protects is per environment,
+            # shared with the Radoff mobile and web apps. So the delay is
+            # computed here (`_rate_limit_backoff`) and the whole cycle is
+            # meant to be skipped: `urllib3` no longer retries a 429 at once
+            # (see `_create_session`) and `get_devices()` no longer isolates
+            # it per device, which together were spending several requests
+            # against a budget already exceeded.
+            #
+            # Card S-11's advice is kept and still names the interval
+            # actually configured for this entry rather than a fixed number
+            # that may not match it.
+            retry_after = self._rate_limit_backoff()
+            _LOGGER.warning(
+                "Radoff rate limit hit (HTTP 429); skipping this cycle and "
+                "backing off %.1fs (attempt %d in this streak)",
+                retry_after,
+                self._consecutive_rate_limits,
             )
-            raise APIAuthError(msg)
+            msg = (
+                f"API rate limit exceeded (HTTP 429); skipping this cycle and "
+                f"backing off {retry_after:.1f}s. The limit is per environment "
+                f"and shared with the Radoff apps. The current polling interval "
+                f"for this account is {self.scan_interval} seconds; increase it "
+                "from the integration's options (Settings > Devices & Services "
+                "> Radoff > Configure)."
+            )
+            raise APIRateLimitError(msg, retry_after=retry_after)
 
         if response.status_code >= HTTPStatus.INTERNAL_SERVER_ERROR:
+            # Transient by definition, and already retried twice by `Retry`
+            # before reaching this point. Note what does NOT arrive here: a
+            # degraded soft dependency (DynamoDB, Aurora) answers 200 with
+            # `null` fields rather than 5xx (T-02 D-29), so a 5xx really is
+            # the API itself being unavailable.
             msg = (
                 f"Radoff API server error (HTTP {response.status_code}). "
                 "This is usually temporary - will retry automatically."
             )
-            raise APIAuthError(msg)
+            raise APIServerError(msg)
 
         msg = f"API request failed with HTTP {response.status_code}."
         raise APIAuthError(msg)

@@ -32,7 +32,7 @@ con le proprie. Vedi il suo docstring per le opzioni (`--env-file`, `--host`,
 
 | File | Contenuto |
 |---|---|
-| `auth_domains__pool_*.json` | `GET /auth/user/me/domains`, una per pool Cognito provato |
+| `auth_domains__pool_*.json` | `GET /data/user/me/domains` (la discovery: sotto `/data/*`, non `/auth/*` — vedi Esito 3 di `docs/M-01-ricognizione-dev.md`), una per pool Cognito provato |
 | `measures_ranges__<tipo>.json` | `GET /analytics/measures-ranges?device_type=<tipo>`, per i sei tipi di D-13 |
 | `measures_ranges__all.json` | lo stesso endpoint **senza** `device_type`: unisce tutti i tipi, ed è da qui che esce l'enumerazione completa delle `unit` |
 | `devices__page1_small.json`, `devices__page2_small.json`, `devices__page1_small_repeat.json` | `GET /data/devices` paginata con `page_size` piccolo, con la prima pagina richiesta due volte per misurare la stabilità dell'ordinamento |

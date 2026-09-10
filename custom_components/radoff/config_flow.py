@@ -20,6 +20,9 @@ from homeassistant.helpers.selector import (
     NumberSelector,
     NumberSelectorConfig,
     NumberSelectorMode,
+    TextSelector,
+    TextSelectorConfig,
+    TextSelectorType,
 )
 
 from .api import (
@@ -30,8 +33,10 @@ from .api import (
     AuthUnavailableError,
 )
 from .const import (
+    CONF_BASE_URL,
     CONF_DOMAIN_ID,
     CONF_INDEX,
+    DEFAULT_BASE_URL,
     DEFAULT_SCAN_INTERVAL,
     DOMAIN,
     MAX_SCAN_INTERVAL,
@@ -60,9 +65,22 @@ STEP_REAUTH_CONFIRM_DATA_SCHEMA = vol.Schema(
 )
 
 
-async def validate_input(hass: HomeAssistant, data: dict[str, Any]) -> dict[str, Any]:
+async def validate_input(
+    hass: HomeAssistant,
+    data: dict[str, Any],
+    base_url: str = DEFAULT_BASE_URL,
+) -> dict[str, Any]:
     """
     Validate the user input allows us to connect, and discover the user's domains.
+
+    `base_url` (card M-02) is the environment to validate against. It
+    defaults to `DEFAULT_BASE_URL`, which is the right answer during initial
+    setup - there is no entry yet, so there is no override to read. The two
+    callers that *do* have an entry (the re-auth step below and the Repairs
+    fix flow, `repairs.py`) pass that entry's `CONF_BASE_URL` option
+    instead: validating credentials and discovering domains against a
+    different environment from the one the entry actually polls would be
+    checking the wrong thing.
 
     Card S-09: every outcome of `api.connect()`/`api.list_domains()` that
     this module knows how to interpret is now mapped to a distinct local
@@ -94,6 +112,7 @@ async def validate_input(hass: HomeAssistant, data: dict[str, Any]) -> dict[str,
     api = API(
         username=data[CONF_USERNAME],
         password=data[CONF_PASSWORD],
+        base_url=base_url,
     )
 
     try:
@@ -284,7 +303,11 @@ class ConfigPatternFlow(ConfigFlow, domain=DOMAIN):
         if user_input is not None:
             data = {**reauth_entry.data, CONF_PASSWORD: user_input[CONF_PASSWORD]}
             try:
-                await validate_input(self.hass, data)
+                await validate_input(
+                    self.hass,
+                    data,
+                    reauth_entry.options.get(CONF_BASE_URL, DEFAULT_BASE_URL),
+                )
             except UnsupportedChallengeError:
                 return self.async_abort(reason="unsupported_challenge")
             except CannotConnectError:
@@ -330,6 +353,16 @@ class RadoffOptionsFlow(OptionsFlow):
     esposizione va valutata, vedi S-07"), and deliberately left out - decided
     with Piero: no acceptance criterion requires it, and it already tracks a
     changed scan_interval automatically via `RadoffCoordinator.stale_after`.
+
+    Card M-02 adds a third field after all, but an **advanced** one: the API
+    base URL (`CONF_BASE_URL`), shown only when Home Assistant's advanced
+    mode is on. In arch 2.0 the environment *is* the host (the version lives
+    in the hostname), so this single field is what lets an installation move
+    between dev, stg and prod without a code change. A normal user has no
+    reason to see it and none to change it - and, unlike the Cognito
+    parameters S-02 removed from the config flow, it deliberately does not
+    come back as a setup-time question: it belongs to a working entry's
+    options, not to its identity.
     """
 
     def __init__(self, config_entry: ConfigEntry) -> None:
@@ -347,7 +380,7 @@ class RadoffOptionsFlow(OptionsFlow):
             # below MIN_SCAN_INTERVAL never reaches this point as a saved
             # option (S-11 AC: "Un valore sotto il minimo viene rifiutato dal
             # form.").
-            return self.async_create_entry(data=user_input)
+            return self.async_create_entry(data=self._merged_options(user_input))
 
         current_scan_interval = self.config_entry.options.get(
             CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL
@@ -373,7 +406,49 @@ class RadoffOptionsFlow(OptionsFlow):
             }
         )
 
+        if self.show_advanced_options:
+            # Card M-02. `show_advanced_options` is the same flag Home
+            # Assistant uses for its own advanced fields: with advanced mode
+            # off, the field is not in the schema at all, so the form a
+            # normal user sees is byte-for-byte the S-11 one.
+            options_schema = options_schema.extend(
+                {
+                    vol.Optional(
+                        CONF_BASE_URL,
+                        default=self.config_entry.options.get(
+                            CONF_BASE_URL, DEFAULT_BASE_URL
+                        ),
+                    ): TextSelector(TextSelectorConfig(type=TextSelectorType.URL))
+                }
+            )
+
         return self.async_show_form(step_id="init", data_schema=options_schema)
+
+    def _merged_options(self, user_input: dict[str, Any]) -> dict[str, Any]:
+        """
+        Return the options to save, merging `user_input` onto the stored ones.
+
+        Card M-02, and the reason this is a merge rather than the plain
+        `user_input` S-11 saved: with advanced mode off, `CONF_BASE_URL` is
+        not in the schema, so it is not in `user_input` either - saving that
+        dict as-is would silently drop a base URL an advanced user had set,
+        just because someone later changed the poll interval.
+
+        A base URL equal to the default, or blanked out, is removed instead
+        of stored: `DEFAULT_BASE_URL` (const.py) then stays the single
+        authority, and an entry that never overrode it keeps following it
+        when the constant itself moves (dev -> prod, at the end of this
+        migration) instead of freezing today's value forever.
+        """
+        merged = {**self.config_entry.options, **user_input}
+
+        base_url = str(merged.get(CONF_BASE_URL, "")).strip().rstrip("/")
+        if not base_url or base_url == DEFAULT_BASE_URL:
+            merged.pop(CONF_BASE_URL, None)
+        else:
+            merged[CONF_BASE_URL] = base_url
+
+        return merged
 
 
 class CannotConnectError(HomeAssistantError):
