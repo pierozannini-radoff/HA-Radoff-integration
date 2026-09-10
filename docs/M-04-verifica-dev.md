@@ -70,17 +70,20 @@ il re-keying degli `unique_id` esistenti e quindi eredita il caso.
 ## La verifica dal vivo
 
 ```bash
-# credenziali nel proprio .env (gitignored), come RADOFF_USERNAME/RADOFF_PASSWORD
-python3 scripts/verify_m04_live.py
-
-# finché ALLOW_USER_SRP_AUTH non è abilitato sul pool dev (richiesta di M-01)
+# credenziali nel proprio .env (gitignored), come RADOFF_USERNAME/RADOFF_PASSWORD.
+# I due override di pool servono perché const.py punta ancora all'altro pool:
+# vedi «Un residuo che blocca il collaudo end-to-end» più sotto.
 python3 scripts/verify_m04_live.py \
-    --auth-flow password \
     --pool-id eu-west-1_5SsvW9t6S \
-    --client-id 2i63gbc9sim3b8paasaga7jb6g
+    --client-id 2i63gbc9sim3b8paasaga7jb6g \
+    --domain-prefix 875fe89b
 
-# su un dominio specifico, per i due controlli che guardano device veri
-python3 scripts/verify_m04_live.py ... --domain-prefix 875fe89b
+# `--domain-prefix` non è facoltativo se si vogliono tutti i controlli: senza,
+# lo script prende il primo dominio della discovery, che su questo account è
+# vuoto, e i due controlli su device veri finiscono in `skip`.
+
+# `--auth-flow password` NON serve più (ALLOW_USER_SRP_AUTH è abilitato su dev,
+# RT-2952). Resta come ripiego se quel flag dovesse tornare indietro.
 ```
 
 ### Cosa verifica, e perché serve una passata vera
@@ -112,16 +115,25 @@ e `tests/test_init.py`, che girano dentro `hass`.
 ### Esito
 
 Eseguita il **2026-09-10** contro dev (`https://v2.api.dev.iot.radoff.life`),
-pool `eu-west-1_5SsvW9t6S`, con `--auth-flow password`.
+pool `eu-west-1_5SsvW9t6S`.
 
-**17 PASS, 0 FAIL, 0 skip.**
+**17 PASS, 0 FAIL, 0 skip — con l'handshake SRP vero.**
 
-Due passate, e la prima serve a spiegare la seconda. Senza
-`--domain-prefix` lo script prende il primo dominio della discovery, che su
-questo account è `1aeb7ad1` e non ha device: 15 PASS e uno `skip` sui due
-controlli che hanno bisogno di device veri. Ripetuta su `875fe89b` — lo
-stesso dominio con cui M-03 aveva chiuso, l'unico con un device che
-trasmette — copre tutto.
+Tre passate, e ognuna spiega la successiva.
+
+1. Senza `--domain-prefix` lo script prende il primo dominio della
+   discovery, che su questo account è `1aeb7ad1` e non ha device: 15 PASS e
+   uno `skip` sui due controlli che hanno bisogno di device veri.
+2. Ripetuta su `875fe89b` — lo stesso dominio con cui M-03 aveva chiuso,
+   l'unico con un device che trasmette — copre tutto: 17 PASS.
+3. Ripetuta ancora **senza** `--auth-flow password`, cioè con l'autenticazione
+   SRP che l'integrazione usa davvero: 17 PASS di nuovo.
+
+La terza passata è la novità, e vale più delle prime due: `ALLOW_USER_SRP_AUTH`
+**è stato abilitato** sull'app client di dev (RT-2952, chiusa), quindi il
+flusso password non serve più e questa verifica copre anche l'autenticazione.
+Fino a ieri era la richiesta aperta di M-01 e la ragione per cui i verbali
+precedenti si fermavano prima dell'handshake.
 
 ```
 [  ok  ] Lo schema risponde per tutti e 5 i tipi del catalogo
@@ -184,13 +196,42 @@ espone un campo non dichiarato come valore grezzo — quello che esiste per
 
 ### Cosa questa passata NON verifica
 
-- **L'autenticazione.** Con `--auth-flow password` l'handshake SRP
-  dell'integrazione è scavalcato e il token iniettato, perché l'app client
-  del pool dev non ha ancora `ALLOW_USER_SRP_AUTH` (richiesta aperta di
-  M-01). Un PASS qui non è un PASS sull'autenticazione, e lo script lo
-  dichiara a schermo.
+- **Nulla, sull'autenticazione — ma solo dalla terza passata.** Con
+  `--auth-flow password` l'handshake SRP è scavalcato e il token iniettato,
+  e un PASS ottenuto così non dice niente sull'autenticazione (lo script lo
+  dichiara a schermo, forte). Ora che `ALLOW_USER_SRP_AUTH` è abilitato sul
+  pool dev quel ripiego non serve più: **usare lo script senza
+  `--auth-flow`**, ed è ciò che rende la terza passata più forte delle
+  prime due.
 - **Il wiring di Home Assistant**: quali entità nascono, come si chiamano,
   quali sono disabilitate. Serve un HA vivo; lo coprono
   `tests/test_sensor.py` e `tests/test_init.py`, che girano dentro `hass`.
 - **`sismoff`**: vedi "Scostamenti" più sopra. Il suo schema è stato letto
   e confrontato, i suoi device no — su dev non ce ne sono.
+
+
+## Un residuo che blocca il collaudo end-to-end (scoperto il 2026-09-10)
+
+Ora che l'autenticazione SRP su dev funziona, resta **un solo ostacolo** fra
+questa integrazione e un Home Assistant vero puntato su dev, e non è di
+questa card: `const.py` punta a due ambienti diversi.
+
+| Costante | Valore | Ambiente |
+|---|---|---|
+| `DEFAULT_BASE_URL` | `https://v2.api.dev.iot.radoff.life` | dev |
+| `DEFAULT_POOL_ID` | `eu-west-1_zD4CSIZ6i` | **non** dev |
+| `DEFAULT_CLIENT_ID` | `61ckd0c4qoq0ov7mmphrj7kstj` | **non** dev |
+
+M-01 ha misurato quale pool l'API di dev accetta e la risposta è registrata
+in `tests/fixtures/dev/_manifest.json`: `accepted_pool: pool_dev`, cioè
+`eu-west-1_5SsvW9t6S`. Un'installazione reale su questo branch
+autenticherebbe quindi contro il pool sbagliato e si prenderebbe un 401 su
+ogni chiamata — ed è la ragione per cui entrambi gli script di verifica
+(`verify_m03_live.py`, `verify_m04_live.py`) hanno bisogno degli override
+`--pool-id`/`--client-id`.
+
+Non è un difetto di M-04, che non tocca quelle costanti, e non ha effetto
+sui test: la suite mocka l'handshake. Ma è un prerequisito del §1 di **M-08**
+(RT-2947), che chiede un setup da zero su istanza reale contro dev, e va
+deciso lì o su M-02: allineare i default all'ambiente, oppure esporre pool e
+client nell'OptionsFlow accanto a `CONF_BASE_URL`.

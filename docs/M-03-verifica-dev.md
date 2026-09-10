@@ -180,3 +180,11 @@ alti, e il controllo sul tipo non avrebbe più nulla da verificare.
 Cosa **non** è cambiato: Now+ resta l'unico tipo supportato e verificato,
 ed è quello che il README promette. Gli altri tipi ottengono le entità che
 il loro schema dichiara, senza garanzia di copertura.
+
+**E una cosa è cambiata in meglio:** `ALLOW_USER_SRP_AUTH` è stato abilitato
+sull'app client di dev (RT-2952). La riga qui sopra su "quando sarà
+abilitato" non è più un'ipotesi: `--auth-flow password` non serve più, e una
+passata di verifica copre ora anche l'autenticazione. Restano necessari i
+due override `--pool-id`/`--client-id`, perché `const.py` punta ancora a un
+pool diverso da quello che l'API di dev accetta — vedi
+`docs/M-04-verifica-dev.md`, "Un residuo che blocca il collaudo end-to-end".

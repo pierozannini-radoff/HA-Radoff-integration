@@ -22,10 +22,15 @@ Come si esegue
     # RADOFF_PASSWORD - oppure RADOFF_DEV_USERNAME / RADOFF_DEV_PASSWORD
     python3 scripts/verify_m04_live.py
 
-    # se l'app client del pool dev non ha ancora ALLOW_USER_SRP_AUTH
-    # (la richiesta aperta di M-01), l'unico modo di arrivare ai dati:
-    python3 scripts/verify_m04_live.py --auth-flow password \
-        --pool-id eu-west-1_XXXXXXXX --client-id XXXXXXXX
+    # i due override di pool servono finche' const.py punta a un pool
+    # diverso dall'ambiente di DEFAULT_BASE_URL (vedi docs/M-04-verifica-dev.md)
+    python3 scripts/verify_m04_live.py \
+        --pool-id eu-west-1_XXXXXXXX --client-id XXXXXXXX \
+        --domain-prefix XXXXXXXX
+
+    # --auth-flow password NON serve piu': ALLOW_USER_SRP_AUTH e' stato
+    # abilitato sul pool dev (RT-2952, verificato il 2026-09-10). Resta
+    # come ripiego se quel flag dovesse tornare indietro.
 
     # su un dominio specifico, invece del primo con device
     python3 scripts/verify_m04_live.py --domain-prefix 875fe89b
@@ -47,7 +52,9 @@ Cosa NON verifica
   catalogo si misura meglio tutta insieme; nessun controllo sulle entita'
   di un sismoff.
 - Con `--auth-flow password` non verifica l'handshake SRP: viene
-  scavalcato e il token iniettato. Lo script lo dice a schermo, forte.
+  scavalcato e il token iniettato. Lo script lo dice a schermo, forte -
+  ed e' il motivo per cui quel ripiego non va usato senza bisogno, ora
+  che SRP su dev funziona.
 
 Politica di stampa
 ------------------
@@ -199,9 +206,10 @@ def inject_password_flow_token(api: API, username: str, password: str) -> None:
     """
     Autentica con USER_PASSWORD_AUTH e infila il token nella sessione.
 
-    Identica a quella di `verify_m03_live.py`, e per la stessa ragione:
-    finche' l'app client del pool dev non ha `ALLOW_USER_SRP_AUTH` non c'e'
-    altro modo di arrivare ai dati. Non dice nulla sull'autenticazione
+    Identica a quella di `verify_m03_live.py`. Era l'unico modo di arrivare
+    ai dati finche' l'app client del pool dev non aveva `ALLOW_USER_SRP_AUTH`;
+    dal 2026-09-10 quel flag c'e' (RT-2952) e questa scorciatoia serve solo
+    se dovesse tornare indietro. Non dice nulla sull'autenticazione
     dell'integrazione, e lo script lo dichiara a schermo.
     """
     import boto3
@@ -606,9 +614,10 @@ def main(argv: list[str] | None = None) -> int:
         choices=("srp", "password"),
         default="srp",
         help=(
-            "srp: come fa l'integrazione. password: scavalca l'handshake e "
-            "inietta un token USER_PASSWORD_AUTH, unica strada finche' il "
-            "pool dev non abilita ALLOW_USER_SRP_AUTH (richiesta di M-01)."
+            "srp: come fa l'integrazione, ed e' il default perche' dal "
+            "2026-09-10 funziona anche su dev (RT-2952). password: scavalca "
+            "l'handshake e inietta un token USER_PASSWORD_AUTH - ripiego, "
+            "da usare solo se ALLOW_USER_SRP_AUTH sparisse di nuovo."
         ),
     )
     parser.add_argument("--verbose", action="store_true")
