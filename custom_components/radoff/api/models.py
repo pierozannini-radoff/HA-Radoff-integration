@@ -1,143 +1,111 @@
 """
 Domain dataclasses for the Radoff API.
 
-`RadoffSensor` and `Device` (S-06b move from the former `api.py`) were
-renamed here to `Reading` and `RadoffDevice` (card S-07), matching the
-target architecture in `architettura-target-sprint-m.md` §3.
+Card M-03 rewrites this module around the arch 2.0 payload. What arch 1.x
+made necessary here is gone:
 
-Card S-10 adds the composite reading key described in that same section and
-resolves finding C4 with it:
+- The response-bucket enum and the composite (bucket, property name)
+  reading key of card S-10: arch 2.0 has no buckets. `GET /data/devices`
+  carries one flat `telemetry` object per device, holding the last value of
+  each field, so the reading key goes back to being the field name and
+  finding C4 - two buckets colliding on one property name - cannot occur by
+  construction rather than by convention.
+- `DeviceFetchError` (card S-13): it existed because the fetch was N+1, one
+  `GET /data/devices/{id}` per device, which made "this one device failed"
+  a real, isolatable state. There is one call per cycle now (see
+  `api/client.py::get_devices`), so a failure is either the whole cycle's or
+  nobody's; nothing is left to isolate.
 
-- `Bucket`: which response bucket a reading was read from. Its two members'
-  *values* are deliberately the exact JSON keys the Radoff API uses for
-  those buckets (`"data"`, `"aggregatedData"`) rather than arbitrary names -
-  a `StrEnum` member compares equal to, and hashes the same as, its string
-  value, so `Bucket.DATA` can be used directly as a `dict` key against a
-  payload keyed by plain strings (see `api/client.py::_get_data`) with no
-  translation table in between, and `properties.py::MAPPING` can be keyed by
-  `Bucket` the same way. `recalculatedData` - a third bucket the API exposes
-  (see `s-07-implementazione.md`, "Scoperta collaterale") - deliberately has
-  no member here yet: nothing in `properties.py::MAPPING` describes it, so
-  it is silently skipped by `_get_data`'s "iterate `MAPPING`, not the raw
-  payload" loop, same as before this card. Mapping it is separate work.
-- `ReadingKey = tuple[Bucket, str]`: `(bucket, property_name)`. Before this
-  card, `RadoffDevice.readings` was keyed by the bare property name, so
-  `data.airqualityindex` and `aggregatedData.airqualityindex` wrote the same
-  dict key - the second one silently won, and which one that was depended on
-  `MAPPING`'s iteration order (finding C4, high severity). The composite key
-  lets both live in the same dict as two independent entries.
-- `Reading.bucket`: which bucket this particular sample came from, so a
-  `Reading` carries its own key component instead of the caller having to
-  remember which `readings[...]` lookup it came out of.
-
-The other two additions from S-07 are unchanged by this card:
-
-- `Reading.measured_at`: when the sample was taken, if the API ever exposes
-  it. T-02 CONFIRMED (probe run 2026-09-02) that it does not today - `data`/
-  `aggregatedData`/`recalculatedData` objects carry only `propertyName` and
-  `value`/`aggregationValue` - so this stays `None` by design, not "pending".
-  See `api/client.py::_MEASURED_AT_KEYS`.
-- `RadoffDevice.last_data_received_at`: the same probe found this one level
-  up, as a sibling field of the same `GET /data/devices/{id}` response -
-  "when this device last reported anything", device-level rather than
-  per-sample. `RadoffEntity.available` uses it as the freshness signal in
-  place of `Reading.measured_at` when the latter is `None`, which today is
-  always. Format and timezone CONFIRMED (ISO-8601, millisecond precision,
-  explicit trailing "Z", i.e. already UTC) - see `api/client.py::_parse_timestamp`.
-- `RadoffDevice.stale`: whether the last per-device fetch for this device
-  failed. Used to always be `False` unconditionally - card S-13 is what
-  actually sets it now (see `api/client.py::get_devices` and
-  `coordinator.py::RadoffCoordinator._merge_device_errors`); S-07 already
-  consumed the flag correctly in `RadoffEntity.available` before S-13
-  existed to produce it.
-
-Card S-13 adds `DeviceFetchError`, described below.
+`device_id` goes with them. In arch 2.0 `deviceId`, `serial_number` and
+`deviceSerial` are the same value (T-02 D-02, confirmed by the real payloads
+of M-01), and the model exposes exactly one of them: `serial_number`. The
+UUID of arch 1.x has no counterpart at all - it is not a renamed field, it
+simply does not exist any more.
 """
 
-from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
-from enum import StrEnum
-from numbers import Number
-
-from homeassistant.components.sensor import SensorDeviceClass
-
-
-class Bucket(StrEnum):
-    """
-    Which response bucket a reading was read from.
-
-    Member values are the literal JSON bucket keys the Radoff API uses
-    (`GET /data/devices/{id}` -> `data.data`, `data.aggregatedData`), not
-    arbitrary labels - see this module's docstring for why that equivalence
-    is deliberate.
-    """
-
-    DATA = "data"
-    AGGREGATED = "aggregatedData"
-
-
-# (bucket, property_name): the composite key that replaces the bare
-# property-name string `RadoffDevice.readings` used to be keyed by. Resolves
-# C4 - see this module's docstring.
-ReadingKey = tuple[Bucket, str]
 
 
 @dataclass
 class Reading:
-    """A single sample for one (bucket, property) pair of one device."""
+    """
+    One field of one device's `telemetry` block, with the value it last had.
+
+    `name` is the field name as the API spells it (`tvoc`, `aqi_value`,
+    `internal_temperature`, ...) and is also the key this reading is filed
+    under in `RadoffDevice.readings`.
+
+    `measured_at` deserves care, because it is coarser than it looks. Arch
+    2.0 exposes **one** timestamp for the whole telemetry block
+    (`telemetry.timestamp`), not one per field, and T-08 D-15 states what
+    that timestamp is: the maximum of the individual fields' timestamps, not
+    the instant this particular field was sampled. So every `Reading` of one
+    device carries the same `measured_at`, and for a field that updates more
+    slowly than its siblings that value is optimistic - it says "something on
+    this device was measured then", not "this field was".
+
+    The field this actually matters for is radon, whose cadence is much
+    slower than the rest of the block (T-08 D-15 keeps a reservation on
+    exactly this point): a radon reading can be hours old while
+    `measured_at`, refreshed by every faster field around it, keeps looking
+    current. `RadoffEntity.available` judges freshness from this value, so
+    until the API exposes a per-field timestamp that check is structurally
+    unable to see a single stale field - only a device that has gone quiet
+    altogether. Written down here rather than left implicit because the
+    freshness logic reads correct and is not.
+    """
 
     name: str
-    bucket: Bucket
-    value: Number
-    device_class: SensorDeviceClass
-    friendly_name: str
-    unit: type[StrEnum] | str | None
-    normalize_fn: Callable[[Number], float | int] | None
+    value: float | int
     measured_at: datetime | None = None
 
 
 @dataclass
 class RadoffDevice:
-    """API device."""
+    """
+    One device as `GET /data/devices` describes it in arch 2.0.
 
-    device_id: str
-    device_serial: str
+    `serial_number` is the identity, everywhere: it keys the coordinator's
+    lookup (`coordinator.py::get_device_by_id`), it is half of every
+    `unique_id` (`entity.py`) and it is what `device_info.identifiers`
+    already used before this card.
+
+    Most of the remaining fields are carried, not consumed, on purpose -
+    they are read here so that the cards that use them do not have to touch
+    the client again:
+
+    - `connection_status` / `connection_status_updated_at`: availability
+      based on them is M-06. This card only brings them into the model.
+    - `firmware_version`: surfaced as `device_info.sw_version` (this card).
+    - `room_name`, `building_name`, `domain_prefix`: context for the device
+      registry and for diagnostics.
+
+    `stale` survives from S-13 with a **different meaning**, and the change
+    is easy to miss. It used to mean "this device's own fetch failed this
+    cycle". It now means "this device reported no telemetry this cycle", the
+    `telemetry: null` M-01 found on the majority of the 120 devices it
+    censused (D-16): a device that has never transmitted, or is not
+    transmitting now. That is not the same claim as "offline" - a device can
+    be `connection_status: connected` and still send nothing in a cycle, and
+    conversely a disconnected device keeps the last telemetry the API holds
+    for it. Deriving availability from the connection status is M-06's job;
+    until then `stale` stays what it says: no data this cycle, not "down".
+
+    `telemetry_timestamp` is the same value every `Reading.measured_at` of
+    this device carries (see `Reading`), kept at device level too so a
+    device with no readings at all still says when it last spoke.
+    """
+
+    serial_number: str
     device_type: str
     name: str
-    readings: dict[ReadingKey, Reading]
+    readings: dict[str, Reading] = field(default_factory=dict)
+    connection_status: str | None = None
+    connection_status_updated_at: datetime | None = None
+    firmware_version: str | None = None
+    room_name: str | None = None
+    building_name: str | None = None
+    domain_prefix: str | None = None
+    telemetry_timestamp: datetime | None = None
     stale: bool = False
-    last_data_received_at: datetime | None = None
-
-
-@dataclass
-class DeviceFetchError:
-    """
-    One device's identity, paired with why its per-device fetch failed (S-13).
-
-    `api/client.py::get_devices()` builds one of these, instead of raising,
-    whenever the `search` call itself succeeded (so the device's identity -
-    id, serial, type, name - is known from that response) but the follow-up
-    per-device `GET /data/devices/{id}` failed with an isolatable error (see
-    `get_devices()`'s own docstring for exactly which exceptions qualify).
-
-    `coordinator.py::RadoffCoordinator._merge_device_errors` is what turns
-    this into a `RadoffDevice` the rest of the integration can use: it looks
-    up the previous poll's device with the same `(device_type, device_id)`
-    and, if found, keeps its `readings`/`last_data_received_at` and only
-    flips `stale` to `True`; if this device has no previous data at all
-    (e.g. its very first poll already failed), it is still included, with
-    empty `readings` and `stale=True`, rather than silently dropped - the
-    card's own "COSA FARE" step 2 asks for exactly this fallback.
-
-    `error` is a short, human-readable description of the failure (built
-    from `str(exception)`), used only for the DEBUG log line the card asks
-    for (step 5) - it carries no meaning to `RadoffDevice`/`RadoffEntity`,
-    which only ever see the resulting `stale` flag.
-    """
-
-    device_id: str
-    device_serial: str
-    device_type: str
-    name: str
-    error: str

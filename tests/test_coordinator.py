@@ -1,10 +1,18 @@
 """
-Coordinator poll tests (S-18): nominal payload and degraded conditions.
+Coordinator poll tests (S-18, updated by card M-03): nominal and degraded.
 
 Every test sets up a real config entry end to end (`async_setup_entry` ->
 `RadoffCoordinator.async_config_entry_first_refresh` -> `sensor.py`'s
 platform setup), with the Radoff API mocked at the transport level - the
 same path Home Assistant itself exercises on every startup and poll.
+
+What card M-03 changes here is the shape of "degraded". S-13's degraded
+cases were per-device: one device's `GET` failed, `_merge_device_errors`
+kept its previous readings and flipped `stale`, and the other device kept
+updating. With a single `GET /data/devices` per cycle there is no such
+state to test: a failure is the cycle's, and the per-device condition that
+remains is the one the payload itself reports - `telemetry: null`, a device
+the API answered about and that has no data.
 """
 
 from __future__ import annotations
@@ -26,14 +34,13 @@ from custom_components.radoff.const import (
 from custom_components.radoff.coordinator import RadoffCoordinator
 
 from .conftest import (
+    auth_result,
     load_dev_fixture,
-    load_device_fixture,
+    load_devices_fixture,
     load_fixture,
     make_id_token,
-    auth_result,
     patch_authenticate_user,
-    register_device,
-    register_search,
+    register_devices,
 )
 
 
@@ -56,6 +63,13 @@ async def _setup_entry(
     assert await hass.config_entries.async_setup(entry.entry_id)
     await hass.async_block_till_done()
     return entry
+
+
+async def _repoll(hass: HomeAssistant) -> None:
+    """Run one more coordinator cycle against whatever is registered now."""
+    entry = hass.config_entries.async_entries(DOMAIN)[0]
+    await entry.runtime_data.async_refresh()
+    await hass.async_block_till_done()
 
 
 async def test_coordinator_without_domain_id_raises_config_entry_error(
@@ -90,20 +104,17 @@ async def test_poll_nominal_produces_expected_entities(
     A nominal payload produces the expected entities, with specific values.
 
     Asserts on concrete unit, device class, index state and value - not just
-    "the entity exists" (S-18 AC: "asserzioni su valori specifici").
+    "the entity exists" (S-18 AC: "asserzioni su valori specifici"). The
+    temperature is the one to watch: `20.9` is the value the payload
+    carries, not a scaled one (card M-03 removed the scaling factor).
     """
-    register_search(requests_mock, load_fixture("search_one_device.json"))
-    register_device(
-        requests_mock,
-        "device-0000-0001",
-        load_device_fixture("device_0001_nominal.json"),
-    )
+    register_devices(requests_mock, load_devices_fixture("devices_one_device.json"))
 
     await _setup_entry(hass, monkeypatch, config_entry_v2_data)
 
     temperature = hass.states.get("sensor.living_room_temperature")
     assert temperature is not None
-    assert temperature.state == "20.9"  # round(2500 * 0.00835, 1)
+    assert temperature.state == "20.9"
     assert temperature.attributes["unit_of_measurement"] == "°C"
     assert temperature.attributes["device_class"] == "temperature"
 
@@ -114,93 +125,119 @@ async def test_poll_nominal_produces_expected_entities(
 
     humidity = hass.states.get("sensor.living_room_humidity")
     assert humidity is not None
-    assert humidity.state == "45"
+    assert humidity.state == "45.0"
     assert humidity.attributes["device_class"] == "humidity"
 
-    aqi_average = hass.states.get("sensor.living_room_air_quality_average")
-    assert aqi_average is not None
-    assert aqi_average.state == "25"
+    aqi = hass.states.get("sensor.living_room_air_quality")
+    assert aqi is not None
+    assert aqi.state == "1.15"
+    assert aqi.attributes["device_class"] == "aqi"
 
 
-async def test_poll_degraded_device_missing_from_search(
+async def test_the_device_registry_entry_carries_the_firmware_version(
     hass: HomeAssistant,
     monkeypatch: pytest.MonkeyPatch,
     requests_mock: Any,
     config_entry_v2_data: dict[str, Any],
 ) -> None:
-    """A device present on setup but absent from a later search goes unavailable."""
-    register_search(requests_mock, load_fixture("search_one_device.json"))
-    register_device(
-        requests_mock,
-        "device-0000-0001",
-        load_device_fixture("device_0001_nominal.json"),
-    )
+    """
+    Card M-03: `firmware_version` reaches `device_info.sw_version`.
+
+    A field arch 1.x did not report at all, and the one addition of this
+    card that a user can actually see - in the device page, not in an
+    entity.
+    """
+    from homeassistant.helpers import device_registry as dr
+
+    register_devices(requests_mock, load_devices_fixture("devices_one_device.json"))
+    await _setup_entry(hass, monkeypatch, config_entry_v2_data)
+
+    registry = dr.async_get(hass)
+    device = registry.async_get_device(identifiers={(DOMAIN, "SER-0000-0001")})
+
+    assert device is not None
+    assert device.sw_version == "0.2.8"
+
+
+async def test_poll_degraded_device_missing_from_the_list(
+    hass: HomeAssistant,
+    monkeypatch: pytest.MonkeyPatch,
+    requests_mock: Any,
+    config_entry_v2_data: dict[str, Any],
+) -> None:
+    """A device present on setup but absent from a later poll goes unavailable."""
+    register_devices(requests_mock, load_devices_fixture("devices_one_device.json"))
     await _setup_entry(hass, monkeypatch, config_entry_v2_data)
     assert hass.states.get("sensor.living_room_temperature").state != "unavailable"
 
-    register_search(requests_mock, {"devices": []})
-    entry = hass.config_entries.async_entries(DOMAIN)[0]
-    await entry.runtime_data.async_refresh()
-    await hass.async_block_till_done()
+    register_devices(requests_mock, load_fixture("devices_empty.json"))
+    await _repoll(hass)
 
     assert hass.states.get("sensor.living_room_temperature").state == "unavailable"
 
 
-async def test_poll_degraded_missing_property_only_affects_that_reading(
+async def test_poll_degraded_missing_field_only_affects_that_reading(
     hass: HomeAssistant,
     monkeypatch: pytest.MonkeyPatch,
     requests_mock: Any,
     config_entry_v2_data: dict[str, Any],
 ) -> None:
-    """A property missing from one sample only affects that one entity."""
-    register_search(requests_mock, load_fixture("search_one_device.json"))
-    register_device(
-        requests_mock,
-        "device-0000-0001",
-        load_device_fixture("device_0001_missing_property.json"),
-    )
+    """A field missing from the telemetry block only affects that one entity."""
+    register_devices(requests_mock, load_devices_fixture("devices_missing_field.json"))
 
     await _setup_entry(hass, monkeypatch, config_entry_v2_data)
 
     assert hass.states.get("sensor.living_room_temperature") is None
     humidity = hass.states.get("sensor.living_room_humidity")
     assert humidity is not None
-    assert humidity.state == "45"
+    assert humidity.state == "45.0"
 
 
-async def test_poll_degraded_500_isolated_to_one_device(
+async def test_a_device_without_telemetry_creates_no_entities_and_no_error(
     hass: HomeAssistant,
     monkeypatch: pytest.MonkeyPatch,
     requests_mock: Any,
     config_entry_v2_data: dict[str, Any],
 ) -> None:
     """
-    A 500 on one device's GET makes only that device's entities unavailable.
+    M-03 AC: `telemetry: null` sets up cleanly, with no entities and no error.
 
-    Both devices must succeed on the FIRST poll (so their entities actually
-    get created by `sensor.py`'s one-shot platform setup, which only builds
-    entities for readings present in that first snapshot) - only the SECOND
-    poll cycle isolates the 500 to the bedroom device, per `_merge_device_
-    errors`' "reuse previous readings, flip stale=True" behaviour.
+    The condition of the majority of the devices M-01 censused (D-16). The
+    entry must load: a domain where nothing is transmitting is a normal
+    state of the world, not a failure of the integration.
     """
-    register_search(requests_mock, load_fixture("search_two_devices.json"))
-    register_device(
-        requests_mock,
-        "device-0000-0001",
-        load_device_fixture("device_0001_nominal.json"),
-    )
-    register_device(
-        requests_mock,
-        "device-0000-0002",
-        load_device_fixture("device_0002_nominal.json"),
-    )
+    register_devices(requests_mock, load_fixture("devices_no_telemetry.json"))
+
+    entry = await _setup_entry(hass, monkeypatch, config_entry_v2_data)
+
+    assert entry.state is ConfigEntryState.LOADED
+    assert hass.states.get("sensor.living_room_temperature") is None
+    coordinator = entry.runtime_data
+    assert [device.stale for device in coordinator.data.devices] == [True]
+
+
+async def test_a_device_falling_silent_only_affects_its_own_entities(
+    hass: HomeAssistant,
+    monkeypatch: pytest.MonkeyPatch,
+    requests_mock: Any,
+    config_entry_v2_data: dict[str, Any],
+) -> None:
+    """
+    One device's `telemetry: null` leaves the other device's entities alone.
+
+    This is what per-device degradation looks like after card M-03: not a
+    device whose own request failed (there is no per-device request any
+    more), but a device the API answered about and that has nothing to say.
+    """
+    two_devices = load_devices_fixture("devices_two_devices.json")
+    register_devices(requests_mock, two_devices)
     await _setup_entry(hass, monkeypatch, config_entry_v2_data)
     assert hass.states.get("sensor.bedroom_temperature").state != "unavailable"
 
-    register_device(requests_mock, "device-0000-0002", status_code=500)
-    entry = hass.config_entries.async_entries(DOMAIN)[0]
-    await entry.runtime_data.async_refresh()
-    await hass.async_block_till_done()
+    silent = load_devices_fixture("devices_two_devices.json")
+    silent["devices"][1]["telemetry"] = None
+    register_devices(requests_mock, silent)
+    await _repoll(hass)
 
     living_room = hass.states.get("sensor.living_room_temperature")
     assert living_room is not None
@@ -209,6 +246,34 @@ async def test_poll_degraded_500_isolated_to_one_device(
     bedroom = hass.states.get("sensor.bedroom_temperature")
     assert bedroom is not None
     assert bedroom.state == "unavailable"
+
+
+async def test_a_500_costs_the_whole_cycle(
+    hass: HomeAssistant,
+    monkeypatch: pytest.MonkeyPatch,
+    requests_mock: Any,
+    config_entry_v2_data: dict[str, Any],
+) -> None:
+    """
+    Card M-03: with one call per cycle, a 5xx makes every entity unavailable.
+
+    Deliberately pinned, because it is the behaviour S-13 was written to
+    avoid - back when a 5xx could come from one device's own GET and the
+    other devices' data was still perfectly good. It cannot come from one
+    device any more: the request that failed is the one that would have
+    brought every device's telemetry, so there is nothing to keep.
+    """
+    register_devices(requests_mock, load_devices_fixture("devices_two_devices.json"))
+    await _setup_entry(hass, monkeypatch, config_entry_v2_data)
+    assert hass.states.get("sensor.bedroom_temperature").state != "unavailable"
+
+    register_devices(
+        requests_mock, {"message": "Internal Server Error"}, status_code=500
+    )
+    await _repoll(hass)
+
+    assert hass.states.get("sensor.living_room_temperature").state == "unavailable"
+    assert hass.states.get("sensor.bedroom_temperature").state == "unavailable"
 
 
 async def test_a_403_stops_the_entry_instead_of_retrying_forever(
@@ -228,7 +293,7 @@ async def test_a_403_stops_the_entry_instead_of_retrying_forever(
     `ConfigEntryAuthFailed`: no re-auth prompt appears, because the password
     is not the problem.
     """
-    register_search(
+    register_devices(
         requests_mock,
         load_dev_fixture("error__devices_foreign_domain"),
         status_code=403,
@@ -269,12 +334,10 @@ async def test_the_base_url_option_is_what_the_poll_talks_to(
     rather than quietly pass.
     """
     other_host = "https://api.int.iot.radoff.life"
-    requests_mock.post(
-        f"{other_host}/data/devices/search", json=load_fixture("search_one_device.json")
-    )
-    requests_mock.get(
-        f"{other_host}/data/devices/device-0000-0001",
-        json=load_device_fixture("device_0001_nominal.json"),
+    register_devices(
+        requests_mock,
+        load_devices_fixture("devices_one_device.json"),
+        base_url=other_host,
     )
 
     patch_authenticate_user(

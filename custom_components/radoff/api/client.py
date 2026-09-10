@@ -21,7 +21,6 @@ from ..const import (
     RATE_LIMIT_BACKOFF_START,
     USER_AGENT,
 )
-from ..properties import MAPPING
 from .auth import AuthExpiredError, CognitoSession
 from .exceptions import (
     APIAuthError,
@@ -33,11 +32,22 @@ from .exceptions import (
     APIUnknownDeviceTypeError,
     DomainNotFoundError,
 )
-from .models import DeviceFetchError, RadoffDevice, Reading, ReadingKey
+from .models import RadoffDevice, Reading
 
 _LOGGER = logging.getLogger(__name__)
 
-DEVICE_TYPES = ["Now+"]
+# The arch 2.0 device types this integration models. The value is the
+# payload's own `type` field, lowercase and unversioned (`nowplus`, `sense`,
+# `city`, `life`, `now`, `sismoff` - the catalogue `/analytics/measures-
+# ranges` enumerates, see `tests/fixtures/dev/_findings.md`), where arch 1.x
+# sent a display name (`deviceTypeName: "Now+"`).
+#
+# The set stays exactly as narrow as it was: Now+ is what this integration
+# supports and what the README promises (card M-03 kept the scope decision
+# of M-01, 2026-09-10: `sense`, `city` and `life` are out of this release).
+# Widening it needs the per-type schema of M-04, not just an entry here -
+# units and thresholds are what makes another type's telemetry meaningful.
+SUPPORTED_DEVICE_TYPES = frozenset({"nowplus"})
 
 # Paths of the arch 2.0 API, relative to the base URL (card M-02). The
 # version is in the hostname, not here (T-02 D-01: no `/v2/...`), and the
@@ -53,59 +63,39 @@ DEVICE_TYPES = ["Now+"]
 # that carries an `Authorization` header by trying to read it as a SigV4
 # signature - see that script's own comment.
 DISCOVERY_PATH = "/data/user/me/domains"
-DEVICES_SEARCH_PATH = "/data/devices/search"
-DEVICE_DETAIL_PATH = "/data/devices/{device_id}"
+DEVICES_PATH = "/data/devices"
 
-# T-02 CONFIRMED (probe run 2026-09-02 against a real account): objects in
-# `data`, `aggregatedData` and `recalculatedData` carry only `propertyName`
-# plus `value`/`aggregationValue` - no per-sample timestamp field exists at
-# all. This tuple therefore stays EMPTY BY DESIGN, not "pending": if a future
-# API version ever adds one, add its key here and `_parse_measured_at`
-# already knows how to read it (ISO-8601, with or without a trailing "Z", or
-# a Unix epoch number in seconds or milliseconds) - nothing else needs to
-# change. Until then, `Reading.measured_at` stays `None` and
-# `RadoffEntity.available` falls back to the device-level
-# `RadoffDevice.last_data_received_at` (see `_get_data` below) instead of
-# fully degrading to "the reading exists" - a real, if coarser, freshness
-# signal the same probe run found sitting one level up in the same response.
-_MEASURED_AT_KEYS: tuple[str, ...] = ()
+# One call per cycle carries the whole domain's devices *and* their
+# telemetry, so `page_size` is deliberately large: the cost of a page is a
+# round trip, and the quota being protected (T-02 D-21/D-22) is a count of
+# requests, not of bytes. 200 is the value M-01 actually exercised against
+# dev (`tests/fixtures/dev/devices__full.json`).
+#
+# Whether the backend honours it in full is not something this client needs
+# to know: `/data/user/me/domains` is documented as capping `page_size` at
+# 100 (M-01, D-03), the devices endpoint echoed 200 back unchanged, and the
+# loop in `get_devices` follows `pagination.total_pages` either way. A cap
+# applied silently costs one extra request, not a missing device.
+DEVICES_PAGE_SIZE = 200
+
+# Hard stop on the pagination loop: 25 pages of 200 is 5000 devices, far
+# past any plausible domain (the largest M-01 censused held 83), so reaching
+# it means the backend is answering with a `pagination` block that never
+# terminates rather than that someone has that many devices. Bounded here so
+# a malformed response costs one logged cycle instead of an endless loop
+# inside the executor thread.
+MAX_DEVICE_PAGES = 25
+
+# Keys of the `telemetry` block that are not measurements. `timestamp` is
+# the block's own instant (see `Reading.measured_at`) and `device_type`
+# repeats the device's type inside its telemetry. Everything else in there
+# is a field with a value, and is read as one - by name, never by position
+# (M-03 AC).
+_TELEMETRY_NON_MEASURE_KEYS = frozenset({"timestamp", "device_type"})
 
 # A numeric timestamp above this (~year 2100 expressed in seconds) is treated
 # as milliseconds instead of seconds.
 _EPOCH_MS_THRESHOLD = 4_102_444_800
-
-# Errors from a single per-device `GET /data/devices/{id}` that `get_devices`
-# isolates to that one device instead of letting them fail the whole poll
-# (card S-13): an HTTP-level failure on that one request (`APIAuthError` -
-# 403/429/5xx/other non-200, see `_check_response_status`) or a
-# transport-level one (`requests.exceptions.RequestException` - connection
-# error, read/connect timeout, malformed response body, ...). Deliberately
-# NOT included: `AuthExpiredError`/`AuthInvalidError`/`AuthChallengeRequiredError`
-# (all raised via `self._session.get_bearer()`, called from `_get_data`
-# below) - those are about the Cognito *session*, not this one device, so
-# `get_devices()` must let them propagate unisolated (card S-13, "COSA FARE"
-# step 6: "Un errore auth su un dispositivo NON va isolato: risale, perché
-# riguarda la sessione e non il dispositivo"). They are simply not part of
-# this tuple, so a plain `except _ISOLATABLE_DEVICE_ERRORS` below never
-# catches them - no special-casing needed.
-_ISOLATABLE_DEVICE_ERRORS = (APIAuthError, requests.exceptions.RequestException)
-
-# The two members of the arch 2.0 taxonomy that must NOT be isolated per
-# device even though they are `APIAuthError` subclasses (card M-02):
-#
-# - `APIDomainAccessError` (403): the account does not belong to the domain
-#   being queried, so every device of that domain fails identically.
-#   Isolating it would turn a "reconfigure the integration" situation into
-#   N stale devices and hide the only actionable error there is.
-# - `APIRateLimitError` (429): the quota is per environment, not per device.
-#   The instruction is to skip the whole cycle and back off, so continuing
-#   the loop would spend the remaining devices' requests against a quota
-#   that has already been exceeded - the retry pattern this card removes.
-#
-# Everything else in the taxonomy stays isolatable, exactly as S-13 left it:
-# a 5xx (`APIServerError`) or a 404 (`APIDeviceNotFoundError`) really is
-# about that one device or that one request.
-_NON_ISOLATABLE_API_ERRORS = (APIDomainAccessError, APIRateLimitError)
 
 
 def _safe_url(url: str) -> str:
@@ -181,15 +171,15 @@ def _parse_timestamp(raw: Any) -> datetime | None:
     absent timestamp must never be able to fail the whole poll (same
     "parsing robusto con fallback a None" requirement as card S-07's step 1).
 
-    Assumes UTC when a parsed ISO-8601 string carries no explicit offset.
-    T-02 CONFIRMED (probe run 2026-09-02) that `lastDataReceivedAt` (see
-    `RadoffDevice.last_data_received_at`) never exercises that fallback in
-    practice: real values look like `"2026-09-02T14:26:40.147Z"` -
-    ISO-8601 with millisecond precision and an explicit trailing "Z", i.e.
-    already UTC, same as `lastAggregatedDataReceivedAt` and `provisionedAt`
-    sampled from the same response. The no-explicit-offset branch stays as
-    a defensive fallback for any other timestamp this integration may read
-    in the future, not because this field needs it.
+    Assumes UTC when a parsed ISO-8601 string carries no explicit offset -
+    and in arch 2.0 that branch is load-bearing, where in 1.x it was only
+    defensive. The two timestamps this client reads are spelled
+    differently in the real payloads M-01 captured: `telemetry.timestamp`
+    is `"2026-09-10T09:21:25.023Z"` (explicit "Z", already UTC), while
+    `connection_status_updated_at` is `"2026-09-10T10:06:41"` - same
+    backend, no offset at all. Reading the second as anything but UTC
+    would silently shift it by the local timezone, so the assumption is
+    made here, once, rather than at each call site.
     """
     try:
         if isinstance(raw, bool):
@@ -209,20 +199,50 @@ def _parse_timestamp(raw: Any) -> datetime | None:
     return None
 
 
-def _parse_measured_at(obj: dict[str, Any]) -> datetime | None:
+def _build_readings(
+    telemetry: dict[str, Any], serial_number: str
+) -> tuple[dict[str, Reading], datetime | None]:
     """
-    Best-effort extraction of a per-sample timestamp from a reading object.
+    Turn one flat `telemetry` block into readings keyed by field name.
 
-    Tries each of `_MEASURED_AT_KEYS` in order (see that tuple's comment for
-    why it is empty today) and returns the first one that parses via
-    `_parse_timestamp`, or `None` if none does.
+    Arch 2.0 replaced the three response buckets of 1.x with this single
+    object, holding the last value of each field, so the reading key is the
+    field name again (card M-03, see `api/models.py`).
+
+    Every numeric field is read, not only the ones this integration can
+    currently label. The provisional field table lives in `sensor.py` and
+    decides which readings become *entities*; keeping the model itself
+    exhaustive means M-04, which replaces that table with the schema the
+    API serves, changes one file and not this one - and a field the backend
+    starts sending (radon, on a device that has it) reaches diagnostics
+    immediately instead of being invisible until someone adds it here.
+
+    `bool` is excluded before the numeric check because it is an `int`
+    subclass: a `true` would otherwise become a reading with value 1.
     """
-    for key in _MEASURED_AT_KEYS:
-        if key in obj:
-            parsed = _parse_timestamp(obj[key])
-            if parsed is not None:
-                return parsed
-    return None
+    measured_at = _parse_timestamp(telemetry.get("timestamp"))
+    readings: dict[str, Reading] = {}
+    skipped: list[str] = []
+
+    for name, value in telemetry.items():
+        if name in _TELEMETRY_NON_MEASURE_KEYS:
+            continue
+        if isinstance(value, bool) or not isinstance(value, int | float):
+            skipped.append(name)
+            continue
+        readings[name] = Reading(name=name, value=value, measured_at=measured_at)
+
+    # Metadata only (S-03 logging policy): field names and counts, never a
+    # value and never the raw payload.
+    if skipped:
+        _LOGGER.debug(
+            "Device %s: ignored %d non-numeric telemetry field(s): %s",
+            serial_number,
+            len(skipped),
+            sorted(skipped),
+        )
+
+    return readings, measured_at
 
 
 class API:
@@ -494,194 +514,207 @@ class API:
         resp_json = response.json()
         return resp_json.get("domains", [])
 
-    def get_devices(self) -> tuple[list[RadoffDevice], list[DeviceFetchError]]:
+    def get_devices(self) -> list[RadoffDevice]:
         """
-        Get devices on api.
+        Return every supported device of this domain, telemetry included.
 
-        Card S-12: no longer checks token expiry or calls `disconnect()`/
-        `connect()` itself - `self._session.get_bearer()` (used by
-        `_get_headers` below via each request) handles refreshing or
-        re-logging in lazily, on demand, the first time a bearer token is
-        actually needed in this call.
+        Card M-03 replaces the 1 + N call pattern of arch 1.x - a
+        `POST /data/devices/search` followed by one
+        `GET /data/devices/{id}` per device - with the single paginated
+        `GET /data/devices?domain_prefix=...&page_size=200` that carries
+        each device's `telemetry` block inline. M-02 deliberately kept the
+        old endpoints while migrating the transport; this is where they go.
 
-        Card S-13 splits this into two isolated pieces:
+        Bringing that call forward from M-05 (its step 1) was a decision
+        about ordering, not scope: this card removes `DeviceFetchError` and
+        `RadoffCoordinator._merge_device_errors` because "with one call per
+        cycle there is no isolatable per-device error", and that premise is
+        only true once the call is actually one. Doing the two separately
+        would have left two cards' worth of releases where a single device
+        answering 5xx took the whole poll down with the per-device isolation
+        already deleted. What stays with M-05 is the rest of its title:
+        polling intervals, jitter and the 429 policy.
 
-        1. The `search` call (below) stays fully blocking: a failure here
-           means the set of devices itself is unknown, so there is nothing
-           to isolate - it still raises exactly as before (S-13 AC: "Un
-           fallimento della search porta tutte le entità a unavailable,
-           come oggi").
-        2. The per-device loop that follows no longer lets one device's
-           failure raise out of this method. Each `_get_data()` call is
-           tried independently; an isolatable error (see
-           `_ISOLATABLE_DEVICE_ERRORS`) is recorded as a `DeviceFetchError`
-           and the loop moves on to the next device instead of aborting the
-           whole poll (S-13 AC: "le entità dell'altro continuano ad
-           aggiornarsi"). A session-level error (an auth exception not in
-           that tuple) is NOT caught here and propagates out of this
-           method, aborting the rest of the loop - by design, see
-           `_ISOLATABLE_DEVICE_ERRORS`'s own comment and this card's "COSA
-           FARE" step 6.
+        Failure semantics follow from that and are deliberately simpler than
+        S-13's: there is one request per page, so any error it raises is the
+        cycle's. Nothing is caught here - the taxonomy `_check_response_status`
+        raises (M-02) and the session errors `get_bearer()` raises reach
+        `coordinator.py` unchanged, which already has one clause per
+        outcome.
 
-        `coordinator.py::RadoffCoordinator._merge_device_errors` is what
-        turns the returned `device_errors` into `RadoffDevice` entries with
-        `stale=True`, reusing the previous poll's readings when available.
-
-        Card M-02 narrows that isolation: a 403 (`APIDomainAccessError`) and
-        a 429 (`APIRateLimitError`) are re-raised instead of being recorded
-        per device, since neither is about the device - see
-        `_NON_ISOLATABLE_API_ERRORS`. It also keeps the endpoints of arch
-        1.x (`search` plus one GET per device) while moving them onto the
-        arch 2.0 host and base path: replacing them with the single
-        `GET /data/devices?domain_prefix=...&page_size=200` call that carries
-        telemetry inline is the next card of this migration, deliberately
-        left out of this one.
+        Two guards on the pagination loop, neither of them hypothetical:
+        `MAX_DEVICE_PAGES` bounds a `total_pages` that never terminates, and
+        `seen_serials` drops a device already collected from an earlier
+        page. M-01 measured the ordering as stable across pages (V1), so a
+        repeat means the list shifted mid-walk - a device added or removed
+        between two requests - and the cost of not noticing would be two
+        entity sets for one device.
         """
-        devices_ok: list[RadoffDevice] = []
-        device_errors: list[DeviceFetchError] = []
+        devices: list[RadoffDevice] = []
+        seen_serials: set[str] = set()
+        page = 1
 
-        url = self._url(DEVICES_SEARCH_PATH)
-        post_obj = {"filter": {}, "take": 99}
+        while page <= MAX_DEVICE_PAGES:
+            payload = self._get_devices_page(page)
 
-        response = self.session.post(
-            url,
-            headers=self._get_headers(bearer_token=self._session.get_bearer()),
-            params=self._domain_params(),
-            json=post_obj,
-            timeout=self.DEFAULT_TIMEOUT,
-        )
-
-        self._check_response_status(response=response, url=url)
-
-        devices = response.json()["devices"]
-        _LOGGER.debug("Found %d devices in response", len(devices))
-
-        for device in devices:
-            if "deviceTypeName" not in device or device["deviceTypeName"] not in (
-                DEVICE_TYPES
-            ):
-                continue
-
-            device_id = device["id"]
-            device_serial = device["serial"]
-            device_type = device["deviceTypeName"]
-            name = device["name"]
-
-            try:
-                readings, last_data_received_at = self._get_data(device_id)
-            except _NON_ISOLATABLE_API_ERRORS:
-                # Card M-02: a 403 or a 429 is never about this one device -
-                # see `_NON_ISOLATABLE_API_ERRORS` for why isolating either
-                # would be wrong. Re-raised before the isolating clause
-                # below can catch it as the `APIAuthError` subclass it is.
-                raise
-            except _ISOLATABLE_DEVICE_ERRORS as err:
-                _LOGGER.debug(
-                    "Isolated per-device fetch error for device %s (%s): %s",
-                    device_id,
-                    device_type,
-                    err,
+            raw_devices = payload.get("devices")
+            if not isinstance(raw_devices, list):
+                _LOGGER.warning(
+                    "Radoff device list page %d carried no `devices` array; "
+                    "treating it as empty",
+                    page,
                 )
-                device_errors.append(
-                    DeviceFetchError(
-                        device_id=device_id,
-                        device_serial=device_serial,
-                        device_type=device_type,
-                        name=name,
-                        error=str(err),
-                    )
-                )
-                continue
+                raw_devices = []
 
-            devices_ok.append(
-                RadoffDevice(
-                    device_id=device_id,
-                    device_serial=device_serial,
-                    device_type=device_type,
-                    name=name,
-                    readings=readings,
-                    last_data_received_at=last_data_received_at,
-                )
+            for raw_device in raw_devices:
+                if not isinstance(raw_device, dict):
+                    continue
+                device = self._build_device(raw_device)
+                if device is None or device.serial_number in seen_serials:
+                    continue
+                seen_serials.add(device.serial_number)
+                devices.append(device)
+
+            pagination = payload.get("pagination")
+            total_pages = (
+                pagination.get("total_pages") if isinstance(pagination, dict) else None
             )
-        return devices_ok, device_errors
+            if not isinstance(total_pages, int) or page >= total_pages:
+                break
+            page += 1
+        else:
+            _LOGGER.warning(
+                "Radoff device list stopped at the %d-page ceiling; the "
+                "response's `pagination.total_pages` never terminated",
+                MAX_DEVICE_PAGES,
+            )
 
-    def _get_data(
-        self, device_id: str
-    ) -> tuple[dict[ReadingKey, Reading], datetime | None]:
+        _LOGGER.debug(
+            "Radoff device list: %d supported device(s) over %d page(s), "
+            "%d of them without telemetry this cycle",
+            len(devices),
+            min(page, MAX_DEVICE_PAGES),
+            sum(1 for device in devices if device.stale),
+        )
+        return devices
+
+    def _get_devices_page(self, page: int) -> dict[str, Any]:
         """
-        Fetch one device's readings, keyed by `(bucket, property_name)`.
+        Fetch one page of `GET /data/devices`, classified but not interpreted.
 
-        Card S-10 / finding C4: `MAPPING` (see `properties.py`) is now keyed
-        by `Bucket` first, so this loop walks it bucket by bucket instead of
-        over a single flat property-name namespace. `data.airqualityindex`
-        and `aggregatedData.airqualityindex` therefore land in two distinct
-        `readings` entries - `(Bucket.DATA, "airqualityindex")` and
-        `(Bucket.AGGREGATED, "airqualityindex")` - instead of one overwriting
-        the other depending on dict iteration order.
-
-        Card S-13: every exception this method can raise - `AuthExpiredError`
-        (via `get_bearer()` or a 401 from `_check_response_status`),
-        `APIAuthError` (403/429/5xx/other from `_check_response_status`), or
-        a `requests.exceptions.RequestException` (network/transport failure)
-        - is left to propagate unchanged; `get_devices()` above is the one
-        place that decides which of those get isolated to this one device.
+        Kept separate from `get_devices` so the loop above reads as the
+        pagination it is. The URL comes from `_url()` and the parameters
+        from `_domain_params()` (card M-02): a new endpoint added with an
+        f-string would bypass both the single-host guarantee and the guard
+        that refuses a domain-scoped call without a `domain_prefix`, which
+        M-01 measured to be a cross-domain read rather than a broader query.
         """
-        readings: dict[ReadingKey, Reading] = {}
-
-        url = self._url(DEVICE_DETAIL_PATH.format(device_id=device_id))
+        url = self._url(DEVICES_PATH)
         response = self.session.get(
             url,
             headers=self._get_headers(bearer_token=self._session.get_bearer()),
-            params=self._domain_params(),
+            params=self._domain_params(page=page, page_size=DEVICES_PAGE_SIZE),
             timeout=self.DEFAULT_TIMEOUT,
         )
 
         self._check_response_status(response=response, url=url)
 
-        result = response.json()
-        data = result.get("data", {})
+        body = response.json()
+        return body if isinstance(body, dict) else {}
 
-        # Metadata only: bucket names and a count of readings, never the
-        # sensor values themselves or the raw payload (see S-03/S5).
-        _LOGGER.debug(
-            "device %s: %d readings, keys %s",
-            device_id,
-            sum(len(v) for v in data.values() if isinstance(v, list)),
-            sorted(data.keys()),
+    def _build_device(self, raw_device: dict[str, Any]) -> RadoffDevice | None:
+        """
+        Turn one entry of the device list into a `RadoffDevice`, or skip it.
+
+        `None` means "not this integration's device": an unsupported `type`
+        (see `SUPPORTED_DEVICE_TYPES`) or an entry with no `serial_number`,
+        which in arch 2.0 has no identity at all - `deviceId`,
+        `serial_number` and `deviceSerial` are the same value (T-02 D-02),
+        so there is no second field to fall back to.
+
+        The nested-slave check runs *before* the type filter on purpose. A
+        LIFE never appears as a top-level entry of its own: it arrives
+        inline, under the `controller_of_device` of its controller, and the
+        controller is a `city` - a type this release does not support. A
+        check placed after the filter would therefore never run, and the
+        card's requirement (do not lose a nested device silently) would be
+        satisfied only on paper.
+        """
+        self._log_nested_slave(raw_device)
+
+        device_type = raw_device.get("type")
+        if device_type not in SUPPORTED_DEVICE_TYPES:
+            return None
+
+        serial_number = raw_device.get("serial_number")
+        if not serial_number:
+            _LOGGER.warning(
+                "Skipping a %s device with no serial_number: in arch 2.0 the "
+                "serial is the only identity a device has",
+                device_type,
+            )
+            return None
+
+        telemetry = raw_device.get("telemetry")
+        if isinstance(telemetry, dict):
+            readings, telemetry_timestamp = _build_readings(telemetry, serial_number)
+            stale = False
+        else:
+            # `telemetry: null` - the real shape of a device that is not
+            # reporting (M-01, D-16: the majority of the 120 devices it
+            # censused). Not an error, and not "offline" either: see
+            # `RadoffDevice.stale`.
+            readings, telemetry_timestamp = {}, None
+            stale = True
+            _LOGGER.debug("Device %s carries no telemetry this cycle", serial_number)
+
+        return RadoffDevice(
+            serial_number=serial_number,
+            device_type=device_type,
+            name=raw_device.get("name") or serial_number,
+            readings=readings,
+            connection_status=raw_device.get("connection_status"),
+            connection_status_updated_at=_parse_timestamp(
+                raw_device.get("connection_status_updated_at")
+            ),
+            firmware_version=raw_device.get("firmware_version"),
+            room_name=raw_device.get("room_name"),
+            building_name=raw_device.get("building_name"),
+            domain_prefix=raw_device.get("domain_prefix"),
+            telemetry_timestamp=telemetry_timestamp,
+            stale=stale,
         )
 
-        # Device-level freshness signal (T-02 finding, card S-07): confirmed
-        # absent per-sample, but this sibling field of the same response IS
-        # "when this device last reported anything" - coarser than a
-        # per-reading timestamp would be, but real, and what
-        # RadoffEntity.available falls back to.
-        last_data_received_at = _parse_timestamp(data.get("lastDataReceivedAt"))
+    @staticmethod
+    def _log_nested_slave(raw_device: dict[str, Any]) -> None:
+        """
+        Report a device nested under `controller_of_device`, then ignore it.
 
-        for bucket, bucket_mapping in MAPPING.items():
-            if bucket not in data:
-                continue
-            for obj in data[bucket]:
-                pn = obj["propertyName"]
-                if pn not in bucket_mapping:
-                    continue
+        M-01 confirmed the nesting is real (D-33): a `city` carries the
+        entire object of the `life` it controls inline, with
+        `managed_by_device_serial` pointing back at the controller - and
+        that nested device can belong to a *different domain* than the
+        parent, so a client that flattened the list would silently create
+        entities for a domain it never asked about.
 
-                obj_map = bucket_mapping[pn]
-                av = obj["value"] if "value" in obj else obj["aggregationValue"]
-                measured_at = _parse_measured_at(obj)
-                fn = obj_map.get("normalize_fn", None)
+        Modelling the controller/slave pair is separate work, tracked as
+        T-08 D-33. What this card refuses is the silent part: an INFO line
+        so a nested device shows up in the log of anyone who has one,
+        instead of being dropped without trace.
+        """
+        nested = raw_device.get("controller_of_device")
+        if not isinstance(nested, dict):
+            return
 
-                readings[(bucket, pn)] = Reading(
-                    name=pn,
-                    bucket=bucket,
-                    value=av,
-                    device_class=obj_map["deviceClass"],
-                    friendly_name=obj_map["friendlyName"],
-                    unit=obj_map["unit"],
-                    normalize_fn=fn,
-                    measured_at=measured_at,
-                )
-
-        return readings, last_data_received_at
+        _LOGGER.info(
+            "Device %s controls a nested %s device (%s, domain %s) that this "
+            "version does not model: ignored. Modelling the controller/slave "
+            "pair is tracked as T-08 D-33",
+            raw_device.get("serial_number") or "unknown",
+            nested.get("type") or "unknown",
+            nested.get("serial_number") or "unknown",
+            nested.get("domain_prefix") or "unknown",
+        )
 
     def _get_headers(self, bearer_token: str) -> dict[str, str]:
         """

@@ -39,9 +39,8 @@ from .conftest import (
     make_id_token,
     patch_authenticate_user,
     patch_cognito_refresh,
-    register_device,
     register_domains,
-    register_search,
+    register_devices,
 )
 
 USER_INPUT = {"username": "user@example.com", "password": "hunter2"}
@@ -59,7 +58,7 @@ async def test_auth_happy_path_single_domain(
     id_token = make_id_token(["11111111-1111-1111-1111-111111111111"])
     patch_authenticate_user(monkeypatch, result=auth_result(id_token))
     register_domains(requests_mock, load_fixture("domains_single.json"))
-    register_search(requests_mock, {"devices": []})
+    register_devices(requests_mock, load_fixture("devices_empty.json"))
 
     result = await hass.config_entries.flow.async_init(
         DOMAIN, context={"source": config_entries.SOURCE_USER}
@@ -224,7 +223,7 @@ async def test_config_flow_multiple_domains(
     )
     patch_authenticate_user(monkeypatch, result=auth_result(id_token))
     register_domains(requests_mock, load_fixture("domains_multi.json"))
-    register_search(requests_mock, {"devices": []})
+    register_devices(requests_mock, load_fixture("devices_empty.json"))
 
     result = await hass.config_entries.flow.async_init(
         DOMAIN, context={"source": config_entries.SOURCE_USER}
@@ -248,15 +247,13 @@ async def test_config_flow_multiple_domains(
     await hass.config_entries.async_reload(entry.entry_id)
     await hass.async_block_till_done()
 
-    search_request = next(
-        req
-        for req in requests_mock.request_history
-        if req.path == "/data/devices/search"
+    devices_request = next(
+        req for req in requests_mock.request_history if req.path == "/data/devices"
     )
-    assert search_request.qs["domain_prefix"] == [
+    assert devices_request.qs["domain_prefix"] == [
         "bbbbbbbb-0000-0000-0000-000000000002"
     ]
-    assert "x-domain" not in search_request.headers
+    assert "x-domain" not in devices_request.headers
 
 
 async def test_discovery_no_longer_needs_a_domain_claim(
@@ -279,7 +276,7 @@ async def test_discovery_no_longer_needs_a_domain_claim(
     """
     patch_authenticate_user(monkeypatch, result=auth_result(make_id_token([])))
     register_domains(requests_mock, load_fixture("domains_single.json"))
-    register_search(requests_mock, {"devices": []})
+    register_devices(requests_mock, load_fixture("devices_empty.json"))
 
     result = await hass.config_entries.flow.async_init(
         DOMAIN, context={"source": config_entries.SOURCE_USER}
@@ -326,7 +323,7 @@ async def test_no_discovery_on_reload(
     patch_authenticate_user(
         monkeypatch, result=auth_result(make_id_token(["should-not-be-used"]))
     )
-    register_search(requests_mock, {"devices": []})
+    register_devices(requests_mock, load_fixture("devices_empty.json"))
 
     entry = MockConfigEntry(
         domain=DOMAIN,
@@ -384,9 +381,10 @@ async def _loaded_entry(
     # On whichever host these options point at: an entry carrying a
     # `base_url` override polls that one, and its first refresh has to
     # succeed for the entry to load and its options flow to be reachable.
-    requests_mock.post(
-        f"{options.get(CONF_BASE_URL, DEFAULT_BASE_URL)}/data/devices/search",
-        json={"devices": []},
+    register_devices(
+        requests_mock,
+        load_fixture("devices_empty.json"),
+        base_url=options.get(CONF_BASE_URL, DEFAULT_BASE_URL),
     )
 
     entry = MockConfigEntry(

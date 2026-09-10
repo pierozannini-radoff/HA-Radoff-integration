@@ -51,19 +51,15 @@ from .conftest import (
     BASE_URL,
     auth_result,
     load_dev_fixture,
-    load_device_fixture,
-    load_fixture,
     make_id_token,
     patch_authenticate_user,
-    register_device,
-    register_search,
+    register_devices,
 )
 
 # Synthetic, like every other identifier this suite invents: the real
 # prefixes live only inside the M-01 fixtures these tests load, and there is
 # no reason for a new one to spread further through the repo.
 DOMAIN_PREFIX = "test-domain-1"
-DEVICE_ID = "device-0000-0001"
 
 # The 429 body is not a captured fixture: provoking one would have meant
 # saturating a quota shared with the Radoff mobile app, which M-01
@@ -116,17 +112,13 @@ def test_every_request_carries_domain_prefix_and_no_domain_header(
     (`error__devices_no_domain_prefix.json`), so omitting it silently widens
     the query instead of failing.
     """
-    register_search(requests_mock, load_fixture("search_one_device.json"))
-    register_device(
-        requests_mock, DEVICE_ID, load_device_fixture("device_0001_nominal.json")
-    )
+    register_devices(requests_mock, load_dev_fixture("devices__full"))
 
     api = _api(monkeypatch)
-    devices, errors = api.get_devices()
+    devices = api.get_devices()
 
     assert len(devices) == 1
-    assert errors == []
-    assert requests_mock.request_history  # both the search and the device GET
+    assert requests_mock.request_history
     for request in requests_mock.request_history:
         assert request.qs["domain_prefix"] == [DOMAIN_PREFIX]
         assert "x-domain" not in request.headers
@@ -155,13 +147,12 @@ def test_the_base_url_option_moves_every_request(
 ) -> None:
     """An overridden base URL is where the requests go, trailing slash and all."""
     other_host = "https://api.int.iot.radoff.life"
-    requests_mock.get(
-        f"{other_host}/data/devices/{DEVICE_ID}",
-        json=load_device_fixture("device_0001_nominal.json"),
+    register_devices(
+        requests_mock, load_dev_fixture("devices__full"), base_url=other_host
     )
 
     api = _api(monkeypatch, base_url=f"{other_host}/")
-    api._get_data(DEVICE_ID)  # noqa: SLF001
+    api.get_devices()
 
     assert api.base_url == other_host
     assert requests_mock.request_history[-1].netloc == "api.int.iot.radoff.life"
@@ -183,16 +174,15 @@ def test_401_expires_the_session_and_stays_recoverable(
     that this branch is now *only* about the session - the "wrong domain"
     case it used to share with the 403 is a 403 here.
     """
-    register_device(
+    register_devices(
         requests_mock,
-        DEVICE_ID,
         load_dev_fixture("error__unauthenticated"),
         status_code=401,
     )
 
     api = _api(monkeypatch)
     with pytest.raises(AuthExpiredError):
-        api._get_data(DEVICE_ID)  # noqa: SLF001
+        api.get_devices()
 
     assert not api._session.tokens  # noqa: SLF001
 
@@ -211,9 +201,8 @@ def test_403_is_a_domain_access_error_distinguishable_from_a_401(
     and the fact that the Cognito tokens are left alone, because there is
     nothing wrong with them.
     """
-    register_device(
+    register_devices(
         requests_mock,
-        DEVICE_ID,
         load_dev_fixture("error__devices_foreign_domain"),
         status_code=403,
     )
@@ -223,7 +212,7 @@ def test_403_is_a_domain_access_error_distinguishable_from_a_401(
 
     with caplog.at_level(logging.ERROR, logger="custom_components.radoff.api.client"):
         with pytest.raises(APIDomainAccessError) as raised:
-            api._get_data(DEVICE_ID)  # noqa: SLF001
+            api.get_devices()
 
     assert not isinstance(raised.value, AuthExpiredError)
     assert api._session.tokens is not None  # noqa: SLF001
@@ -238,48 +227,29 @@ def test_403_is_a_domain_access_error_distinguishable_from_a_401(
     assert "you do not belong to domain" in logged  # the backend's own detail
 
 
-def test_403_is_never_isolated_to_one_device(
+def test_404_on_the_device_list_is_a_not_found_and_costs_the_cycle(
     monkeypatch: pytest.MonkeyPatch, requests_mock: Any
 ) -> None:
     """
-    A 403 aborts the poll instead of being recorded as one stale device.
+    Card M-03: nothing is isolated per device any more, because nothing can be.
 
-    Every device of the domain would fail identically, so isolating it (as
-    S-13 does for a 5xx or a 404) would bury the only actionable error there
-    is under N stale devices.
+    S-13 recorded a 404 or a 5xx on one device's own GET as a
+    `DeviceFetchError` and let the rest of the poll continue. There is one
+    request per cycle now (`GET /data/devices`), so any status it returns
+    is the cycle's: the taxonomy class still tells the caller what happened,
+    and `coordinator.py` decides what that costs.
     """
-    register_search(requests_mock, load_fixture("search_one_device.json"))
-    register_device(
+    register_devices(
         requests_mock,
-        DEVICE_ID,
-        load_dev_fixture("error__devices_foreign_domain"),
-        status_code=403,
-    )
-
-    api = _api(monkeypatch)
-    with pytest.raises(APIDomainAccessError):
-        api.get_devices()
-
-
-def test_404_on_a_device_is_a_device_error_and_stays_isolated(
-    monkeypatch: pytest.MonkeyPatch, requests_mock: Any
-) -> None:
-    """A 404 on one device is that device's problem: recorded, poll continues."""
-    register_search(requests_mock, load_fixture("search_one_device.json"))
-    register_device(
-        requests_mock,
-        DEVICE_ID,
         load_dev_fixture("error__device_detail_unknown_serial"),
         status_code=404,
     )
 
     api = _api(monkeypatch)
     with pytest.raises(APIDeviceNotFoundError):
-        api._get_data(DEVICE_ID)  # noqa: SLF001
+        api.get_devices()
 
-    devices, errors = api.get_devices()
-    assert devices == []
-    assert [error.device_id for error in errors] == [DEVICE_ID]
+    assert len(requests_mock.request_history) == 1
 
 
 def test_404_on_measures_ranges_carries_the_valid_device_types(
@@ -322,11 +292,11 @@ def test_429_backs_off_from_five_seconds_without_retrying(
     `requests_mock` replaces the adapter that `Retry` lives on and cannot
     observe it.
     """
-    register_device(requests_mock, DEVICE_ID, RATE_LIMIT_BODY, status_code=429)
+    register_devices(requests_mock, RATE_LIMIT_BODY, status_code=429)
 
     api = _api(monkeypatch)
     with pytest.raises(APIRateLimitError) as raised:
-        api._get_data(DEVICE_ID)  # noqa: SLF001
+        api.get_devices()
 
     assert len(requests_mock.request_history) == 1
     assert (
@@ -349,27 +319,25 @@ def test_429_backoff_grows_per_streak_and_resets_on_success(
     keeps an isolated rate limit from inheriting an exponent from an
     incident already over.
     """
-    register_device(requests_mock, DEVICE_ID, RATE_LIMIT_BODY, status_code=429)
+    register_devices(requests_mock, RATE_LIMIT_BODY, status_code=429)
     api = _api(monkeypatch)
 
     delays = []
     for _ in range(3):
         with pytest.raises(APIRateLimitError) as raised:
-            api._get_data(DEVICE_ID)  # noqa: SLF001
+            api.get_devices()
         delays.append(raised.value.retry_after)
 
     for attempt, delay in enumerate(delays):
         nominal = RATE_LIMIT_BACKOFF_START * 2**attempt
         assert nominal * (1 - RATE_LIMIT_BACKOFF_JITTER) <= delay <= nominal
 
-    register_device(
-        requests_mock, DEVICE_ID, load_device_fixture("device_0001_nominal.json")
-    )
-    api._get_data(DEVICE_ID)  # noqa: SLF001
+    register_devices(requests_mock, load_dev_fixture("devices__full"))
+    api.get_devices()
 
-    register_device(requests_mock, DEVICE_ID, RATE_LIMIT_BODY, status_code=429)
+    register_devices(requests_mock, RATE_LIMIT_BODY, status_code=429)
     with pytest.raises(APIRateLimitError) as raised:
-        api._get_data(DEVICE_ID)  # noqa: SLF001
+        api.get_devices()
     assert raised.value.retry_after <= RATE_LIMIT_BACKOFF_START
 
 
@@ -393,12 +361,12 @@ def test_429_is_no_longer_in_the_urllib3_retry_list() -> None:
 def test_5xx_is_a_transient_server_error(
     monkeypatch: pytest.MonkeyPatch, requests_mock: Any
 ) -> None:
-    """A 5xx is its own class, and still isolatable per device (S-13)."""
-    register_device(requests_mock, DEVICE_ID, SERVER_ERROR_BODY, status_code=503)
+    """A 5xx is its own class; since card M-03 it costs the whole cycle."""
+    register_devices(requests_mock, SERVER_ERROR_BODY, status_code=503)
 
     api = _api(monkeypatch)
     with pytest.raises(APIServerError):
-        api._get_data(DEVICE_ID)  # noqa: SLF001
+        api.get_devices()
 
 
 def test_a_request_id_is_read_from_the_header_arch2_actually_sends(
@@ -414,7 +382,7 @@ def test_a_request_id_is_read_from_the_header_arch2_actually_sends(
     fallbacks.
     """
     requests_mock.get(
-        f"{BASE_URL}/data/devices/{DEVICE_ID}",
+        f"{BASE_URL}/data/devices",
         json=load_dev_fixture("error__unauthenticated"),
         status_code=401,
         headers={"x-amzn-requestid": "a4cf89d5-request-id"},
@@ -423,7 +391,7 @@ def test_a_request_id_is_read_from_the_header_arch2_actually_sends(
     api = _api(monkeypatch)
     with caplog.at_level(logging.WARNING, logger="custom_components.radoff.api.client"):
         with pytest.raises(AuthExpiredError):
-            api._get_data(DEVICE_ID)  # noqa: SLF001
+            api.get_devices()
 
     assert "a4cf89d5-request-id" in caplog.text
 
@@ -440,14 +408,14 @@ def test_an_unparsable_error_body_is_still_classified_by_status(
     the taxonomy keys on; the body only ever adds detail.
     """
     requests_mock.get(
-        f"{BASE_URL}/data/devices/{DEVICE_ID}",
+        f"{BASE_URL}/data/devices",
         text="<html><body>502 Bad Gateway</body></html>",
         status_code=502,
     )
 
     api = _api(monkeypatch)
     with pytest.raises(APIServerError):
-        api._get_data(DEVICE_ID)  # noqa: SLF001
+        api.get_devices()
 
 
 def test_a_status_outside_the_taxonomy_stays_a_generic_error(
@@ -456,15 +424,15 @@ def test_a_status_outside_the_taxonomy_stays_a_generic_error(
     """
     An unclassified non-200 keeps the pre-existing catch-all behaviour.
 
-    `APIAuthError` itself, i.e. the base class of the whole taxonomy - which
-    means it is still isolated per device by `get_devices()` (S-13) rather
-    than aborting a poll over a status nobody has characterised yet.
+    `APIAuthError` itself, i.e. the base class of the whole taxonomy. Card
+    M-03: S-13 used to isolate this one per device; with a single call per
+    cycle it costs the cycle, like every other status.
     """
-    register_device(requests_mock, DEVICE_ID, {"error": "teapot"}, status_code=418)
+    register_devices(requests_mock, {"error": "teapot"}, status_code=418)
 
     api = _api(monkeypatch)
     with pytest.raises(APIAuthError) as raised:
-        api._get_data(DEVICE_ID)  # noqa: SLF001
+        api.get_devices()
 
     assert type(raised.value) is APIAuthError
 
@@ -482,16 +450,36 @@ def _integration_sources() -> list[Path]:
     )
 
 
-@pytest.mark.parametrize("leftover", ["x-domain", "api/v1/core"])
+@pytest.mark.parametrize(
+    "leftover",
+    [
+        # M-02: the arch 1.x domain header and base path.
+        "x-domain",
+        "api/v1/core",
+        # M-03: the arch 1.x data model. The response buckets and the
+        # composite reading key built on them, the two bucket names the
+        # payload used to carry, and the scaling factor `internal_
+        # temperature` was multiplied by - arch 2.0 sends every value in
+        # the unit it declares, so a survivor here is a conversion being
+        # invented again.
+        "Bucket",
+        "ReadingKey",
+        "aggregatedData",
+        "recalculatedData",
+        "0.00835",
+    ],
+)
 def test_no_arch1_transport_leftovers_in_the_integration(leftover: str) -> None:
     """
-    M-02 AC: neither the arch 1.x domain header nor its base path survives.
+    M-02/M-03 AC: no arch 1.x transport or data-model leftover survives.
 
     Deliberately a plain text scan, comments and docstrings included: a
-    reviewer checking this criterion will grep for these two strings, and
-    the test should agree with what the grep shows. The reason the header
+    reviewer checking these criteria will grep for these strings, and the
+    test should agree with what the grep shows. Why each of them
     disappeared is recorded in the cards and in the migration document, not
-    in a string that keeps matching that grep forever.
+    in a string that keeps matching that grep forever - which is also why
+    the code explains the bucket model in prose rather than by naming the
+    classes it deleted.
     """
     offenders = [
         path.relative_to(INTEGRATION_DIR).as_posix()

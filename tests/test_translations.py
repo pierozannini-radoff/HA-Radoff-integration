@@ -2,15 +2,21 @@
 Structural completeness test for cards S-15 and S-16.
 
 pm1/pm25/pm10 shipped without a name in strings.json/translations because
-the definition of one sensor lives on four separate files (properties.py +
+the definition of one sensor lives on four separate files (the field table +
 strings.json + 2 translations) and nothing enforced that they stay in sync
 (analysis §8.1). This test makes that enforcement structural instead of
-relying on whoever touches `properties.py` to remember the other three
-files: for every (bucket, property) pair `properties.py::MAPPING` defines -
-including the aggregated entities S-10 introduced - it asserts a matching
-`entity.sensor.<slug>.name` exists in strings.json and in every
-translations/*.json file, and flags any leftover key that no longer maps to
-a real MAPPING entry (S-15).
+relying on whoever touches that table to remember the other three files:
+for every telemetry field `sensor.py::_PROVISIONAL_FIELDS` describes it
+asserts a matching `entity.sensor.<field>.name` exists in strings.json and
+in every translations/*.json file, and flags any leftover key that no
+longer maps to a real entry (S-15).
+
+Card M-03 moved the table it reads from (`properties.py::MAPPING`, keyed by
+bucket and property, deleted with the buckets) to
+`sensor.py::_PROVISIONAL_FIELDS`, keyed by telemetry field - so the slug a
+field resolves to is the field itself and there is no `reading_key_slug` in
+between any more. When M-04 replaces that provisional table with the API's
+own schema, this is the import to redirect.
 
 It also covers the `_index` sibling entities `sensor.py::INDEX_MAPPING`
 generates (S-16, C5/C13): for each one, the states an index_fn can actually
@@ -29,9 +35,10 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
-from custom_components.radoff.entity import reading_key_slug  # noqa: E402
-from custom_components.radoff.properties import MAPPING  # noqa: E402
-from custom_components.radoff.sensor import INDEX_MAPPING  # noqa: E402
+from custom_components.radoff.sensor import (  # noqa: E402
+    _PROVISIONAL_FIELDS,
+    INDEX_MAPPING,
+)
 
 RADOFF_DIR = REPO_ROOT / "custom_components" / "radoff"
 STRINGS_PATH = RADOFF_DIR / "strings.json"
@@ -47,12 +54,8 @@ def _translation_paths() -> list[Path]:
 
 
 def _required_slugs() -> set[str]:
-    """Every entity slug a real (bucket, property) pair in MAPPING resolves to."""
-    return {
-        reading_key_slug((bucket, prop_name))
-        for bucket, props in MAPPING.items()
-        for prop_name in props
-    }
+    """Every entity slug a described telemetry field resolves to (card M-03)."""
+    return set(_PROVISIONAL_FIELDS)
 
 
 def _index_slugs() -> set[str]:
@@ -69,7 +72,7 @@ DOCS = {path: _load(path) for path in TRANSLATION_PATHS}
 @pytest.mark.parametrize("path", TRANSLATION_PATHS, ids=lambda p: p.name)
 @pytest.mark.parametrize("slug", REQUIRED_SLUGS)
 def test_every_mapping_entry_has_a_name(path: Path, slug: str) -> None:
-    """S-15 AC: every properties.py entry (incl. S-10's aggregated ones) has a name."""
+    """S-15 AC: every described telemetry field has a name in every file."""
     sensor_entities = DOCS[path].get("entity", {}).get("sensor", {})
     assert slug in sensor_entities, f"{path.name}: missing entity.sensor.{slug}"
     assert sensor_entities[slug].get(

@@ -66,11 +66,20 @@ async def async_migrate_entry(hass: HomeAssistant, config_entry: ConfigEntry) ->
         from `radoff-{device_id}-airqualityindex` to
         `radoff-{device_id}-airqualityindex_average`, so it keeps receiving
         the value it has always carried. See
-        `_async_migrate_aggregated_aqi_unique_ids` for why, and
-        `properties.py`'s docstring, point 3, for the payload evidence
-        behind it. A *minor* version bump: an entry that has been through it
-        is still readable by the code that came before, so this is not a
-        breaking change for a downgrade.
+        `_async_migrate_aggregated_aqi_unique_ids` for why. A *minor*
+        version bump: an entry that has been through it is still readable by
+        the code that came before, so this is not a breaking change for a
+        downgrade.
+
+        This step is left exactly as it was by card M-03, deliberately,
+        even though the identifier it writes is no longer one the platform
+        builds: arch 2.0 keys entities on the serial and on the telemetry
+        field name (`radoff-{serial_number}-aqi_value`), so both halves of
+        `radoff-{device_uuid}-airqualityindex_average` are obsolete. A
+        migration records what it wrote at the time it wrote it, and this
+        one still does its job for an entry coming from before the
+        migration - re-keying every entity onto the arch 2.0 form is card
+        M-07, a second step after this one, not a rewrite of it.
 
     Both steps are idempotent: the first only touches entries still at
     version 1, the second only entries below minor version 2, so a second
@@ -146,18 +155,16 @@ async def async_migrate_entry(hass: HomeAssistant, config_entry: ConfigEntry) ->
 
 # The two identifiers this migration rewrites between: the bare property name
 # the released version used for the one AQI entity it created, and the slug
-# the AGGREGATED-bucket reading resolves to today.
+# the AGGREGATED-bucket reading resolved to under arch 1.x.
 #
-# Both are frozen literals, deliberately, and the second is NOT derived from
-# `entity.py::reading_key_slug`. A migration records what it actually wrote,
-# at the time it wrote it: if a later card changes the AGGREGATED suffix, the
-# entities this step already renamed keep the string below - they are past
-# minor version 2 and never come back through here - while the sensor
-# platform would start building a different one, silently reproducing the
-# very orphaning this migration exists to undo. Pinning the literal turns
-# that into `tests/test_init.py::test_migration_target_still_matches_the_slug
-# _the_platform_builds`, which fails loudly and asks for a new migration step
-# instead.
+# Both are frozen literals, deliberately, and the second was never derived
+# from the code that used to build it (`entity.py::reading_key_slug`, gone
+# since card M-03). A migration records what it actually wrote, at the time
+# it wrote it - and this is exactly the case that justified the choice: M-03
+# changed the identifier the platform builds on both halves at once, and
+# because the literal is frozen the entities this step already renamed still
+# carry the string below rather than silently drifting. Bringing them to the
+# arch 2.0 form is a further migration step, card M-07.
 _AQI_PROPERTY = "airqualityindex"
 _LEGACY_AQI_SLUG = _AQI_PROPERTY
 _AGGREGATED_AQI_SLUG = "airqualityindex_average"
@@ -174,8 +181,8 @@ def _async_migrate_aggregated_aqi_unique_ids(
     the caller knows whether it may record the entry as migrated.
 
     The released version (30e0cde) indexed readings by bare property name and
-    iterated `MAPPING` in `data` -> `aggregatedData` order, so for the AQI the
-    aggregated sample won: every installation out there has exactly one AQI
+    iterated its property table in raw-then-aggregated bucket order, so for
+    the AQI the aggregated sample won: every installation out there has exactly one AQI
     entity, `radoff-{device_id}-airqualityindex`, showing the *aggregated*
     value. S-10 gave that same reading the distinct slug
     `airqualityindex_average`, which means the entity users already have stops

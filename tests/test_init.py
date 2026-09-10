@@ -10,8 +10,16 @@ not see that the migration left every real installation unable to load.
 
 The 2.1 -> 2.2 tests at the bottom cover the other half of "what a real
 installation already has": its *entities*. Card T-06/F2 - the AQI entity a
-released installation owns is re-keyed onto the AGGREGATED slug instead of
+released installation owns is re-keyed onto the aggregated slug instead of
 being left behind, `unavailable` and cut off from its own history.
+
+Card M-03 leaves that migration step, and these tests, exactly as they
+were, and drops only the tripwire that asserted its frozen target still
+equalled what the sensor platform builds: arch 2.0 changed the identifier
+on both halves (serial instead of UUID, telemetry field instead of bucket
+slug), so the two are *meant* to differ now. Bringing already-migrated
+entities to the arch 2.0 form is a further step, card M-07 - which is what
+the tripwire would have been asking for.
 """
 
 from __future__ import annotations
@@ -31,7 +39,6 @@ from custom_components.radoff import (
     _AQI_PROPERTY,
     async_migrate_entry,
 )
-from custom_components.radoff.api.models import Bucket
 from custom_components.radoff.const import (
     CONF_DOMAIN_ID,
     CONF_INDEX,
@@ -40,13 +47,12 @@ from custom_components.radoff.const import (
     DOMAIN,
     ISSUE_MISSING_DOMAIN_ID,
 )
-from custom_components.radoff.entity import reading_key_slug
-
 from .conftest import (
     auth_result,
+    load_fixture,
     make_id_token,
     patch_authenticate_user,
-    register_search,
+    register_devices,
 )
 
 DOMAIN_ID = "aaaaaaaa-0000-0000-0000-000000000001"
@@ -192,7 +198,7 @@ async def test_setup_with_domain_id_clears_a_stale_repair(
 ) -> None:
     """An entry that does have its `domain_id` loads and drops any leftover issue."""
     patch_authenticate_user(monkeypatch, result=auth_result(make_id_token([DOMAIN_ID])))
-    register_search(requests_mock, {"devices": []})
+    register_devices(requests_mock, load_fixture("devices_empty.json"))
 
     entry = MockConfigEntry(
         domain=DOMAIN, version=2, data=config_entry_v2_data, options={CONF_INDEX: True}
@@ -509,17 +515,3 @@ async def test_migrate_retries_after_a_skipped_entry_conflict_clears(
 
     assert registry.async_get(legacy.entity_id).unique_id == _aggregated_aqi_unique_id()
     assert entry.minor_version == 2
-
-
-def test_migration_target_still_matches_the_slug_the_platform_builds() -> None:
-    """
-    The frozen identifier the migration writes is the one the platform builds.
-
-    `_AGGREGATED_AQI_SLUG` is a literal on purpose (see its comment): a
-    migration records what it wrote, not what today's code would compute.
-    This test is the tripwire that goes with that choice - if a later card
-    changes the AGGREGATED suffix, entities already past minor version 2 keep
-    the old string while the sensor platform starts building the new one, and
-    that needs its own migration step, not a silently updated constant.
-    """
-    assert _AGGREGATED_AQI_SLUG == reading_key_slug((Bucket.AGGREGATED, _AQI_PROPERTY))

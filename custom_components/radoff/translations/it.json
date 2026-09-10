@@ -16,8 +16,8 @@
       "tvoc": {
         "name": "VOCs"
       },
-      "airqualityindex_average": {
-        "name": "Qualità aria media"
+      "aqi_value": {
+        "name": "Qualità aria"
       },
       "pm10": {
         "name": "PM10"

@@ -10,8 +10,8 @@
       "pressure": {
         "name": "Pressure"
       },
-      "airqualityindex_average": {
-        "name": "Air Quality Average"
+      "aqi_value": {
+        "name": "Air Quality"
       },
       "eco2": {
         "name": "Co2"

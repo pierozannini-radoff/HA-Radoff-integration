@@ -11,16 +11,95 @@ from homeassistant.components.sensor import (
     SensorEntity,
     SensorStateClass,
 )
+from homeassistant.const import (
+    CONCENTRATION_MICROGRAMS_PER_CUBIC_METER,
+    CONCENTRATION_PARTS_PER_MILLION,
+    PERCENTAGE,
+    UnitOfPressure,
+    UnitOfTemperature,
+)
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from . import RadoffConfigEntry
 from .api import RadoffDevice
-from .api.models import ReadingKey
 from .coordinator import RadoffCoordinator
-from .entity import RadoffEntity, reading_key_slug
+from .entity import RadoffEntity
 
 _LOGGER = logging.getLogger(__name__)
+
+# Provisional field metadata, replacing `properties.py::MAPPING` which card
+# M-03 deletes. THIS TABLE IS TEMPORARY BY DESIGN: card M-04 replaces it
+# with the per-device-type schema the API serves on
+# `/analytics/measures-ranges`, which is the authoritative source for units,
+# labels and thresholds. It lives here, next to the platform that consumes
+# it, precisely so that M-04 has one call site to redirect.
+#
+# Two things are deliberately different from the table it replaces:
+#
+# 1. There is no `normalize_fn`, and in particular no scaling factor on
+#    `internal_temperature` (the one S-10 carried, finding C11). Arch 2.0
+#    delivers values in the unit it declares - M-01 observed
+#    `internal_temperature: 26.0583` and `pressure: 100488.0` on a real
+#    device (V7/V8) - so scaling them here would be inventing a
+#    conversion.
+# 2. The keys are arch 2.0 field names, taken from the flat `telemetry`
+#    block. Most carry over unchanged from 1.x; the AQI does not - the
+#    aggregated `airqualityindex` of 1.x is `telemetry.aqi_value` now, a
+#    different name for the value the same entity has always shown. Its
+#    `unique_id` therefore changes twice over in this card (serial *and*
+#    field name); re-keying the entity users already have is M-07.
+#
+# A telemetry field absent from this table still becomes a `Reading` (see
+# `api/client.py::_build_readings`) and still reaches diagnostics - it just
+# gets no entity, because there is nothing yet to label it with.
+_PROVISIONAL_FIELDS: dict[str, dict[str, Any]] = {
+    "tvoc": {
+        "device_class": SensorDeviceClass.VOLATILE_ORGANIC_COMPOUNDS,
+        "unit": CONCENTRATION_MICROGRAMS_PER_CUBIC_METER,
+    },
+    "eco2": {
+        "device_class": SensorDeviceClass.CO2,
+        "unit": CONCENTRATION_PARTS_PER_MILLION,
+    },
+    "pm10": {
+        "device_class": SensorDeviceClass.PM10,
+        "unit": CONCENTRATION_MICROGRAMS_PER_CUBIC_METER,
+    },
+    "pm25": {
+        "device_class": SensorDeviceClass.PM25,
+        "unit": CONCENTRATION_MICROGRAMS_PER_CUBIC_METER,
+    },
+    "pm1": {
+        "device_class": SensorDeviceClass.PM1,
+        "unit": CONCENTRATION_MICROGRAMS_PER_CUBIC_METER,
+    },
+    "internal_temperature": {
+        "device_class": SensorDeviceClass.TEMPERATURE,
+        "unit": UnitOfTemperature.CELSIUS,
+    },
+    "relative_humidity": {
+        "device_class": SensorDeviceClass.HUMIDITY,
+        "unit": PERCENTAGE,
+    },
+    "pressure": {
+        "device_class": SensorDeviceClass.PRESSURE,
+        "unit": UnitOfPressure.PA,
+    },
+    # The AQI runs on a 0-5 scale (confirmed by Piero, 2026-09-10), not on
+    # the 0-500 one `SensorDeviceClass.AQI` will make most people assume:
+    # the real device M-01 sampled reports 1.15, which on an EPA-style
+    # scale would read as "essentially perfect air" and here means
+    # something quite different. The device class is kept anyway - it is
+    # the only one Home Assistant has for an air quality index, it forces
+    # no unit and applies no conversion - but M-04 has a decision to make
+    # with the schema in hand: a 0-5 index may belong with the qualitative
+    # `_index` entities below rather than as a bare number.
+    "aqi_value": {
+        "device_class": SensorDeviceClass.AQI,
+        "unit": None,
+    },
+}
 
 FIVE_LEVELS = ("excellent", "good", "medium", "poor", "terrible")
 THREE_LEVELS = ("excellent", "good", "terrible")
@@ -56,12 +135,12 @@ _PM1_THRESHOLDS = (6.0, 9.0, 12.0, 15.0)
 _TEMPERATURE_THRESHOLDS = (18.0, 27.0)
 _HUMIDITY_THRESHOLDS = (40.0, 60.0)
 
-# Keyed by bare property name, independent of which bucket(s) a reading of
-# that name exists in (card S-10 does not move this table - see
-# `properties.py`'s docstring, "OUT OF SCOPE"). Today only DATA-bucket
-# readings ever match a key here: `airqualityindex`, the only property the
-# AGGREGATED bucket carries, is not one of them, so it never gets an "-index"
-# sibling entity, in either bucket.
+# Keyed by telemetry field name, like `_PROVISIONAL_FIELDS` above - the two
+# tables happen to agree on their key spelling in arch 2.0 because the
+# fields kept their 1.x names, `aqi_value` aside, which has no qualitative
+# sibling here. These thresholds are hardcoded and should not be: moving
+# them onto the schema the API serves is card M-04, together with the units
+# above.
 INDEX_MAPPING: dict[str, dict[str, Any]] = {
     "tvoc": {
         "index": _threshold_index(_TVOC_THRESHOLDS, FIVE_LEVELS),
@@ -113,32 +192,44 @@ async def async_setup_entry(
 
     sensors = []
     for device in coordinator.data.devices:
-        for reading_key, reading in device.readings.items():
+        for field in device.readings:
+            descriptor = _PROVISIONAL_FIELDS.get(field)
+            if descriptor is None:
+                # A telemetry field this version cannot label yet - see
+                # `_PROVISIONAL_FIELDS`. Logged so a field the backend adds
+                # is visible rather than silently dropped, at DEBUG because
+                # on a device type outside this release's scope it would
+                # otherwise be a line per field per poll.
+                _LOGGER.debug(
+                    "No provisional descriptor for telemetry field %s on "
+                    "device %s: no entity created (card M-04 replaces this "
+                    "table with the API's own schema)",
+                    field,
+                    device.serial_number,
+                )
+                continue
+
             sensors.append(
                 RadoffSensor(
-                    reading_key=reading_key,
+                    field=field,
                     coordinator=coordinator,
                     device=device,
-                    device_class=reading.device_class,
-                    friendly_name=reading.friendly_name,
-                    unit=reading.unit,
-                    normalize_fn=reading.normalize_fn,
+                    device_class=descriptor["device_class"],
+                    unit=descriptor["unit"],
                     is_index=False,
                     index_fn=None,
                     index_states=None,
                 )
             )
-            if coordinator.data.generate_index and reading.name in INDEX_MAPPING:
-                index_obj = INDEX_MAPPING[reading.name]
+            if coordinator.data.generate_index and field in INDEX_MAPPING:
+                index_obj = INDEX_MAPPING[field]
                 sensors.append(
                     RadoffSensor(
-                        reading_key=reading_key,
+                        field=field,
                         coordinator=coordinator,
                         device=device,
                         device_class=SensorDeviceClass.ENUM,
-                        friendly_name=reading.friendly_name,
                         unit=None,
-                        normalize_fn=reading.normalize_fn,
                         is_index=True,
                         index_fn=index_obj["index"],
                         index_states=index_obj["states"],
@@ -161,12 +252,10 @@ class RadoffSensor(RadoffEntity, SensorEntity):
 
     def __init__(  # noqa: PLR0913
         self,
-        reading_key: ReadingKey,
+        field: str,
         device: RadoffDevice,
         coordinator: RadoffCoordinator,
         device_class: SensorDeviceClass | None,
-        friendly_name: str,
-        normalize_fn: Callable[[Number], float | int] | None,
         unit: type[StrEnum] | str | None,
         index_fn: Callable[[Number], str] | None,
         index_states: tuple[str, ...] | None,
@@ -174,11 +263,9 @@ class RadoffSensor(RadoffEntity, SensorEntity):
         is_index: bool | None = None,
     ) -> None:
         """Initialize the sensor."""
-        super().__init__(coordinator, device, reading_key)
-        self.friendly_name = friendly_name
+        super().__init__(coordinator, device, field)
         self.unit = unit
         self._attr_device_class = device_class
-        self._normalize_fn = normalize_fn
         self._is_index = is_index
         self._index_fn = index_fn
         if index_states is not None:
@@ -189,15 +276,13 @@ class RadoffSensor(RadoffEntity, SensorEntity):
         """
         Return the translation key to translate the entity's name and states.
 
-        Built from `reading_key_slug()` (card S-10), the same helper
-        `RadoffEntity.unique_id` uses: a DATA-bucket reading resolves to
-        exactly the bare property name it always has (e.g. `"tvoc"` /
-        `"tvoc_index"`), and any other bucket gets its own suffixed slug
-        (e.g. `"airqualityindex_average"`) so it never collides with, or
-        shadows, the DATA-bucket entity for the same property.
+        The telemetry field name, or `{field}_index` for the qualitative
+        sibling. Card M-03: `reading_key_slug()` is gone with the buckets it
+        existed to flatten, so the key is the field itself - and the AQI's
+        key moves with the payload, from `airqualityindex_average` to
+        `aqi_value`.
         """
-        slug = reading_key_slug(self.reading_key)
-        return slug if not self._is_index else f"{slug}_index"
+        return self.field if not self._is_index else f"{self.field}_index"
 
     @property
     def native_value(self) -> int | float | str | None:
@@ -208,16 +293,17 @@ class RadoffSensor(RadoffEntity, SensorEntity):
         or stale reading already makes the entity `unavailable` via
         `RadoffEntity.available` (S-07), so HA does not rely on this return
         value to hide a bad sample any more - it just avoids ever raising.
+
+        Card M-03 removed the `normalize_fn` hook this used to apply: arch
+        2.0 sends each value in the unit it declares, so the raw value is
+        the value (see `_PROVISIONAL_FIELDS`).
         """
         reading = self._reading
         if reading is None:
             return None
 
-        if self._normalize_fn is not None:
-            val = float(self._normalize_fn(reading.value))
-        else:
-            raw_val = reading.value
-            val = int(raw_val) if isinstance(raw_val, int) else float(raw_val)
+        raw_val = reading.value
+        val = int(raw_val) if isinstance(raw_val, int) else float(raw_val)
 
         if self._is_index:
             return self._index_fn(val)

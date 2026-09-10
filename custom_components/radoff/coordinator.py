@@ -2,7 +2,7 @@
 
 import asyncio
 import logging
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from datetime import timedelta
 
 import requests
@@ -22,7 +22,6 @@ from .api import (
     AuthExpiredError,
     AuthInvalidError,
     AuthUnavailableError,
-    DeviceFetchError,
     RadoffDevice,
 )
 from .const import (
@@ -137,80 +136,17 @@ class RadoffCoordinator(DataUpdateCoordinator[RadoffData]):
         """
         return self.update_interval * DEFAULT_STALE_MULTIPLIER
 
-    def _merge_device_errors(
-        self,
-        devices_ok: list[RadoffDevice],
-        device_errors: list[DeviceFetchError],
-    ) -> list[RadoffDevice]:
-        """
-        Fold this cycle's per-device fetch failures back into the device list.
-
-        Card S-13, "COSA FARE" step 2. For each `DeviceFetchError` (a device
-        `API.get_devices()` could not fetch this cycle, see that method's
-        docstring for which errors qualify): look up the previous poll's
-        `RadoffDevice` with the same `(device_type, device_id)`, if any -
-
-        - found: reuse it as-is (same `readings`, same
-          `last_data_received_at` - "conserva le sue letture precedenti"),
-          only flipping `stale` to `True`. `dataclasses.replace` is used
-          instead of mutating the previous instance in place, so the
-          previous poll's `RadoffData.devices` (which HA entities may still be
-          reading from concurrently) is never touched.
-        - not found (this device has never been seen with a successful
-          fetch - e.g. its very first poll already failed): include it
-          anyway, with empty `readings` and `stale=True`, rather than
-          dropping it from this cycle's device list entirely (card's own
-          instruction: "se non esiste un dato precedente, includerlo con
-          readings vuoto e stale=True").
-
-        `self.data` does not exist yet before this coordinator's first
-        successful refresh (`DataUpdateCoordinator.__init__` sets it to
-        `None`); `getattr` guards that first-poll case explicitly rather
-        than relying on `self.data` always being set.
-        """
-        previous_devices: dict[tuple[str, str], RadoffDevice] = {}
-        previous_data = getattr(self, "data", None)
-        if previous_data is not None:
-            previous_devices = {
-                (device.device_type, device.device_id): device
-                for device in previous_data.devices
-            }
-
-        merged = list(devices_ok)
-        for error in device_errors:
-            previous = previous_devices.get((error.device_type, error.device_id))
-            if previous is not None:
-                merged.append(replace(previous, stale=True))
-            else:
-                merged.append(
-                    RadoffDevice(
-                        device_id=error.device_id,
-                        device_serial=error.device_serial,
-                        device_type=error.device_type,
-                        name=error.name,
-                        readings={},
-                        stale=True,
-                        last_data_received_at=None,
-                    )
-                )
-            _LOGGER.debug(
-                "Device %s (%s) marked stale after a per-device fetch error: %s",
-                error.device_id,
-                error.device_type,
-                error.error,
-            )
-        return merged
-
-    async def _async_update_data(self) -> RadoffData:  # noqa: PLR0915
+    async def _async_update_data(self) -> RadoffData:
         """
         Fetch data from API endpoint.
 
-        Over ruff's statement limit (PLR0915) since card M-02 added the two
-        clauses for the arch 2.0 taxonomy: the method is one deliberately
-        flat `try`/`except` chain, one clause per failure this integration
-        knows how to react to, each carrying the card history of why it
-        reacts that way. Splitting it into helpers would scatter that chain
-        without shortening it - the length is the exhaustiveness.
+        One deliberately flat `try`/`except` chain, one clause per failure
+        this integration knows how to react to, each carrying the card
+        history of why it reacts that way. Splitting it into helpers would
+        scatter that chain without shortening it - the length is the
+        exhaustiveness. (It sat over ruff's statement limit from M-02 until
+        card M-03 took the merge step out of the `else` branch; the
+        exemption is gone with it.)
 
         Card S-12: no longer checks `self.api.connected` or calls
         `self.api.connect()` before fetching - `API.get_devices()`
@@ -246,22 +182,23 @@ class RadoffCoordinator(DataUpdateCoordinator[RadoffData]):
            its executor thread occupied until it finishes or its own
            per-request timeout fires; only migrating to aiohttp (tracked
            separately as an "L" item) can actually cancel it.
-        2. `API.get_devices()` now returns `(devices_ok, device_errors)`
-           instead of raising on a single bad device (card S-13, see that
-           method's docstring); `_merge_device_errors` above folds
-           `device_errors` back into the device list actually stored in
-           `self.data`, and the DEBUG line below reports how many devices
-           updated cleanly vs. went stale this cycle (S-13 "COSA FARE" step
-           5).
+        2. `API.get_devices()` returns the cycle's devices, or raises.
+
+        Card M-03 removes the second half of point 2 as S-13 wrote it.
+        `get_devices()` used to return `(devices_ok, device_errors)` and
+        `_merge_device_errors` folded the failures back in with
+        `stale=True`; both are gone, because the fetch is no longer N+1.
+        There is one request per page now, so a failure is the cycle's and
+        is raised - handled by the clauses below - and `stale` describes a
+        device the API answered *about*, saying it has no telemetry
+        (`telemetry: null`), not a device we failed to ask about.
         """
         _LOGGER.debug("Radoff _async_update_data starting")
         timeout_seconds = self.update_interval.total_seconds() * UPDATE_TIMEOUT_FACTOR
 
         try:
             async with asyncio.timeout(timeout_seconds):
-                devices_ok, device_errors = await self.hass.async_add_executor_job(
-                    self.api.get_devices
-                )
+                devices = await self.hass.async_add_executor_job(self.api.get_devices)
 
         except TimeoutError as err:
             _LOGGER.warning(
@@ -415,21 +352,20 @@ class RadoffCoordinator(DataUpdateCoordinator[RadoffData]):
             raise UpdateFailed(msg) from err
 
         except APIAuthError as err:
-            # Card S-13: per-device APIAuthError (403/429/5xx on a single
-            # device's GET) is now isolated inside `API.get_devices()` and
-            # never reaches this point - only the `search` call's own
-            # failure (which is never isolated, see that method's docstring)
-            # still surfaces here, same as before this card (S-13 AC: "Un
-            # fallimento della search porta tutte le entità a unavailable,
-            # come oggi").
+            # The catch-all of the M-02 taxonomy, for a status nobody has
+            # characterised yet. Card M-03: S-13 used to isolate this per
+            # device when it came from one device's own GET, so only the
+            # `search` failure reached here; with a single call per cycle
+            # every occurrence reaches here and costs the cycle - which is
+            # the honest outcome, since one call failing means no data at
+            # all, not one device's worth of it.
             _LOGGER.exception("Authentication error")
             msg = f"Authentication error: {err}"
             raise UpdateFailed(msg) from err
 
         except requests.exceptions.Timeout as err:
-            # Card S-13: same reasoning as APIAuthError above - a per-device
-            # timeout is isolated inside `get_devices()`; only a `search`-level
-            # timeout still reaches here.
+            # Same reasoning as APIAuthError above: since card M-03 there is
+            # one request per page, so a timeout is the cycle's.
             _LOGGER.exception(
                 "Request timeout after %s seconds", self.api.DEFAULT_TIMEOUT
             )
@@ -447,12 +383,11 @@ class RadoffCoordinator(DataUpdateCoordinator[RadoffData]):
             raise UpdateFailed(msg) from err
 
         else:
-            devices = self._merge_device_errors(devices_ok, device_errors)
-
             _LOGGER.debug(
-                "Radoff poll finished: %d device(s) updated, %d stale",
-                len(devices_ok),
-                len(device_errors),
+                "Radoff poll finished: %d device(s), %d of them without "
+                "telemetry this cycle",
+                len(devices),
+                sum(1 for device in devices if device.stale),
             )
 
             return RadoffData(
@@ -461,12 +396,21 @@ class RadoffCoordinator(DataUpdateCoordinator[RadoffData]):
                 generate_index=self.generate_index,
             )
 
-    def get_device_by_id(self, device_type: str, device_id: str) -> RadoffDevice | None:
-        """Return device by device id."""
-        _LOGGER.debug("Radoff get_device_by_id")
+    def get_device_by_serial(self, serial_number: str) -> RadoffDevice | None:
+        """
+        Return the device with this serial in the current poll, or None.
+
+        Card M-03: the lookup used to take `(device_type, device_id)`,
+        because the arch 1.x UUID was only unique per type. In arch 2.0 the
+        serial is the identity outright (T-02 D-02) - `deviceId`,
+        `serial_number` and `deviceSerial` are the same value - so the type
+        is no longer part of the key and asking for it would only let a
+        caller build a lookup that fails when a device's type changes
+        spelling.
+        """
         # A `for` loop over a list cannot raise IndexError (see card S-06,
         # C17): the previous `except IndexError` here was dead code.
         for device in self.data.devices:
-            if device.device_type == device_type and device.device_id == device_id:
+            if device.serial_number == serial_number:
                 return device
         return None

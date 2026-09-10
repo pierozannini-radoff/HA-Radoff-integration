@@ -37,7 +37,7 @@ from .conftest import (
     make_id_token,
     patch_authenticate_user,
     register_domains,
-    register_search,
+    register_devices,
 )
 
 DOMAIN_ID = "aaaaaaaa-0000-0000-0000-000000000001"
@@ -99,7 +99,7 @@ async def test_repair_single_domain_loads_the_entry(
     """
     patch_authenticate_user(monkeypatch, result=auth_result(make_id_token([DOMAIN_ID])))
     register_domains(requests_mock, load_fixture("domains_single.json"))
-    register_search(requests_mock, {"devices": []})
+    register_devices(requests_mock, load_fixture("devices_empty.json"))
 
     entry = await _setup_broken_entry(hass, config_entry_v1_data)
 
@@ -127,7 +127,7 @@ async def test_repair_multiple_domains_asks_which_one(
         monkeypatch, result=auth_result(make_id_token([DOMAIN_ID, OTHER_DOMAIN_ID]))
     )
     register_domains(requests_mock, load_fixture("domains_multi.json"))
-    register_search(requests_mock, {"devices": []})
+    register_devices(requests_mock, load_fixture("devices_empty.json"))
 
     entry = await _setup_broken_entry(hass, config_entry_v1_data)
 
@@ -157,7 +157,7 @@ async def test_repair_keeps_generate_index_option_from_the_migration(
     """The repair only writes `domain_id`: what the migration moved stays put."""
     patch_authenticate_user(monkeypatch, result=auth_result(make_id_token([DOMAIN_ID])))
     register_domains(requests_mock, load_fixture("domains_single.json"))
-    register_search(requests_mock, {"devices": []})
+    register_devices(requests_mock, load_fixture("devices_empty.json"))
 
     entry = await _setup_broken_entry(hass, config_entry_v1_data)
     result = await _start_fix_flow(hass, entry)
@@ -309,7 +309,9 @@ async def test_repair_discovers_on_the_environment_the_entry_points_at(
     requests_mock.get(
         f"{other_host}/data/user/me/domains", json=load_fixture("domains_single.json")
     )
-    requests_mock.post(f"{other_host}/data/devices/search", json={"devices": []})
+    register_devices(
+        requests_mock, load_fixture("devices_empty.json"), base_url=other_host
+    )
 
     entry = await _setup_broken_entry(
         hass, config_entry_v1_data, options={CONF_BASE_URL: other_host}

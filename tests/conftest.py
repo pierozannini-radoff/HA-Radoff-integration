@@ -20,6 +20,7 @@ from __future__ import annotations
 import base64
 import json
 import time
+from http import HTTPStatus
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -68,18 +69,25 @@ def load_dev_fixture(name: str) -> Any:
     return json.loads((DEV_FIXTURES_DIR / filename).read_text(encoding="utf-8"))
 
 
-def load_device_fixture(name: str) -> dict[str, Any]:
+def load_devices_fixture(name: str) -> dict[str, Any]:
     """
-    Return a `device_*.json` fixture with a freshly-computed `lastDataReceivedAt`.
+    Return a `devices_*.json` fixture with freshly-computed telemetry timestamps.
 
-    The fixture files carry a fixed, anonymized-looking timestamp - not a
-    real captured value, just illustrative. Overwriting it with "now" at
-    load time is what makes `RadoffEntity.available`'s freshness check
-    (entity.py, based on `coordinator.stale_after`) see these readings as
-    fresh regardless of when the suite actually runs.
+    The synthetic fixtures carry a fixed, illustrative
+    `telemetry.timestamp`. Overwriting it with "now" at load time is what
+    makes `RadoffEntity.available`'s freshness check (entity.py, based on
+    `coordinator.stale_after`) see these readings as fresh regardless of
+    when the suite actually runs.
+
+    Card M-03 renamed this from `load_device_fixture` along with what it
+    loads: a `GET /data/devices` page holding every device with its
+    telemetry inline, instead of one arch 1.x per-device response.
     """
     payload = load_fixture(name)
-    payload["data"]["lastDataReceivedAt"] = datetime.now(UTC).isoformat()
+    now = datetime.now(UTC).isoformat()
+    for device in payload.get("devices", []):
+        if isinstance(device.get("telemetry"), dict):
+            device["telemetry"]["timestamp"] = now
     return payload
 
 
@@ -180,31 +188,35 @@ def register_domains(requests_mock: Any, payload: dict[str, Any]) -> None:
     requests_mock.get(f"{BASE_URL}/data/user/me/domains", json=payload)
 
 
-def register_search(
+def register_devices(
     requests_mock: Any,
-    payload: dict[str, Any],
-    *,
+    *pages: dict[str, Any],
     status_code: int = 200,
+    base_url: str = BASE_URL,
 ) -> None:
-    """Mock `POST /data/devices/search`, optionally with an error status."""
-    requests_mock.post(
-        f"{BASE_URL}/data/devices/search", json=payload, status_code=status_code
-    )
+    """
+    Mock the one call a poll cycle makes: `GET /data/devices` (card M-03).
 
+    Replaces `register_search` + `register_device`, the two mocks the 1 + N
+    pattern of arch 1.x needed. Pass one payload per page, in order; the
+    mock answers each request with the page its `page` query parameter asks
+    for, so a test that pins the pagination loop registers two pages and a
+    test that does not registers one and never thinks about it again.
 
-def register_device(
-    requests_mock: Any,
-    device_id: str,
-    payload: dict[str, Any] | None = None,
-    *,
-    status_code: int = 200,
-) -> None:
-    """Mock `GET /data/devices/{device_id}`."""
-    requests_mock.get(
-        f"{BASE_URL}/data/devices/{device_id}",
-        json=payload or {},
-        status_code=status_code,
-    )
+    With a non-200 `status_code`, the first payload is the error body and
+    every page answers with it - there is nothing to paginate through when
+    the call itself fails.
+    """
+    bodies = list(pages) or [{}]
+
+    def _page_body(request: Any, context: Any) -> dict[str, Any]:
+        context.status_code = status_code
+        if status_code != HTTPStatus.OK:
+            return bodies[0]
+        requested = int(request.qs.get("page", ["1"])[0])
+        return bodies[min(requested, len(bodies)) - 1]
+
+    requests_mock.get(f"{base_url}/data/devices", json=_page_body)
 
 
 @pytest.fixture

@@ -14,25 +14,24 @@ entity does NOT cache the device object across updates - see
 `s-06-implementazione.md`'s own follow-up note: "S-07 riprenderà questo
 lavoro per l'availability strutturata [...] le guardie minime introdotte qui
 [...] sono pensate per essere sostituite, non duplicate, da quella card."
-Only the device's *identity* (type, id, serial, name) is captured once at
-creation time, for `device_info`/`unique_id`, which never change poll to
-poll. Everything data-bearing - `_device`, `_reading`, `available` - is
-looked up fresh from `self.coordinator.data` on every access: a device or
-property that disappears from one poll is reflected immediately (S-07 AC:
-"entro un ciclo di poll"), and one that reappears needs no reload to come
-back (S-07 AC), because there is no stale cached object left to clear.
+Only the device's *identity* (serial and type) is captured once at creation
+time, for `device_info`/`unique_id`, which never change poll to poll.
+Everything data-bearing - `_device`, `_reading`, `available` - is looked up
+fresh from `self.coordinator.data` on every access: a device or field that
+disappears from one poll is reflected immediately (S-07 AC: "entro un ciclo
+di poll"), and one that reappears needs no reload to come back (S-07 AC),
+because there is no stale cached object left to clear.
 
-Card S-10 changes what `reading_key` identifies: it used to be the bare
-property name (a `str`); it is now the composite `ReadingKey = (Bucket,
-property_name)` `api/models.py` introduces to resolve finding C4 (a `data`
-and an `aggregatedData` reading for the same property no longer collide in
-`RadoffDevice.readings`). `unique_id` below is the one place in this class
-that has to turn that tuple back into a single identifier string, and it
-does so through `reading_key_slug()` - also used by
-`sensor.py::RadoffSensor.translation_key` - so both stay in lockstep and
-the DATA-bucket case keeps producing byte-for-byte the same string it did
-before this card (S-10 AC: "Le entità esistenti del bucket DATA mantengono
-unique_id e storico").
+Card M-03 removes the last layer of indirection between a reading and its
+identifier. S-10 keyed readings by a (bucket, property name) pair and
+needed `reading_key_slug()` to fold that tuple back into one string; arch
+2.0 has no buckets, so the key is the field name and the slug *is* the
+key. The
+identifier itself changes shape with it - `radoff-{serial_number}-{field}`
+instead of `radoff-{device_uuid}-{slug}` - because the UUID of arch 1.x does
+not exist in 2.0 at all (T-02 D-02). Re-keying the entities users already
+have onto the new form is card M-07, deliberately not this one: until it
+runs, an existing installation gets new entities beside the old ones.
 """
 
 import logging
@@ -43,47 +42,15 @@ from homeassistant.core import callback
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .api.models import Bucket, RadoffDevice, Reading, ReadingKey
+from .api.models import RadoffDevice, Reading
 from .const import DOMAIN
 from .coordinator import RadoffCoordinator
 
 _LOGGER = logging.getLogger(__name__)
 
-# Suffix appended to a property name to build its entity "slug" (used for
-# both `unique_id` and `translation_key`), per bucket. DATA is the bucket
-# every entity was built from before S-10 introduced any other one, so it
-# keeps the empty suffix - the exact identifier a DATA-bucket reading always
-# had - and every bucket added after it must pick its own non-empty suffix
-# here so it can never collide with DATA's, or with another new bucket's.
-_BUCKET_SLUG_SUFFIXES: dict[Bucket, str] = {
-    Bucket.DATA: "",
-    Bucket.AGGREGATED: "average",
-}
-
-
-def reading_key_slug(reading_key: ReadingKey) -> str:
-    """
-    Return the property-name-based slug identifying one reading's entities.
-
-    `(Bucket.DATA, "pressure")` -> `"pressure"` (unchanged from the pre-S-10
-    bare-string key, by construction - see `_BUCKET_SLUG_SUFFIXES`).
-    `(Bucket.AGGREGATED, "airqualityindex")` -> `"airqualityindex_average"`,
-    a distinct slug so no two buckets can ever collide in `unique_id` or
-    `translation_key`.
-
-    Note that a distinct slug is not automatically a *free* one: the
-    AGGREGATED AQI reading is the value the released version's
-    `radoff-{device_id}-airqualityindex` entity has always shown, so moving
-    it to this slug orphans that entity unless the registry is migrated with
-    it (card T-06/F2, `__init__.py::_async_migrate_aggregated_aqi_unique_ids`).
-    """
-    bucket, property_name = reading_key
-    suffix = _BUCKET_SLUG_SUFFIXES[bucket]
-    return property_name if not suffix else f"{property_name}_{suffix}"
-
 
 class RadoffEntity(CoordinatorEntity[RadoffCoordinator]):
-    """Base class for Radoff entities backed by a single (device, reading) pair."""
+    """Base class for Radoff entities backed by a single (device, field) pair."""
 
     _attr_has_entity_name = True
 
@@ -91,32 +58,32 @@ class RadoffEntity(CoordinatorEntity[RadoffCoordinator]):
         self,
         coordinator: RadoffCoordinator,
         device: RadoffDevice,
-        reading_key: ReadingKey,
+        field: str,
     ) -> None:
         """
         Initialize the entity from the device object seen when it was created.
 
         Only identity fields are copied out of `device` here; the coordinator
-        context (`context=reading_key`) is what CoordinatorEntity uses to
+        context (`context=field`) is what CoordinatorEntity uses to
         support selective updates in the future - it is set once, correctly,
         and never overwritten afterwards (unlike the pre-S-07 `sensor.py`,
         which reassigned `self.coordinator_context` to the coordinator object
         right after `super().__init__()`, clobbering it - see
         `analisi-codebase-radoff-ha-28ago.md`, D6).
         """
-        super().__init__(coordinator, context=reading_key)
+        super().__init__(coordinator, context=field)
         self._device_type = device.device_type
-        self._device_id = device.device_id
-        self._device_serial = device.device_serial
+        self._serial_number = device.serial_number
         self._device_name = device.name
-        self.reading_key = reading_key
+        self._firmware_version = device.firmware_version
+        self.field = field
 
     @callback
     def _handle_coordinator_update(self) -> None:
         """Handle updated data from the coordinator."""
-        # Metadata only (S-03 logging policy): reading key and device id
-        # (UUID, allowed at DEBUG), never a reading's value.
-        _LOGGER.debug("Refreshing %s for device %s", self.reading_key, self._device_id)
+        # Metadata only (S-03 logging policy): field name and device serial,
+        # never a reading's value.
+        _LOGGER.debug("Refreshing %s for device %s", self.field, self._serial_number)
         super()._handle_coordinator_update()
 
     @property
@@ -130,10 +97,10 @@ class RadoffEntity(CoordinatorEntity[RadoffCoordinator]):
         which is what left `native_value` able to raise on a vanished device
         (C1) once its cached `Device` eventually went stale in a different
         way. This lookup is what makes S-07's AC1 hold: a device dropping out
-        of the search response makes its entities unavailable within the
-        very next poll, with no special-casing needed elsewhere.
+        of the device list makes its entities unavailable within the very
+        next poll, with no special-casing needed elsewhere.
         """
-        return self.coordinator.get_device_by_id(self._device_type, self._device_id)
+        return self.coordinator.get_device_by_serial(self._serial_number)
 
     @property
     def _reading(self) -> Reading | None:
@@ -141,44 +108,62 @@ class RadoffEntity(CoordinatorEntity[RadoffCoordinator]):
         device = self._device
         if device is None:
             return None
-        return device.readings.get(self.reading_key)
+        return device.readings.get(self.field)
 
     @property
     def device_info(self) -> DeviceInfo:
-        """Return the device info."""
+        """
+        Return the device info.
+
+        `identifiers` is unchanged by card M-03 and that is the point: the
+        device registry has been keyed on the serial since S-07, so the
+        devices users already have survive this migration even though every
+        entity `unique_id` under them changes (M-07 re-keys those).
+
+        `sw_version` is new here - arch 2.0 reports `firmware_version` on
+        every device of the list response, where 1.x exposed nothing of the
+        sort.
+        """
         return DeviceInfo(
-            identifiers={(DOMAIN, self._device_serial)},
+            identifiers={(DOMAIN, self._serial_number)},
             name=self._device_name,
             manufacturer="Radoff",
             model=self._device_type,
+            sw_version=self._firmware_version,
         )
 
     @property
     def unique_id(self) -> str:
         """
-        Return unique id.
+        Return unique id: `radoff-{serial_number}-{field}` (card M-03).
 
-        Built from `reading_key_slug()`, not from `self.reading_key` directly
-        (card S-10): `reading_key` is now `(Bucket, property_name)`, and the
-        slug is what turns that back into the single identifier string this
-        integration has always used, unchanged for the DATA bucket.
+        Both halves changed at once. The identity is the serial, because
+        arch 2.0 has no device UUID to use instead (T-02 D-02), and the
+        suffix is the telemetry field name, because there is no bucket left
+        to disambiguate and therefore no slug to build. Migrating the
+        identifiers of existing entities onto this form is card M-07.
         """
-        return f"{DOMAIN}-{self._device_id}-{reading_key_slug(self.reading_key)}"
+        return f"{DOMAIN}-{self._serial_number}-{self.field}"
 
     @staticmethod
     def _freshness_reference(reading: Reading, device: RadoffDevice) -> datetime | None:
         """
         Return the best available timestamp to judge this reading's age by.
 
-        Prefers `reading.measured_at` (per-sample, most precise) and falls
-        back to `device.last_data_received_at` (device-level, coarser but
-        real - see `api/client.py`'s T-02 finding: the payload has no
-        per-sample timestamp, but does have this one, one level up in the
-        same response). `None` only if neither is known, which today is
-        always true for the first and would only be true for the second on
-        a payload shape this integration hasn't seen yet.
+        Prefers `reading.measured_at` and falls back to the device-level
+        `telemetry_timestamp`. In arch 2.0 the two are the *same value* -
+        the whole telemetry block carries one timestamp, which every reading
+        of that device copies (see `api/models.py::Reading`) - so the
+        fallback only matters for a device with no readings at all. It is
+        kept as two steps anyway: the day the API grows a per-field
+        timestamp, this method already prefers it.
+
+        Note what that identity implies, and what T-08 D-15 reserves on:
+        this check cannot notice one slow field going stale while the rest
+        of the block keeps refreshing. Radon is the case that will bite -
+        see `api/models.py::Reading.measured_at`.
         """
-        return reading.measured_at or device.last_data_received_at
+        return reading.measured_at or device.telemetry_timestamp
 
     @property
     def available(self) -> bool:
@@ -188,19 +173,21 @@ class RadoffEntity(CoordinatorEntity[RadoffCoordinator]):
         Three conditions, all required (card S-07, §"COSA FARE"):
 
         1. the coordinator's last update succeeded (`super().available`);
-        2. the device is not marked `stale` (card S-13's signal; the field
-           always reads `False` today - S-13 is what will start setting it,
-           in that order deliberately, see this card's "OUT OF SCOPE");
+        2. the device is not marked `stale`;
         3. the reading exists and, when a freshness reference is known (see
            `_freshness_reference`), its age is below `coordinator.stale_after`.
 
-        T-02 confirmed the payload has no per-sample timestamp
-        (`Reading.measured_at` stays `None`), but does expose a device-level
-        `lastDataReceivedAt` (`RadoffDevice.last_data_received_at`), which
-        condition 3 uses instead. Only if that were ever unavailable too
-        would condition 3 fully degrade to "the reading exists" - the
-        fallback the card allows, and asks to be declared rather than
-        silently hidden (hence this docstring, not a TODO buried in code).
+        Condition 2 keeps its wording and changes its meaning with card
+        M-03: `stale` no longer means "this device's own fetch failed" (an
+        N+1 notion that died with the per-device call) but "this device
+        reported no telemetry this cycle" - `telemetry: null`. The reaction
+        is the same, and correct for both: no data means nothing to show.
+
+        What condition 2 is deliberately NOT is a connection check. A device
+        can be `connection_status: disconnected` and still have the API
+        serve its last telemetry, in which case these entities stay
+        available and condition 3 ages them out on its own schedule.
+        Deciding availability from `connection_status` is card M-06.
         """
         if not super().available:
             return False
@@ -209,7 +196,7 @@ class RadoffEntity(CoordinatorEntity[RadoffCoordinator]):
         if device is None or device.stale:
             return False
 
-        reading = device.readings.get(self.reading_key)
+        reading = device.readings.get(self.field)
         if reading is None:
             return False
 

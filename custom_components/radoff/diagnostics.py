@@ -15,14 +15,21 @@ that identifies the user or their account via `TO_REDACT` before returning -
 identifier nested anywhere in `entry.data`/`entry.options`/the runtime dump
 is still caught, not just at the top level.
 
-`RadoffData.devices[*].readings` is deliberately NOT dumped with
-`dataclasses.asdict()`: `Reading.normalize_fn` is a `Callable`, which is not
-JSON-serializable, and `Reading.device_class`/`Reading.unit` are internal
-implementation detail, not needed to diagnose the runbook's three cases
-(zero entities, entity unavailable, auth error). Only `value` and
-`measured_at` are pulled out per reading - the card's own instruction ("i
+`RadoffData.devices[*].readings` is dumped field by field rather than with
+`dataclasses.asdict()`: only `value` and `measured_at` are needed to
+diagnose the runbook's three cases (zero entities, entity unavailable, auth
+error), and the card's own instruction is explicit that this is allowed ("i
 VALORI dei sensori si possono includere, non sono dati personali; gli
 identificatori no").
+
+Card M-03 follows the model through. Readings are keyed by telemetry field
+name, since that is the key now (no more buckets, no more
+`reading_key_slug`), and the device dump carries what arch 2.0 actually
+reports - the serial as the only identity, plus the connection and firmware
+fields the payload gained. `connection_status` in particular is here
+*before* anything consumes it (M-06 does): a support dump that shows a
+device `connected` with no telemetry, or `disconnected` with fresh
+telemetry, is what tells those two situations apart.
 """
 
 from __future__ import annotations
@@ -33,25 +40,32 @@ from typing import TYPE_CHECKING, Any
 
 from homeassistant.components.diagnostics import async_redact_data
 
-from .entity import reading_key_slug
-
 if TYPE_CHECKING:
+    from datetime import datetime
+
     from homeassistant.core import HomeAssistant
 
     from . import RadoffConfigEntry
-    from .api.models import RadoffDevice, Reading, ReadingKey
+    from .api.models import RadoffDevice, Reading
 
 # Keys redacted anywhere they appear in the dumped structure (S-17 "COSA
-# FARE"). `serial` (not `device_serial`) and `device_id` are the dict keys
-# `_dump_device` below actually emits - chosen to match this set rather than
-# the dataclass's own field names, so `async_redact_data`'s plain key-name
-# matching catches them without a translation table.
+# FARE"). `serial_number` is the dict key `_dump_device` below emits, chosen
+# to match this set rather than a translation table, so `async_redact_data`'s
+# plain key-name matching catches it.
+#
+# Card M-03 adds `serial_number` and keeps `device_id`/`serial`, which
+# nothing emits any more: arch 2.0 has no device UUID and the model field is
+# named `serial_number` now. They stay because this set is also walked over
+# `entry.as_dict()`, whose contents come from whatever a config entry
+# happened to be written with - including entries created before this
+# migration.
 TO_REDACT = {
     "password",
     "username",
     "domain_id",
     "device_id",
     "serial",
+    "serial_number",
     "IdToken",
     "AccessToken",
     "RefreshToken",
@@ -68,31 +82,32 @@ def _integration_version() -> str:
     return manifest["version"]
 
 
-def _dump_readings(readings: dict[ReadingKey, Reading]) -> dict[str, Any]:
-    """Return only the value and measured_at for each reading, keyed by slug."""
+def _iso(value: datetime | None) -> str | None:
+    """Return an ISO-8601 string for a timestamp, or None."""
+    return value.isoformat() if value else None
+
+
+def _dump_readings(readings: dict[str, Reading]) -> dict[str, Any]:
+    """Return only the value and measured_at of each reading, keyed by field."""
     return {
-        reading_key_slug(key): {
+        field: {
             "value": reading.value,
-            "measured_at": (
-                reading.measured_at.isoformat() if reading.measured_at else None
-            ),
+            "measured_at": _iso(reading.measured_at),
         }
-        for key, reading in readings.items()
+        for field, reading in readings.items()
     }
 
 
 def _dump_device(device: RadoffDevice) -> dict[str, Any]:
     """Return the diagnostic-relevant fields of one device (pre-redaction)."""
     return {
-        "device_id": device.device_id,
-        "serial": device.device_serial,
+        "serial_number": device.serial_number,
         "device_type": device.device_type,
         "stale": device.stale,
-        "last_data_received_at": (
-            device.last_data_received_at.isoformat()
-            if device.last_data_received_at
-            else None
-        ),
+        "connection_status": device.connection_status,
+        "connection_status_updated_at": _iso(device.connection_status_updated_at),
+        "firmware_version": device.firmware_version,
+        "telemetry_timestamp": _iso(device.telemetry_timestamp),
         "readings": _dump_readings(device.readings),
     }
 

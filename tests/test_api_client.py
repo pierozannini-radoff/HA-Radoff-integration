@@ -1,94 +1,397 @@
 """
-Client-level tests for the composite reading key (S-10 finding C4, T-06/F2).
+Client-level tests for the arch 2.0 device call and data model (card M-03).
 
-`RadoffDevice.readings` is keyed by `(bucket, property_name)` precisely so
-that the same property arriving in two buckets produces two independent
-entries instead of one silently overwriting the other. Until RT-2927 the
-only property mapped in two buckets was `airqualityindex` - which the
-backend never actually sends in `data`, so the fixtures had to invent one,
-and inventing it is what hid T-06/F2 for a whole milestone. With the
-`Bucket.DATA` AQI entry gone, `MAPPING` no longer describes any property in
-two buckets, and nothing else in the suite would notice a regression to
-bare-property-name keying. This file covers that directly, on the client,
-without asking a fixture to lie about the payload.
+Everything here runs against the **real** payloads M-01 captured on dev
+(`tests/fixtures/dev/devices__*.json`, loaded with `load_dev_fixture`),
+because the shape of `telemetry` is the whole point of this card and a
+hand-written fixture would only prove that the client agrees with whoever
+wrote it. Where a case the dev account could not produce is needed - a
+`nowplus` with `telemetry: null`, a second page, a nested LIFE - it is
+derived from those same real objects rather than invented, and the
+derivation is stated in the test.
+
+What is pinned here, in order: the flat telemetry block becomes readings
+keyed by field name, the serial is the identity, every reading carries the
+block's timestamp, `telemetry: null` is data-less and not an error, the
+type filter, the pagination loop and its two guards, and the nested LIFE
+that must be logged rather than dropped.
 """
 
 from __future__ import annotations
 
+import copy
+import logging
 from typing import Any
 
 import pytest
-from homeassistant.components.sensor import SensorDeviceClass
 
 from custom_components.radoff.api import API
-from custom_components.radoff.api import client as client_module
-from custom_components.radoff.api.models import Bucket
-from custom_components.radoff.properties import MAPPING
+from custom_components.radoff.api.client import MAX_DEVICE_PAGES
 
 from .conftest import (
     auth_result,
-    load_device_fixture,
+    load_dev_fixture,
     make_id_token,
     patch_authenticate_user,
-    register_device,
+    register_devices,
 )
 
-DOMAIN_ID = "aaaaaaaa-0000-0000-0000-000000000001"
-DEVICE_ID = "device-0000-0001"
+DOMAIN_PREFIX = "test-domain-1"
+
+# The one real device of the dev domain that actually reports (M-01,
+# "Esito 5"): a `nowplus`, `connection_status: connected`, with a full
+# telemetry block. Its companion in the same fixture is a `sense` with
+# `telemetry: null`, which is the other half of what these tests need.
+REPORTING_SERIAL = "3D90E0"
+SILENT_SERIAL = "57FA28"
+
+# The 9 measurements `telemetry` carries on that device - i.e. its keys
+# minus the two that are not measurements (`timestamp`, `device_type`).
+EXPECTED_FIELDS = {
+    "aqi_value",
+    "eco2",
+    "internal_temperature",
+    "pm1",
+    "pm10",
+    "pm25",
+    "pressure",
+    "relative_humidity",
+    "tvoc",
+}
 
 
-def test_one_property_in_two_buckets_yields_two_readings(
-    monkeypatch: pytest.MonkeyPatch, requests_mock: Any
-) -> None:
-    """`data.tvoc` and `aggregatedData.tvoc` are two entries, not one."""
-    patch_authenticate_user(monkeypatch, result=auth_result(make_id_token([DOMAIN_ID])))
-
-    two_bucket_mapping = {
-        Bucket.DATA: MAPPING[Bucket.DATA],
-        Bucket.AGGREGATED: {
-            **MAPPING[Bucket.AGGREGATED],
-            "tvoc": {
-                "deviceClass": SensorDeviceClass.VOLATILE_ORGANIC_COMPOUNDS,
-                "friendlyName": "VOC",
-                "unit": "µg/m³",
-            },
-        },
-    }
-    monkeypatch.setattr(client_module, "MAPPING", two_bucket_mapping)
-
-    payload = load_device_fixture("device_0001_nominal.json")
-    payload["data"]["aggregatedData"].append(
-        {"propertyName": "tvoc", "aggregationValue": 77}
+def _api(monkeypatch: pytest.MonkeyPatch) -> API:
+    """Return an authenticated client whose Cognito handshake is mocked away."""
+    patch_authenticate_user(
+        monkeypatch, result=auth_result(make_id_token([DOMAIN_PREFIX]))
     )
-    register_device(requests_mock, DEVICE_ID, payload)
-
-    api = API(username="user@example.com", password="hunter2", domain_prefix=DOMAIN_ID)
-    readings, _ = api._get_data(DEVICE_ID)  # noqa: SLF001
-
-    assert readings[(Bucket.DATA, "tvoc")].value == 50
-    assert readings[(Bucket.AGGREGATED, "tvoc")].value == 77
-    assert readings[(Bucket.DATA, "tvoc")].bucket is Bucket.DATA
-    assert readings[(Bucket.AGGREGATED, "tvoc")].bucket is Bucket.AGGREGATED
+    return API(
+        username="user@example.com",
+        password="hunter2",
+        domain_prefix=DOMAIN_PREFIX,
+    )
 
 
-def test_aqi_comes_only_from_the_aggregated_bucket(
+def _real_page() -> dict[str, Any]:
+    """A mutable copy of the real one-page device list captured on dev."""
+    return copy.deepcopy(load_dev_fixture("devices__full"))
+
+
+def _devices_of(page: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    """Index a page's raw devices by serial, for readable mutation in tests."""
+    return {device["serial_number"]: device for device in page["devices"]}
+
+
+# ---------------------------------------------------------------------------
+# The flat telemetry block
+# ---------------------------------------------------------------------------
+
+
+def test_telemetry_becomes_readings_keyed_by_field_name(
     monkeypatch: pytest.MonkeyPatch, requests_mock: Any
 ) -> None:
     """
-    A `data.airqualityindex`, if the backend ever sent one, is not read.
+    Every measurement of `telemetry` is one reading, keyed by its field name.
 
-    The real payload has never carried it (T-06/F2): `MAPPING` describes the
-    AQI in `Bucket.AGGREGATED` only, and this pins that a stray one in `data`
-    produces no second reading for the same property.
+    The composite `(bucket, property)` key of S-10 is gone with the buckets
+    that made it necessary: arch 2.0 sends one flat object holding the last
+    value of each field, so the key is the field name (card M-03).
     """
-    patch_authenticate_user(monkeypatch, result=auth_result(make_id_token([DOMAIN_ID])))
+    register_devices(requests_mock, _real_page())
 
-    payload = load_device_fixture("device_0001_nominal.json")
-    payload["data"]["data"].append({"propertyName": "airqualityindex", "value": 20})
-    register_device(requests_mock, DEVICE_ID, payload)
+    devices = _api(monkeypatch).get_devices()
 
-    api = API(username="user@example.com", password="hunter2", domain_prefix=DOMAIN_ID)
-    readings, _ = api._get_data(DEVICE_ID)  # noqa: SLF001
+    assert len(devices) == 1
+    device = devices[0]
+    assert set(device.readings) == EXPECTED_FIELDS
+    assert device.readings["internal_temperature"].value == 26.0583
+    assert device.readings["pressure"].value == 100488.0
+    # Every reading knows its own name, and it is the key it is filed under.
+    assert all(field == reading.name for field, reading in device.readings.items())
 
-    assert (Bucket.DATA, "airqualityindex") not in readings
-    assert readings[(Bucket.AGGREGATED, "airqualityindex")].value == 25
+
+def test_the_serial_is_the_identity_and_the_new_fields_are_carried(
+    monkeypatch: pytest.MonkeyPatch, requests_mock: Any
+) -> None:
+    """
+    `serial_number` identifies the device, and the 2.0-only fields reach the model.
+
+    `connection_status` is read but not consumed here - availability based
+    on it is card M-06 - which is exactly why it is worth pinning now: the
+    card that uses it should find it already in the model.
+    """
+    register_devices(requests_mock, _real_page())
+
+    device = _api(monkeypatch).get_devices()[0]
+
+    assert device.serial_number == REPORTING_SERIAL
+    assert device.device_type == "nowplus"
+    assert device.connection_status == "connected"
+    assert device.connection_status_updated_at is not None
+    assert device.firmware_version == "0.2.8"
+    assert device.domain_prefix == "875fe89b"
+    assert device.room_name and device.building_name
+    assert device.stale is False
+
+
+def test_every_reading_carries_the_blocks_own_timestamp(
+    monkeypatch: pytest.MonkeyPatch, requests_mock: Any
+) -> None:
+    """
+    `measured_at` is the telemetry block's timestamp, the same for every field.
+
+    Not a detail: T-08 D-15 says that timestamp is the *maximum* of the
+    fields' own timestamps, so a slow field (radon) carries a `measured_at`
+    refreshed by its faster siblings. Pinning the identity here is what
+    keeps that property visible instead of letting a future change make
+    `measured_at` look per-field without being it.
+    """
+    register_devices(requests_mock, _real_page())
+
+    device = _api(monkeypatch).get_devices()[0]
+
+    measured_at = {reading.measured_at for reading in device.readings.values()}
+    assert len(measured_at) == 1
+    assert measured_at.pop() == device.telemetry_timestamp
+    assert device.telemetry_timestamp is not None
+    assert device.telemetry_timestamp.tzinfo is not None
+
+
+def test_telemetry_null_is_no_data_and_not_an_error(
+    monkeypatch: pytest.MonkeyPatch, requests_mock: Any
+) -> None:
+    """
+    M-03 AC: a device with `telemetry: null` is `stale=True` and raises nothing.
+
+    The real fixture's silent device is a `sense`, which this release
+    filters out by type, so the null is moved onto the supported device -
+    the payload shape is the captured one (M-01, D-16: the majority of the
+    120 devices censused are in this state), only the device it sits on is
+    chosen.
+    """
+    page = _real_page()
+    _devices_of(page)[REPORTING_SERIAL]["telemetry"] = None
+    register_devices(requests_mock, page)
+
+    devices = _api(monkeypatch).get_devices()
+
+    assert len(devices) == 1
+    assert devices[0].serial_number == REPORTING_SERIAL
+    assert devices[0].stale is True
+    assert devices[0].readings == {}
+    assert devices[0].telemetry_timestamp is None
+    # The identity fields still arrive: a silent device is still a device.
+    assert devices[0].connection_status == "connected"
+
+
+def test_unsupported_device_types_are_left_out(
+    monkeypatch: pytest.MonkeyPatch, requests_mock: Any
+) -> None:
+    """The `sense` of the real fixture produces no device: this release is Now+."""
+    register_devices(requests_mock, _real_page())
+
+    serials = {device.serial_number for device in _api(monkeypatch).get_devices()}
+
+    assert serials == {REPORTING_SERIAL}
+    assert SILENT_SERIAL not in serials
+
+
+def test_non_measurement_telemetry_keys_never_become_readings(
+    monkeypatch: pytest.MonkeyPatch, requests_mock: Any
+) -> None:
+    """
+    `timestamp` and `device_type` are in the block but are not measurements.
+
+    A non-numeric field the backend might add later is skipped for the same
+    reason, rather than becoming a reading whose value no sensor can show.
+    """
+    page = _real_page()
+    _devices_of(page)[REPORTING_SERIAL]["telemetry"]["radon_status"] = "ok"
+    register_devices(requests_mock, page)
+
+    readings = _api(monkeypatch).get_devices()[0].readings
+
+    assert "timestamp" not in readings
+    assert "device_type" not in readings
+    assert "radon_status" not in readings
+    assert set(readings) == EXPECTED_FIELDS
+
+
+def test_fields_are_read_by_name_and_never_by_position(
+    monkeypatch: pytest.MonkeyPatch, requests_mock: Any
+) -> None:
+    """
+    M-03 AC: reversing the order of the payload's keys changes nothing.
+
+    JSON objects have no meaningful order, and the client must not acquire
+    a dependency on the one the backend happens to serialize today.
+    """
+    ordered = _real_page()
+    reversed_page = _real_page()
+    telemetry = _devices_of(reversed_page)[REPORTING_SERIAL]["telemetry"]
+    _devices_of(reversed_page)[REPORTING_SERIAL]["telemetry"] = dict(
+        reversed(list(telemetry.items()))
+    )
+
+    register_devices(requests_mock, ordered)
+    from_ordered = _api(monkeypatch).get_devices()[0].readings
+
+    register_devices(requests_mock, reversed_page)
+    from_reversed = _api(monkeypatch).get_devices()[0].readings
+
+    assert {field: reading.value for field, reading in from_ordered.items()} == {
+        field: reading.value for field, reading in from_reversed.items()
+    }
+
+
+# ---------------------------------------------------------------------------
+# Pagination
+# ---------------------------------------------------------------------------
+
+
+def _two_pages() -> tuple[dict[str, Any], dict[str, Any]]:
+    """
+    Two pages built from the real device object, with a real `pagination` shape.
+
+    The dev domain holds 2 devices, so its captured pages cannot show a
+    walk across more than one (M-01 says so itself, "Una riserva
+    sull'evidenza di V1"). The second device here is the same real object
+    under another serial, which is enough to prove the loop follows
+    `total_pages` rather than stopping at the first response.
+    """
+    first = _real_page()
+    first["pagination"] = {"page": 1, "page_size": 2, "total": 3, "total_pages": 2}
+
+    second = _real_page()
+    second_devices = _devices_of(second)
+    second_devices[REPORTING_SERIAL]["serial_number"] = "3D90E1"
+    second["devices"] = [second_devices[REPORTING_SERIAL]]
+    second["pagination"] = {"page": 2, "page_size": 2, "total": 3, "total_pages": 2}
+
+    return first, second
+
+
+def test_the_loop_follows_total_pages(
+    monkeypatch: pytest.MonkeyPatch, requests_mock: Any
+) -> None:
+    """A device on page 2 is collected: the client does not stop at page 1."""
+    register_devices(requests_mock, *_two_pages())
+
+    devices = _api(monkeypatch).get_devices()
+
+    assert {device.serial_number for device in devices} == {REPORTING_SERIAL, "3D90E1"}
+    assert [request.qs["page"] for request in requests_mock.request_history] == [
+        ["1"],
+        ["2"],
+    ]
+
+
+def test_one_page_costs_exactly_one_request(
+    monkeypatch: pytest.MonkeyPatch, requests_mock: Any
+) -> None:
+    """
+    A single-page response ends the loop, and the whole cycle is one call.
+
+    The premise this card removes `DeviceFetchError` on: with one request
+    per cycle there is no per-device failure left to isolate.
+    """
+    register_devices(requests_mock, _real_page())
+
+    _api(monkeypatch).get_devices()
+
+    assert len(requests_mock.request_history) == 1
+    assert requests_mock.request_history[0].qs["page_size"] == ["200"]
+
+
+def test_a_serial_repeated_across_pages_is_collected_once(
+    monkeypatch: pytest.MonkeyPatch, requests_mock: Any
+) -> None:
+    """
+    A device seen twice while walking the pages produces one device, not two.
+
+    M-01 measured the ordering as stable (V1), so a repeat means the list
+    shifted between two requests - and two `RadoffDevice` with the same
+    serial would mean two entity sets for one device.
+    """
+    first, second = _two_pages()
+    _devices_of(second)["3D90E1"]["serial_number"] = REPORTING_SERIAL
+
+    register_devices(requests_mock, first, second)
+    devices = _api(monkeypatch).get_devices()
+
+    assert [device.serial_number for device in devices] == [REPORTING_SERIAL]
+
+
+def test_a_never_ending_pagination_stops_at_the_ceiling(
+    monkeypatch: pytest.MonkeyPatch,
+    requests_mock: Any,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """
+    A `total_pages` that never terminates costs a bounded cycle, not a hang.
+
+    The loop runs inside an executor thread, where nothing else would stop
+    it: `asyncio.timeout` in the coordinator bounds how long HA *waits*, not
+    how long the thread runs.
+    """
+    endless = _real_page()
+    endless["pagination"] = {
+        "page": 1,
+        "page_size": 200,
+        "total": 10_000,
+        "total_pages": 9_999,
+    }
+    register_devices(requests_mock, endless)
+
+    with caplog.at_level(logging.WARNING, logger="custom_components.radoff.api.client"):
+        devices = _api(monkeypatch).get_devices()
+
+    assert len(requests_mock.request_history) == MAX_DEVICE_PAGES
+    assert len(devices) == 1  # the same device, deduplicated by serial
+    assert "ceiling" in caplog.text
+
+
+# ---------------------------------------------------------------------------
+# The nested LIFE
+# ---------------------------------------------------------------------------
+
+
+def test_a_nested_life_is_logged_and_produces_no_device(
+    monkeypatch: pytest.MonkeyPatch,
+    requests_mock: Any,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """
+    M-03 AC: a nested LIFE yields one log line, no entity and no exception.
+
+    The nesting is real (M-01, D-33): a `city` carries the whole object of
+    the `life` it controls inline, and that nested device can belong to a
+    different domain than its parent. The dev fixtures in the repo have no
+    example - the pass that found one was discarded for redaction reasons -
+    so the shape is rebuilt here from the real device object, as D-33
+    describes it. Modelling the pair is T-08 D-33; this card only refuses
+    to lose it silently.
+    """
+    page = _real_page()
+    controller = copy.deepcopy(_devices_of(page)[REPORTING_SERIAL])
+    slave = copy.deepcopy(_devices_of(page)[SILENT_SERIAL])
+
+    slave["serial_number"] = "855894"
+    slave["type"] = "life"
+    slave["domain_prefix"] = "9a8e7728"
+    slave["managed_by_device_serial"] = "E754F0"
+
+    controller["serial_number"] = "E754F0"
+    controller["type"] = "city"
+    controller["controller_of_device_serial"] = "855894"
+    controller["controller_of_device"] = slave
+
+    page["devices"] = [*page["devices"], controller]
+    register_devices(requests_mock, page)
+
+    with caplog.at_level(logging.INFO, logger="custom_components.radoff.api.client"):
+        devices = _api(monkeypatch).get_devices()
+
+    assert {device.serial_number for device in devices} == {REPORTING_SERIAL}
+    assert "855894" in caplog.text
+    assert "T-08 D-33" in caplog.text

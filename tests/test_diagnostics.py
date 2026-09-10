@@ -24,7 +24,6 @@ sys.path.insert(0, str(REPO_ROOT))
 
 from custom_components.radoff import diagnostics  # noqa: E402
 from custom_components.radoff.api.models import (  # noqa: E402
-    Bucket,
     RadoffDevice,
     Reading,
 )
@@ -36,7 +35,6 @@ from custom_components.radoff.coordinator import RadoffData  # noqa: E402
 SECRET_USERNAME = "someone@example.com"
 SECRET_PASSWORD = "super-secret-password"  # noqa: S105
 SECRET_DOMAIN_ID = "11111111-1111-1111-1111-111111111111"
-SECRET_DEVICE_ID = "22222222-2222-2222-2222-222222222222"
 SECRET_SERIAL = "RADOFF-SERIAL-0042"
 SECRET_UNIQUE_ID = "radoff-account-unique-id"
 SECRET_TITLE = "someone@example.com (domain X)"
@@ -48,7 +46,6 @@ ALL_SECRETS = [
     SECRET_USERNAME,
     SECRET_PASSWORD,
     SECRET_DOMAIN_ID,
-    SECRET_DEVICE_ID,
     SECRET_SERIAL,
     SECRET_UNIQUE_ID,
     SECRET_TITLE,
@@ -97,34 +94,31 @@ def _build_entry() -> ConfigEntry:
 
 
 def _build_data() -> RadoffData:
+    now = datetime.now(UTC)
     healthy_device = RadoffDevice(
-        device_id=SECRET_DEVICE_ID,
-        device_serial=SECRET_SERIAL,
-        device_type="now_plus",
+        serial_number=SECRET_SERIAL,
+        device_type="nowplus",
         name="Living room",
         readings={
-            (Bucket.DATA, "temperature"): Reading(
-                name="temperature",
-                bucket=Bucket.DATA,
+            "internal_temperature": Reading(
+                name="internal_temperature",
                 value=21.5,
-                device_class=None,
-                friendly_name="Temperature",
-                unit="°C",
-                normalize_fn=None,
-                measured_at=None,
+                measured_at=now,
             ),
         },
+        connection_status="connected",
+        firmware_version="0.2.8",
+        telemetry_timestamp=now,
         stale=False,
-        last_data_received_at=datetime.now(UTC),
     )
     stale_device = RadoffDevice(
-        device_id="33333333-3333-3333-3333-333333333333",
-        device_serial="RADOFF-SERIAL-0099",
-        device_type="now_plus",
+        serial_number="RADOFF-SERIAL-0099",
+        device_type="nowplus",
         name="Bedroom",
         readings={},
+        connection_status="disconnected",
+        firmware_version="0.2.8",
         stale=True,
-        last_data_received_at=None,
     )
     return RadoffData(
         controller_name="cloud_poller",
@@ -182,6 +176,19 @@ def test_diagnostics_covers_runbook_cases() -> None:
     assert result["last_exception"]
     devices = result["data"]["devices"]
     assert any(device["stale"] is True for device in devices)
+
+    # Card M-03: the fields that tell "no telemetry this cycle" apart from
+    # "offline" are both in the dump, even though nothing consumes
+    # `connection_status` until M-06 - a support dump is exactly where that
+    # distinction has to be readable.
+    assert {device["connection_status"] for device in devices} == {
+        "connected",
+        "disconnected",
+    }
+    assert all("telemetry_timestamp" in device for device in devices)
+    assert all(device["firmware_version"] == "0.2.8" for device in devices)
+    healthy = next(device for device in devices if device["stale"] is False)
+    assert healthy["readings"]["internal_temperature"]["value"] == 21.5
 
     entry_zero = _build_entry()
     entry_zero.runtime_data = _FakeCoordinator(
