@@ -111,16 +111,86 @@ e `tests/test_init.py`, che girano dentro `hass`.
 
 ### Esito
 
-**Passata non ancora eseguita.** Lo script è stato provato solo nella sua
-metà offline — i controlli che non toccano la rete, eseguiti contro le
-fixture di M-01: **12 PASS, 0 FAIL, 1 skip** (lo skip è il controllo sui
-device, che senza dominio non ha nulla da guardare). Restano da eseguire
-contro dev i tre che richiedono la rete: lettura del catalogo, 404 sul tipo
-ignoto, e i device del dominio.
+Eseguita il **2026-09-10** contro dev (`https://v2.api.dev.iot.radoff.life`),
+pool `eu-west-1_5SsvW9t6S`, con `--auth-flow password`.
 
-Quando la passata verrà fatta, il verdetto va incollato qui sotto, come
-hanno fatto M-01 e M-03.
+**17 PASS, 0 FAIL, 0 skip.**
+
+Due passate, e la prima serve a spiegare la seconda. Senza
+`--domain-prefix` lo script prende il primo dominio della discovery, che su
+questo account è `1aeb7ad1` e non ha device: 15 PASS e uno `skip` sui due
+controlli che hanno bisogno di device veri. Ripetuta su `875fe89b` — lo
+stesso dominio con cui M-03 aveva chiuso, l'unico con un device che
+trasmette — copre tutto.
 
 ```
-(da compilare)
+[  ok  ] Lo schema risponde per tutti e 5 i tipi del catalogo
+          nowplus=9 misure, sense=10 misure, city=10 misure, now=6 misure, sismoff=9 misure
+          5 tipi letti in 592 ms
+[  ok  ] Le 5 richieste della passata sono tutte allo schema
+[  ok  ] Le misure escono ordinate per `pos`
+          nowplus: pos=[1, 3, 6, 7, 8, 9, 10, 11, 12]
+          sense:   pos=[1, 2, 3, 6, 7, 8, 9, 10, 11, 12]
+          city:    pos=[1, 2, 3, 6, 7, 8, 9, 10, 11, 12]
+          now:     pos=[1, 3, 6, 10, 11, 12]
+          sismoff: pos=[1, 2, 3, 4, 5, 6, 10, 11, 12]
+[  ok  ] `pos` e' ancora sparso su almeno un tipo (la trappola e' viva)
+          tipi con buchi: nowplus, sense, city, now, sismoff
+[  ok  ] Le fasce arrivano nel vocabolario e nell'ordine attesi
+          excellent -> high -> good -> poor -> terrible
+          low -> good -> high
+[  ok  ] Nessuna misura serve uno `scaleFactor` (i valori sono gia' scalati)
+[  ok  ] Tutte le 8 unita' servite sono mappate su Home Assistant
+          '%', '', 'Bq/m³', 'Pa', 'V - Ix', 'ppm', '°C', 'µg/m³'
+[  ok  ] AC: `pressure` e' servita in Pa (la conversione la fa la UI di HA)
+[  ok  ] radon/aqi/ch4/tvoc restano senza device_class
+[  ok  ] Ogni device_class mappata corrisponde a una misura che il catalogo serve
+[  ok  ] AC: `aqi_value` nasce disabilitata (T-08 D-08, divisore 120)
+[  ok  ] Lo schema servito coincide con le fixture di M-01 (5 tipi)
+          nessuna deriva: soglie, unita' ed etichette sono quelle della card
+[  ok  ] Le 23 entita' del catalogo hanno un nome in ogni lingua
+[  ok  ] Tipo 'life': 404 con la lista dei tipi validi
+          available=['city', 'now', 'nowplus', 'sense', 'sismoff']
+[  ok  ] Tipo 'not-a-real-device-type': 404 con la lista dei tipi validi
+          available=['city', 'now', 'nowplus', 'sense', 'sismoff']
+[  ok  ] I 2 device del dominio sono tutti modellati
+          tipi presenti: ['nowplus', 'sense']; fuori dal tipo supportato (nowplus): ['sense']
+[  ok  ] Ogni lettura dei device e' dichiarata dallo schema del suo tipo
+
+  17 PASS, 0 FAIL, 0 skip
 ```
+
+### Cosa dice questa passata, oltre al conteggio
+
+**Nessuna deriva.** Lo schema che dev serve oggi è identico, campo per
+campo, alle fixture catturate da M-01: le soglie, le unità e le etichette
+su cui questa card è stata scritta sono ancora quelle. È il controllo che
+nessun test mockato può fare, ed è la ragione principale per cui questa
+passata esisteva.
+
+**La trappola di `pos` è viva su tutti e cinque i tipi.** I buchi ci sono
+davvero (`now`: 1, 3, 6, 10, 11, 12), quindi il test che li esercita
+continua a dimostrare qualcosa.
+
+**L'AC sul filtro è confermato dal vivo.** Il dominio ha due device, un
+`nowplus` e un `sense`, ed entrambi sono modellati. Prima di M-04 il
+`sense` sarebbe semplicemente sparito: è lo stesso device che
+`docs/M-03-verifica-dev.md` contava fuori dai "device supportati".
+
+**Nessuna lettura fuori schema.** Su questi due device ogni campo della
+telemetria è dichiarato dallo schema del suo tipo, quindi il ramo che
+espone un campo non dichiarato come valore grezzo — quello che esiste per
+`radon_status` — su dev non si attiva. Resta coperto dai test.
+
+### Cosa questa passata NON verifica
+
+- **L'autenticazione.** Con `--auth-flow password` l'handshake SRP
+  dell'integrazione è scavalcato e il token iniettato, perché l'app client
+  del pool dev non ha ancora `ALLOW_USER_SRP_AUTH` (richiesta aperta di
+  M-01). Un PASS qui non è un PASS sull'autenticazione, e lo script lo
+  dichiara a schermo.
+- **Il wiring di Home Assistant**: quali entità nascono, come si chiamano,
+  quali sono disabilitate. Serve un HA vivo; lo coprono
+  `tests/test_sensor.py` e `tests/test_init.py`, che girano dentro `hass`.
+- **`sismoff`**: vedi "Scostamenti" più sopra. Il suo schema è stato letto
+  e confrontato, i suoi device no — su dev non ce ne sono.
