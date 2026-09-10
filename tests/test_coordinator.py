@@ -13,6 +13,11 @@ updating. With a single `GET /data/devices` per cycle there is no such
 state to test: a failure is the cycle's, and the per-device condition that
 remains is the one the payload itself reports - `telemetry: null`, a device
 the API answered about and that has no data.
+
+Card M-05 adds a second subject to this file: *when* the cycle runs. The
+scheduling tests below drive `_schedule_refresh` directly rather than
+waiting on the event loop - the point being tested is the delay this
+coordinator asks for, not Home Assistant's ability to honour a timer.
 """
 
 from __future__ import annotations
@@ -23,13 +28,16 @@ import pytest
 from homeassistant.config_entries import ConfigEntryState
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryError
+from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.radoff.const import (
     CONF_BASE_URL,
     CONF_DOMAIN_ID,
+    DEFAULT_SCAN_INTERVAL,
     DOMAIN,
     ERROR_DOMAIN_ACCESS_DENIED,
+    POLL_JITTER_FRACTION,
 )
 from custom_components.radoff.coordinator import RadoffCoordinator
 
@@ -42,6 +50,13 @@ from .conftest import (
     patch_authenticate_user,
     register_devices,
 )
+
+
+# Same synthetic body as `test_api_transport.py`: API Gateway's own 429,
+# which carries neither an `error` key nor a `Retry-After` header. Not a
+# captured fixture - provoking a real one would have meant saturating a
+# quota shared with the Radoff mobile app (M-01 deliberately did not).
+RATE_LIMIT_BODY = {"message": "Too Many Requests"}
 
 
 async def _setup_entry(
@@ -379,3 +394,218 @@ async def test_the_base_url_option_is_what_the_poll_talks_to(
     assert {request.netloc for request in requests_mock.request_history} == {
         "api.int.iot.radoff.life"
     }
+
+
+def _make_coordinator(
+    hass: HomeAssistant,
+    config_entry_v2_data: dict[str, Any],
+    *,
+    entry_id: str,
+    options: dict[str, Any] | None = None,
+) -> RadoffCoordinator:
+    """Build a coordinator on a real entry, without ever polling with it."""
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data=config_entry_v2_data,
+        options=options or {"generate_index": True},
+        version=2,
+        entry_id=entry_id,
+    )
+    entry.add_to_hass(hass)
+    return RadoffCoordinator(hass, entry)
+
+
+def _next_delay(
+    coordinator: RadoffCoordinator, monkeypatch: pytest.MonkeyPatch
+) -> float:
+    """
+    Return the delay, in seconds, this coordinator's next refresh asks for.
+
+    `RadoffCoordinator._schedule_refresh` swaps the delay it wants into
+    `update_interval` and delegates to `DataUpdateCoordinator`, so capturing
+    what the base class sees is exactly what a timer would have been armed
+    with - without arming one, and without a test that has to sleep.
+    """
+    seen: list[float] = []
+    monkeypatch.setattr(
+        DataUpdateCoordinator,
+        "_schedule_refresh",
+        lambda self: seen.append(self.update_interval.total_seconds()),
+    )
+    coordinator._schedule_refresh()  # noqa: SLF001
+    return seen[0]
+
+
+async def test_two_coordinators_created_together_do_not_poll_together(
+    hass: HomeAssistant,
+    monkeypatch: pytest.MonkeyPatch,
+    config_entry_v2_data: dict[str, Any],
+) -> None:
+    """
+    Card M-05 AC: two coordinators created in the same instant are offset.
+
+    The acceptance criterion in the card's own words ("Due coordinator
+    creati nello stesso istante non pollano nello stesso istante"). Nothing
+    here waits for a timer: what is pinned is the delay each one asks for,
+    which is what a timer would use.
+    """
+    first = _make_coordinator(hass, config_entry_v2_data, entry_id="entry-one")
+    second = _make_coordinator(hass, config_entry_v2_data, entry_id="entry-two")
+
+    assert first.poll_jitter != second.poll_jitter
+    assert _next_delay(first, monkeypatch) != _next_delay(second, monkeypatch)
+
+
+async def test_the_offset_never_shortens_the_interval_below_what_was_asked(
+    hass: HomeAssistant,
+    monkeypatch: pytest.MonkeyPatch,
+    config_entry_v2_data: dict[str, Any],
+) -> None:
+    """
+    The offset is added, never subtracted (card M-05).
+
+    A symmetric jitter would put an entry configured at the 60s floor at
+    54s, under the device cadence that floor exists to respect - so the
+    delay stays within [interval, interval + 10%).
+    """
+    coordinator = _make_coordinator(hass, config_entry_v2_data, entry_id="entry-one")
+
+    delay = _next_delay(coordinator, monkeypatch)
+
+    assert DEFAULT_SCAN_INTERVAL <= delay
+    assert delay < DEFAULT_SCAN_INTERVAL * (1 + POLL_JITTER_FRACTION)
+
+
+async def test_the_offset_of_an_entry_survives_a_restart(
+    hass: HomeAssistant,
+    config_entry_v2_data: dict[str, Any],
+) -> None:
+    """
+    The same entry gets the same offset every time it is set up (M-05).
+
+    This is what makes the spread hold through the correlated events that
+    would otherwise undo it - a Home Assistant upgrade, a host reboot, an
+    outage everyone recovers from at once. A `random` draw would put every
+    installation that restarted together back in step; the offset is
+    derived from the entry_id instead, so rebuilding the coordinator is
+    indistinguishable from never having stopped.
+    """
+    before = _make_coordinator(hass, config_entry_v2_data, entry_id="entry-one")
+    after = _make_coordinator(hass, config_entry_v2_data, entry_id="entry-one")
+
+    assert before.poll_jitter == after.poll_jitter
+
+
+async def test_a_long_backoff_pushes_only_the_next_cycle_out(
+    hass: HomeAssistant,
+    monkeypatch: pytest.MonkeyPatch,
+    config_entry_v2_data: dict[str, Any],
+) -> None:
+    """
+    A backoff longer than the interval delays one cycle, and only one.
+
+    Card M-05, the scheduling half of M-02's 429 work. `update_interval`
+    itself must not move while this happens: `stale_after` (S-07) and the
+    cycle timeout budget (S-13) are both derived from it, and neither has
+    any business changing because one cycle was rate limited.
+    """
+    coordinator = _make_coordinator(hass, config_entry_v2_data, entry_id="entry-one")
+    nominal = coordinator.update_interval
+
+    coordinator._rate_limit_delay = DEFAULT_SCAN_INTERVAL * 3.0  # noqa: SLF001
+
+    assert _next_delay(coordinator, monkeypatch) == DEFAULT_SCAN_INTERVAL * 3.0
+    assert coordinator.update_interval == nominal
+    assert coordinator.stale_after == nominal * 3
+
+    assert _next_delay(coordinator, monkeypatch) < DEFAULT_SCAN_INTERVAL * 1.5
+
+
+async def test_a_short_backoff_does_not_pull_the_next_cycle_forward(
+    hass: HomeAssistant,
+    monkeypatch: pytest.MonkeyPatch,
+    config_entry_v2_data: dict[str, Any],
+) -> None:
+    """
+    The 429 backoff is a floor on the wait, never a replacement for it.
+
+    Card M-05. A single 429 asks for ~5s (RATE_LIMIT_BACKOFF_START), and
+    the next cycle was five minutes away regardless. Honouring the number
+    literally would poll a rate-limited backend *more* often than a healthy
+    one - which is the failure this assertion exists to prevent someone
+    reintroducing.
+    """
+    coordinator = _make_coordinator(hass, config_entry_v2_data, entry_id="entry-one")
+
+    coordinator._rate_limit_delay = 5.0  # noqa: SLF001
+
+    assert _next_delay(coordinator, monkeypatch) >= DEFAULT_SCAN_INTERVAL
+
+
+async def test_a_429_skips_the_cycle_without_making_entities_unavailable(
+    hass: HomeAssistant,
+    monkeypatch: pytest.MonkeyPatch,
+    requests_mock: Any,
+    config_entry_v2_data: dict[str, Any],
+) -> None:
+    """
+    Card M-05 AC: a 429 skips the cycle and the next one runs normally.
+
+    Deliberately the opposite of `test_a_500_costs_the_whole_cycle` above,
+    and the difference is the point: a 5xx means the data could not be
+    fetched, a 429 means it was not asked for. The devices are still online
+    and still emitting once a minute, so their entities keep the previous
+    poll's readings instead of going `unavailable` - and the backoff the
+    client computed is carried into the next scheduling decision.
+    """
+    register_devices(requests_mock, load_devices_fixture("devices_two_devices.json"))
+    await _setup_entry(hass, monkeypatch, config_entry_v2_data)
+    before = hass.states.get("sensor.bedroom_temperature").state
+    assert before != "unavailable"
+
+    register_devices(requests_mock, RATE_LIMIT_BODY, status_code=429)
+    await _repoll(hass)
+
+    coordinator = hass.config_entries.async_entries(DOMAIN)[0].runtime_data
+    assert coordinator.last_update_success is True
+    assert hass.states.get("sensor.bedroom_temperature").state == before
+    assert hass.states.get("sensor.living_room_temperature").state != "unavailable"
+
+    register_devices(requests_mock, load_devices_fixture("devices_two_devices.json"))
+    await _repoll(hass)
+
+    assert hass.states.get("sensor.bedroom_temperature").state == before
+    assert coordinator.last_update_success is True
+
+
+async def test_a_429_on_the_very_first_poll_retries_the_setup(
+    hass: HomeAssistant,
+    monkeypatch: pytest.MonkeyPatch,
+    requests_mock: Any,
+    config_entry_v2_data: dict[str, Any],
+) -> None:
+    """
+    The one case where a 429 still fails a cycle (card M-05).
+
+    Keeping the previous poll's data needs a previous poll. At setup there
+    is none - and no entities to protect either - so the entry goes to
+    `setup_retry` and Home Assistant retries it, rather than completing a
+    setup with no data at all.
+    """
+    register_devices(requests_mock, RATE_LIMIT_BODY, status_code=429)
+    patch_authenticate_user(
+        monkeypatch,
+        result=auth_result(make_id_token(["aaaaaaaa-0000-0000-0000-000000000001"])),
+    )
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data=config_entry_v2_data,
+        options={"generate_index": True},
+        version=2,
+    )
+    entry.add_to_hass(hass)
+
+    assert not await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    assert entry.state is ConfigEntryState.SETUP_RETRY

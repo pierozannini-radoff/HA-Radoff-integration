@@ -17,7 +17,7 @@ import pytest
 from botocore.exceptions import ClientError
 from homeassistant import config_entries
 from homeassistant.core import HomeAssistant
-from homeassistant.data_entry_flow import FlowResultType
+from homeassistant.data_entry_flow import FlowResultType, InvalidData
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.radoff.api.auth import (
@@ -30,7 +30,9 @@ from custom_components.radoff.const import (
     CONF_BASE_URL,
     CONF_DOMAIN_ID,
     DEFAULT_BASE_URL,
+    DEFAULT_SCAN_INTERVAL,
     DOMAIN,
+    MIN_SCAN_INTERVAL,
 )
 
 from .conftest import (
@@ -489,3 +491,60 @@ async def test_a_base_url_equal_to_the_default_is_not_stored(
 
     assert result["type"] is FlowResultType.CREATE_ENTRY
     assert CONF_BASE_URL not in entry.options
+
+
+async def test_the_form_refuses_an_interval_below_the_floor(
+    hass: HomeAssistant,
+    monkeypatch: pytest.MonkeyPatch,
+    requests_mock: Any,
+    config_entry_v2_data: dict[str, Any],
+) -> None:
+    """
+    Card M-05 AC: the options flow does not accept anything under 60s.
+
+    The floor is `MIN_SCAN_INTERVAL`, and it is the device's own cadence
+    (one message a minute) rather than a rate limit: below it the same
+    reading comes back twice, at full price on a quota shared with every
+    other Radoff client. Voluptuous re-validates the `NumberSelector` bounds
+    server-side, so the value is refused whatever the frontend sent.
+    """
+    entry = await _loaded_entry(
+        hass, monkeypatch, requests_mock, config_entry_v2_data, {"generate_index": True}
+    )
+
+    result = await _open_options(hass, entry, advanced=False)
+    with pytest.raises(InvalidData):
+        await hass.config_entries.options.async_configure(
+            result["flow_id"],
+            {"scan_interval": MIN_SCAN_INTERVAL - 1, "generate_index": True},
+        )
+
+    assert "scan_interval" not in entry.options
+
+
+async def test_an_entry_that_never_set_an_interval_polls_at_the_default(
+    hass: HomeAssistant,
+    monkeypatch: pytest.MonkeyPatch,
+    requests_mock: Any,
+    config_entry_v2_data: dict[str, Any],
+) -> None:
+    """
+    Card M-05 AC: a new entry defaults to 300s, in the form and in the poll.
+
+    Both halves matter and they are read from the same constant: the form
+    pre-fills what the coordinator is already using, so opening the options
+    and saving them unchanged is a no-op rather than a silent change of
+    interval.
+    """
+    entry = await _loaded_entry(
+        hass, monkeypatch, requests_mock, config_entry_v2_data, {"generate_index": True}
+    )
+
+    assert DEFAULT_SCAN_INTERVAL == 300
+    assert entry.runtime_data.update_interval.total_seconds() == DEFAULT_SCAN_INTERVAL
+
+    result = await _open_options(hass, entry, advanced=False)
+    defaults = {
+        str(key): key.default() for key in result["data_schema"].schema if key.default
+    }
+    assert defaults["scan_interval"] == DEFAULT_SCAN_INTERVAL

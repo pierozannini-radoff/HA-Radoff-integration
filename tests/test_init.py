@@ -24,6 +24,7 @@ the tripwire would have been asking for.
 
 from __future__ import annotations
 
+from http import HTTPStatus
 from typing import Any
 
 import pytest
@@ -590,3 +591,38 @@ async def test_a_schema_endpoint_that_is_down_retries_instead_of_loading(
     await hass.async_block_till_done()
 
     assert entry.state is ConfigEntryState.SETUP_RETRY
+
+
+async def test_a_429_on_the_schema_call_names_itself_and_retries(
+    hass: HomeAssistant,
+    monkeypatch: pytest.MonkeyPatch,
+    requests_mock: Any,
+    caplog: pytest.LogCaptureFixture,
+    config_entry_v2_data: dict[str, Any],
+) -> None:
+    """
+    Card M-05: a rate-limited setup is retried by Home Assistant, and says so.
+
+    The outcome is the same `ConfigEntryNotReady` as the test above, and
+    that is the decision, not an oversight: at setup there are no entities
+    yet to keep available, so there is nothing for the poll path's 429
+    handling to protect and no reason to run a retry loop of our own
+    alongside the framework's. What the dedicated clause adds is that the
+    log names the 429 and the backoff the client computed, instead of
+    reading like the schema endpoint is down.
+    """
+    patch_authenticate_user(monkeypatch, result=auth_result(make_id_token([DOMAIN_ID])))
+    register_devices(requests_mock, load_devices_fixture("devices_one_device.json"))
+    register_measures_ranges(
+        requests_mock, payloads={}, status_code=HTTPStatus.TOO_MANY_REQUESTS
+    )
+
+    entry = MockConfigEntry(
+        domain=DOMAIN, version=2, data=config_entry_v2_data, options={CONF_INDEX: True}
+    )
+    entry.add_to_hass(hass)
+    assert not await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    assert entry.state is ConfigEntryState.SETUP_RETRY
+    assert "rate limit reached while fetching the measurement schema" in caplog.text
