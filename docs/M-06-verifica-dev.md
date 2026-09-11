@@ -272,18 +272,65 @@ accetta solo `pool_dev` (`accepted_pool` in
 invece di riportare l'eccezione e basta. La passata verde qui sopra è
 stata fatta con un'utenza valida sul pool dev.
 
-## Cosa resta da guardare a mano
+## I controlli a occhio: cosa si è visto, e cosa non ha soggetto
 
-Due cose che nessuno script può fare, entrambe con `./scripts/develop` e
-allineando temporaneamente i pool di `const.py` a quelli dev
-(`eu-west-1_5SsvW9t6S` / `2i63gbc9sim3b8paasaga7jb6g`), **senza
-committare**:
+Fatto il **2026-09-11** con `./scripts/develop` sul dominio `875fe89b`,
+allineando temporaneamente i pool di `const.py` a quelli dev (modifica
+locale, non committata — vedi «Due difetti preesistenti» sotto).
 
-1. **Un device connesso e muto mostra l'ultimo valore noto**, non
-   `unavailable`. Serve un soggetto, e su `875fe89b` non c'è: `57FA28` è
-   disconnesso. Il controllo «AC1 dal vivo» della passata dice se ne
-   esiste uno.
-2. **Il riavvio.** Fermare Home Assistant, riavviarlo, e verificare che le
-   entità di un device connesso e muto tornino con il loro ultimo valore e
-   con `last_measured_at` vecchio — non con un timestamp fresco, che è
-   proprio la bugia che l'attributo esiste per impedire.
+**AC2 dal vivo.** `57FA28`, disconnesso da 64 giorni, ha le sue 10 entità
+`unavailable`: la card ha l'effetto dichiarato, e per la ragione giusta.
+`3D90E0`, connesso, mostra le sue 9 misure con i valori del payload.
+Nessuno scarto fra schema e payload in nessuna delle due direzioni,
+pressione in Pascal (D-06), niente radon (il `nowplus` non ha l'hardware),
+`aqi_value` disabilitata di default per il difetto di D-08.
+
+**AC6 dal vivo.** Gli attributi dell'entità, da Strumenti per sviluppatori
+→ Stati:
+
+```
+last_measured_at:             2026-09-11T15:42:06+00:00
+connection_status:            connected
+connection_status_updated_at: 2026-09-09T10:06:41+00:00
+status:                       active
+```
+
+Tutti e quattro, nessun `connection_status_stale`. **È la decisione 2 in
+una schermata:** valore di pochi minuti fa, stato di due giorni fa, device
+perfettamente funzionante. Con la rete a 6 ore questo device avrebbe
+portato l'attributo e un WARNING nel log.
+
+**I due controlli che la card chiede non sono eseguibili su dev**, e non
+per un difetto: manca il soggetto. Servirebbe un device connesso e muto —
+`57FA28` è disconnesso, `3D90E0` trasmette regolarmente, e staccarlo non è
+possibile. Entrambi i casi sono coperti dalla suite mockata, che li
+**provoca a comando**:
+
+1. «Connesso e muto mostra l'ultimo valore noto» →
+   `test_a_connected_device_without_telemetry_keeps_its_entities_available`.
+2. «Dopo un riavvio torna l'ultimo valore con `last_measured_at` vecchio» →
+   `test_a_restart_restores_the_last_known_value`, sul registro di stato
+   vero di Home Assistant.
+
+Non è un ripiego: è il posto giusto per verificarli. Il giorno in cui su
+dev esistesse un device connesso e muto, il controllo «AC1 dal vivo» di
+`verify_m06_live.py` lo segnala da solo.
+
+## Due difetti preesistenti trovati lungo la strada
+
+Nessuno dei due appartiene a M-06. Sono emersi provando a fare i controlli
+qui sopra, e sono stati aggirati con modifiche **locali e non committate**.
+
+1. **Il config flow non è migrato ad arch 2.0.** `config_flow.py:199` legge
+   `domains[0]["id"]`, ma in 2.0 `GET /auth/user/me/domains` restituisce
+   `{"domain": {"prefix": ...}, "role": ...}`: `KeyError: 'id'`, e la UI
+   dice «Unknown error occurred». **L'integrazione non è installabile da
+   interfaccia su nessun branch di questa catena.** È esattamente il lavoro
+   che `api/client.py::list_domains` (M-02) dichiara rimandato alla card del
+   config flow: «Teaching the config flow to read the new shape (and to
+   persist `prefix` rather than a UUID) is that card's job». Da tracciare
+   se non lo è già.
+2. **Il pool Cognito di `const.py` è di prod, il base URL è di dev.** Un
+   account dev viene rifiutato con `invalid_auth` in fase di setup. È il
+   residuo noto di `docs/M-04-verifica-dev.md`, «Un residuo che blocca il
+   collaudo end-to-end».
