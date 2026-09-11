@@ -204,13 +204,12 @@ long-term statistics.
   matters most, since it is sampled more slowly than everything around it.
 
   Two more attributes are there for support: `connection_status_updated_at`
-  (when Radoff last changed its mind about the device being connected) and
-  `status` (the administrative status, which is a different field and does
-  not affect availability). If a device claims to be connected but that claim
-  has not been refreshed within the same six-hour window, the entity gains a
-  `connection_status_stale` attribute and the log says so once - the entity
-  stays available, because how often Radoff refreshes that field is not yet
-  documented.
+  and `status` (the administrative status, which is a different field and
+  does not affect availability). `connection_status_updated_at` is when
+  Radoff last **changed** the device's connection status, not when it last
+  checked it - so on a device that has been online for a month it reads a
+  month old, and that is what a healthy device looks like, not a stale
+  reading.
 
 ## Getting support
 

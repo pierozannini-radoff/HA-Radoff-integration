@@ -48,7 +48,7 @@ runs, an existing installation gets new entities beside the old ones.
 """
 
 import logging
-from datetime import UTC, datetime
+from datetime import datetime
 from typing import Any
 
 from homeassistant.core import callback
@@ -56,7 +56,7 @@ from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .api.models import ConnectionState, RadoffDevice, Reading
-from .const import CONNECTION_STATUS_STALE_WINDOW, DOMAIN
+from .const import DOMAIN
 from .coordinator import RadoffCoordinator
 
 _LOGGER = logging.getLogger(__name__)
@@ -265,12 +265,21 @@ class RadoffEntity(CoordinatorEntity[RadoffCoordinator]):
         avoid having to choose between the two before T-08 D-17 tells us
         what each one enumerates.
 
-        `connection_status_stale` appears only when it is true: the
-        connection status still claims `connected` but has not been updated
-        within the backend's own 6-hour list window
-        (`CONNECTION_STATUS_STALE_WINDOW`, const.py). It is a flag, not a
-        verdict - the entity stays available - and its absence therefore
-        means "not stale, or not knowable", never "checked and fine".
+        `connection_status_updated_at` is published raw, and reading it
+        needs one fact the live pass of this card established on dev (T-02
+        D-17 (e)): it is the moment the status last *changed*, not the
+        moment it was last *checked*. A healthy device transmitting right
+        now carried a value two days old, while a device offline for two
+        months carried one 64 days old. So an old timestamp beside
+        `connected` means "connected since then", which is the normal state
+        of a stable installation - not evidence that anything has frozen.
+        An earlier pass of this card added a `connection_status_stale`
+        attribute and a matching WARNING built on the opposite reading, and
+        the live pass removed both before the card closed: against a
+        last-change timestamp no age threshold can separate a stable device
+        from a frozen field, so the check could only ever have fired on
+        every healthy device. Whether that field is refreshed on any
+        cadence at all is the remaining half of D-17 (b), still open.
 
         Keys whose value is unknown are omitted rather than published as
         `None`, so an attribute that is present is always a fact.
@@ -291,29 +300,5 @@ class RadoffEntity(CoordinatorEntity[RadoffCoordinator]):
             )
         if device.status is not None:
             attributes["status"] = device.status
-        if self._connection_status_is_stale(device):
-            attributes["connection_status_stale"] = True
 
         return attributes or None
-
-    @staticmethod
-    def _connection_status_is_stale(device: RadoffDevice) -> bool:
-        """
-        Return whether a `connected` claim is older than the backend's window.
-
-        The read-side half of the safety net whose log line lives in
-        `coordinator.py::_check_connection_status_freshness` - same
-        condition, same constant, deliberately duplicated rather than
-        cached on the device: this one is evaluated per state read and must
-        stay a pure function of the current poll.
-
-        False for a device that is not claiming to be connected, and for
-        one with no `connection_status_updated_at` at all: neither is an
-        anomaly, and only an anomaly is worth an attribute.
-        """
-        updated_at = device.connection_status_updated_at
-        if device.connection_state is not ConnectionState.CONNECTED:
-            return False
-        if updated_at is None:
-            return False
-        return datetime.now(UTC) - updated_at >= CONNECTION_STATUS_STALE_WINDOW

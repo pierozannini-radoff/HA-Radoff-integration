@@ -165,7 +165,10 @@ class RadoffDevice:
       M-06 the first one *is* the availability signal, read through
       `connection_state` below rather than compared to a string by each
       caller; the second one is published as a diagnostic attribute and
-      watched against `CONNECTION_STATUS_STALE_WINDOW` (const.py).
+      nothing more - it is the moment the status last changed, not the
+      moment it was last checked (T-02 D-17 (e), answered from dev), so
+      its age says how long the device has been in its current state and
+      is not evidence about the field still being refreshed.
     - `status`: the other, coexisting status field (`active`), added to
       the model by M-06 and deliberately not consumed by any decision.
       The two are not synonyms - `status` is administrative (is this

@@ -14,6 +14,9 @@ dal vivo** ciò che una suite mockata non può verificare.
 
 Le quattro decisioni sotto sono state poste prima di scrivere una riga, il
 2026-09-10, e decise con Piero. Tre su quattro riguardano cosa *non* fare.
+La seconda è stata **riaperta e ribaltata il 2026-09-11** da ciò che la
+passata dal vivo ha misurato: è scritta sotto nella sua forma finale, con
+la versione precedente e il motivo della retromarcia.
 
 ### 1. Un device connesso e muto mostra l'ultimo valore noto, non `unknown`
 
@@ -46,18 +49,47 @@ ogni buco, che rende il problema visibile ma spezza storico e automazioni
 su ogni device che sta zitto più di sei ore — cioè la maggioranza dei 120
 device censiti da M-01.
 
-### 2. La rete di sicurezza a 6 ore segnala, non decide
+### 2. Nessuna rete di sicurezza sull'età di `connection_status` — rimossa
 
-`CONNECTION_STATUS_STALE_WINDOW = 6h` è la finestra **dichiarata dal
-backend** (T-02 D-16), non un multiplo dell'intervallo di polling. Se un
-device dice `connected` ma il suo `connection_status_updated_at` è più
-vecchio, escono un WARNING (uno per episodio, non per ciclo) e l'attributo
-`connection_status_stale`.
+**Decisione finale (2026-09-11, con Piero): la rete non esiste.**
+`connection_status_updated_at` resta un attributo grezzo e nient'altro;
+non c'è costante, non c'è WARNING, non c'è attributo derivato.
 
-**Le entità restano disponibili.** La cadenza con cui il backend aggiorna
-quel campo è esattamente il residuo aperto di D-17 (b): farne una soglia di
-disponibilità rimetterebbe un numero non verificato al posto di quello
-appena rimosso. Alternativa scartata: oltre la finestra → non disponibili.
+**Cosa era stato scritto prima.** Una costante
+`CONNECTION_STATUS_STALE_WINDOW = 6h` — la finestra dichiarata dal backend
+in T-02 D-16, non un multiplo dell'intervallo di polling — confrontata con
+`connection_status_updated_at` sui device che dicono `connected`: oltre la
+finestra, un WARNING (uno per episodio) e un attributo
+`connection_status_stale`, mai un verdetto di disponibilità. L'intento era
+rendere visibile il caso in cui il campo su cui ora poggia tutta la
+disponibilità smette di essere aggiornato.
+
+**Perché è stata rimossa.** Presupponeva che
+`connection_status_updated_at` fosse il momento dell'ultimo *controllo*.
+La passata dal vivo l'ha smentito, e questa è l'evidenza:
+
+| device | telemetria | `connection_status_updated_at` | `connection_status` |
+|---|---|---|---|
+| `3D90E0` (nowplus) | 58 secondi fa | ~2 giorni fa | `connected` |
+| `57FA28` (sense) | mai | 64 giorni fa | `disconnected` |
+
+Un device che trasmette *adesso* e porta quel campo a due giorni prima non
+lascia alternative: è il momento dell'ultimo **cambio** di stato. È la
+risposta empirica a T-08 D-17 (e), che era aperta.
+
+Con quella semantica la rete era l'esatto contrario del suo intento: un
+WARNING e un attributo su **ogni device sano connesso da più di sei ore**,
+cioè rumore permanente. E non si aggiusta con una soglia diversa — se il
+campo è "ultimo cambio", nessuna età distingue un device connesso e
+stabile da un campo congelato. Restava solo la scelta fra un controllo che
+sbaglia sempre e nessun controllo: nessun controllo.
+
+**Cosa resta scoperto, e va detto.** Il caso che la rete voleva coprire —
+il campo si congela, le entità restano disponibili sulla fede di un valore
+che non viene più aggiornato — non è coperto da niente. Non è coprilbile
+con i dati che l'API dà oggi: servirebbe sapere con quale cadenza il
+backend riscrive quel campo, che è la metà ancora aperta di D-17 (b).
+Quando arriverà quella risposta, questo è il punto da riaprire.
 
 ### 3. Il ripiego per il radon è documentato, non implementato
 
@@ -116,8 +148,8 @@ Eseguita il **2026-09-11** sul branch
 ```
 ✓ Formattazione (nessuna riscrittura)
 ✓ Lint
-✓ Suite completa            366 passed
-✓ AC di M-06, uno per riga   16 passed
+✓ Suite completa            365 passed
+✓ AC di M-06, uno per riga   15 passed
 ✓ test_sensor.py e test_init.py interi   52 passed
 ✓ Tipi: nessun errore nuovo  21 su baseline 21
 ```
@@ -157,9 +189,10 @@ valori l'API serva **davvero**, e con che età.
 |---|---|
 | Ogni `connection_status` servito da dev è nell'enumerazione del client | se ne comparisse un terzo, ogni device che lo porta sarebbe già "non determinabile" — disponibile per la ragione sbagliata (T-08 D-17) |
 | `status` e `connection_status` coesistono e divergono | la card vieta di confonderli: questo misura se la distinzione è osservabile o solo teorica |
-| `57FA28` è connesso e senza telemetria | è il caso riproducibile che la card indica per nome: se fosse `disconnected`, il primo AC non avrebbe soggetto dal vivo |
+| Quale dei due AC esemplifica `57FA28` | è il caso che la card indica per nome, e la card lo dà per connesso e muto: dal vivo è `disconnected`, quindi illustra il secondo AC. Riporta quale, non lo pretende |
+| Il primo AC ha un soggetto sul dominio | «connesso e muto resta disponibile» si osserva solo se un device in quello stato esiste. Se non esiste è uno `skip`, non un FAIL: il caso è provocato a comando dalla suite mockata |
 | Quanti device guadagnano o perdono entità disponibili | l'effetto della card sul dominio vero, in device |
-| L'età di `connection_status_updated_at` sui device connessi | se fosse sistematicamente oltre le 6 h, la rete di sicurezza sarebbe rumore — ed è metà del residuo di D-17 (b) |
+| Cosa misura `connection_status_updated_at` | il confronto fra l'età della telemetria e quella dello stato su uno stesso device connesso: è ciò che ha risposto a D-17 (e), e ciò che se ne accorgerebbe se il campo cambiasse semantica |
 | Un solo timestamp per blocco di telemetria | il giorno che D-15 venisse implementata, il ripiego documentato per il radon andrebbe riletto |
 
 ### Cosa non verifica, e perché
@@ -173,48 +206,84 @@ valori l'API serva **davvero**, e con che età.
 - **Il 429.** Come per M-05: saturare una quota condivisa con l'app mobile
   per vedere un errore degraderebbe dev per chiunque altro.
 
-### Esito: non eseguita, l'autenticazione su dev non passa più
+### Esito: 8 PASS, 0 FAIL, 1 skip
 
-Tentata il **2026-09-11**. Non è arrivata a fare una sola chiamata di
-dominio, e **il problema non è di questa card**: lo stesso script di M-05,
-verde il 2026-09-10 con gli stessi parametri, oggi fallisce identicamente.
+Eseguita il **2026-09-11** sul dominio `875fe89b` di dev, 2 device:
 
-| Pool usato | Esito |
-|---|---|
-| `eu-west-1_5SsvW9t6S` (dev, l'override di M-04/M-05) | `NotAuthorizedException: Incorrect username or password` |
-| `eu-west-1_zD4CSIZ6i` (**prod**, il default di `const.py`) | handshake SRP **riuscito**, poi 401 su `/data/devices` |
-
-**La causa, isolata sondando lo stesso utente sui due pool:** le
-credenziali in `.env` sono quelle di un'utenza **prod**, non dev. I due
-pool hanno utenze separate — `eu-west-1_zD4CSIZ6i` è il pool della
-versione rilasciata (prod), `eu-west-1_5SsvW9t6S` è dev — e l'account in
-`.env` esiste sul primo e non sul secondo. La seconda riga della tabella è
-il residuo già noto e documentato in `docs/M-04-verifica-dev.md` («Un
-residuo che blocca il collaudo end-to-end»): un token prod contro l'API di
-dev prende 401, perché dev accetta solo `pool_dev`
-(`accepted_pool` in `tests/fixtures/dev/_manifest.json`).
-
-I due errori si assomigliano e portano a conclusioni opposte —
-credenziali sbagliate contro pool sbagliato — quindi
-`verify_m06_live.py::auth_hint` ora li distingue e stampa quale dei due è,
-invece di riportare l'eccezione e basta.
-
-**Cosa resta da fare**, con credenziali valide per il pool dev:
-
-```bash
-python3 scripts/verify_m06_live.py \
-    --pool-id eu-west-1_5SsvW9t6S \
-    --client-id 2i63gbc9sim3b8paasaga7jb6g \
-    --domain-prefix 875fe89b
+```
+[  ok  ] Ogni connection_status servito da dev e' nell'enumerazione del client
+         2 device - connected: 1, disconnected: 1
+[  ok  ] connection_status e' presente nel payload
+[  ok  ] status e connection_status sono entrambi presenti su ogni device
+[  ok  ] I due campi divergono davvero (status active, non connesso)
+         1 device su 2: 57FA28
+[  ok  ] Il caso riproducibile della card (57FA28) esemplifica AC2
+[ skip ] AC1 dal vivo: un device connesso e muto mantiene le entita' disponibili
+[  ok  ] Effetto della card sul dominio, in device
+[  ok  ] Cosa misura connection_status_updated_at (D-17 (e))
+         3D90E0: telemetria 0:00:58 fa, connection_status 1 day, 23:55:00 fa
+[  ok  ] Un solo timestamp per blocco di telemetria (D-15 ancora aperta)
 ```
 
-Serve un'utenza valida sul **pool dev**: quella con cui hanno chiuso
-M-03, M-04 e M-05, non l'utenza prod attualmente in `.env`.
+Tre cose che questa passata ha stabilito e che la card non sapeva:
 
-Il controllo che pesa di più è il primo della tabella qui sopra: finché
-non è passato, l'enumerazione `connected` / `disconnected` resta quella
-osservata da M-01 il 2026-09-09 e non riconfermata oggi. Il codice non si
-rompe su un valore nuovo — è il motivo per cui esiste il terzo stato — ma
-un terzo valore comparso nel frattempo lascerebbe disponibili le entità di
-device che potrebbero essere offline, e lo sapremmo solo dal WARNING nel
-log di un utente.
+**1. `connection_status_updated_at` è l'ultimo cambio di stato.** La
+risposta a T-08 D-17 (e), con l'evidenza riportata nella decisione 2 qui
+sopra. È il motivo per cui la rete di sicurezza a 6 ore è stata rimossa
+dentro questa card invece di essere consegnata.
+
+**2. L'enumerazione tiene.** `connected` e `disconnected`, nessun terzo
+valore, `connection_status` presente su tutti i device: il controllo che
+pesava di più è passato. L'enumerazione completa resta comunque la
+richiesta aperta T-08 D-17 — due device non sono un censimento.
+
+**3. Il primo AC non ha soggetto su questo dominio.** La nota in coda alla
+card indica `57FA28` come «un sense con `telemetry: null`» e lo presenta
+come soggetto del primo AC. Dal vivo quel device è `disconnected` da 64
+giorni, quindi esemplifica il **secondo**: con M-06 le sue 10 entità
+restano `unavailable` — per la ragione giusta (è disconnesso) invece che
+per quella sbagliata (non ha letture). Su `875fe89b` non c'è nessun device
+connesso e muto, quindi «connesso e muto resta disponibile» non è
+osservabile dal vivo adesso. Non è un fallimento del criterio: è un caso
+che la suite mockata provoca a comando e che lo script ora segna `skip`
+invece di FAIL, perché un FAIL lì direbbe soltanto che il mondo si è
+mosso. **La nota di M-04 in coda alla card è superata dai dati.**
+
+### Il pool giusto, perché il primo tentativo era fallito
+
+Il tentativo del mattino del 2026-09-11 non era arrivato a fare una sola
+chiamata di dominio, e la causa non era di questa card: in `.env` c'erano
+le credenziali di un'utenza **prod**. I due pool hanno utenze separate —
+`eu-west-1_zD4CSIZ6i` è prod (il default di `const.py`),
+`eu-west-1_5SsvW9t6S` è dev — e i due fallimenti si assomigliano nel log
+portando a conclusioni opposte:
+
+| Pool usato | Esito con un'utenza prod |
+|---|---|
+| `eu-west-1_5SsvW9t6S` (dev) | `NotAuthorizedException: Incorrect username or password` |
+| `eu-west-1_zD4CSIZ6i` (prod) | handshake SRP riuscito, poi 401 su `/data/devices` |
+
+La seconda riga è il residuo già documentato in
+`docs/M-04-verifica-dev.md` («Un residuo che blocca il collaudo
+end-to-end»): un token prod contro l'API di dev prende 401, perché dev
+accetta solo `pool_dev` (`accepted_pool` in
+`tests/fixtures/dev/_manifest.json`). Per questo
+`verify_m06_live.py::auth_hint` ora stampa quale dei due fallimenti è,
+invece di riportare l'eccezione e basta. La passata verde qui sopra è
+stata fatta con un'utenza valida sul pool dev.
+
+## Cosa resta da guardare a mano
+
+Due cose che nessuno script può fare, entrambe con `./scripts/develop` e
+allineando temporaneamente i pool di `const.py` a quelli dev
+(`eu-west-1_5SsvW9t6S` / `2i63gbc9sim3b8paasaga7jb6g`), **senza
+committare**:
+
+1. **Un device connesso e muto mostra l'ultimo valore noto**, non
+   `unavailable`. Serve un soggetto, e su `875fe89b` non c'è: `57FA28` è
+   disconnesso. Il controllo «AC1 dal vivo» della passata dice se ne
+   esiste uno.
+2. **Il riavvio.** Fermare Home Assistant, riavviarlo, e verificare che le
+   entità di un device connesso e muto tornino con il loro ultimo valore e
+   con `last_measured_at` vecchio — non con un timestamp fresco, che è
+   proprio la bugia che l'attributo esiste per impedire.

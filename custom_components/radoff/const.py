@@ -2,7 +2,6 @@
 
 import json
 import logging
-from datetime import timedelta
 from pathlib import Path
 
 _LOGGER = logging.getLogger(__name__)
@@ -138,33 +137,6 @@ ISSUE_MISSING_DOMAIN_ID = "missing_domain_id"
 # knows how to discover and choose one) belongs to the config-flow card of
 # this migration - decided with Piero.
 ERROR_DOMAIN_ACCESS_DENIED = "domain_access_denied"
-
-# Age above which `connection_status_updated_at` stops being evidence about
-# the present (card M-06). Six hours, and the number is not ours: it is the
-# window `GET /data/devices` itself looks at, as the backend described it in
-# T-02 D-16 - the list does not widen that window when a device misses, so a
-# device silent for longer answers `telemetry: null` while still being
-# connected.
-#
-# This constant replaces the staleness multiplier S-07 introduced, and the
-# replacement is the point of the card rather than a rename. That multiplier
-# was 3x the poll interval: a threshold derived from how often *we* ask,
-# which is unrelated to how often the *device* speaks or the *backend*
-# updates its connection state. Two installations polling at 60s and at
-# 3600s inherited freshness thresholds of 3 and 180 minutes for identical
-# hardware, and neither number came from anywhere.
-#
-# What it is used for is narrow on purpose: a device whose
-# `connection_status` still says `connected` while its
-# `connection_status_updated_at` is older than this window is reported once
-# in the log (`RadoffCoordinator._check_connection_status_freshness`) and
-# flagged in the entity attributes. It does NOT make entities unavailable -
-# decided with Piero. The cadence at which the backend refreshes that field
-# is exactly what T-08 D-17 (b) still has open, so treating a stale
-# timestamp as "offline" would put a second invented threshold where the
-# first one has just been removed. When D-17 answers, this is the constant
-# that gains a documented meaning and, if the answer warrants it, teeth.
-CONNECTION_STATUS_STALE_WINDOW = timedelta(hours=6)
 
 # Fraction of `update_interval` used as the overall wall-clock budget for one
 # coordinator update cycle (card S-13). The pattern this guards against is

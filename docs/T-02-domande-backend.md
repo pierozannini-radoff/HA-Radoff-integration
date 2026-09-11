@@ -764,11 +764,31 @@ disponibilità delle entità è decisa da questo campo e da nient'altro. Il codi
 un valore nuovo — `api/models.py::ConnectionState` legge il campo in tre stati e tratta
 l'inatteso come "non determinabile", cioè entità disponibili più un WARNING una volta per valore
 — ma è una rete, non una risposta: finché (a) non arriva, un valore fuori enumerazione lascia
-disponibili entità di un device che potrebbe essere offline. Il punto (b) è quello che ci
-manca di più: senza la cadenza di aggiornamento non sappiamo dire se un `connected` fermo da
-sei ore sia un device online e silenzioso o un campo che ha smesso di essere scritto. Nel
-frattempo M-06 usa la finestra dichiarata in D-16 (6 h) come riferimento per un WARNING, mai
-come soglia di disponibilità.
+disponibili entità di un device che potrebbe essere offline.
+
+**[agg. 2026-09-11] (e) ce la siamo risposta da soli, misurandola su dev.**
+`connection_status_updated_at` è il momento dell'**ultimo cambio di stato**, non dell'ultimo
+controllo. L'evidenza è il confronto fra due età sullo stesso device connesso, sul dominio
+`875fe89b`:
+
+| device | telemetria | `connection_status_updated_at` | `connection_status` |
+|---|---|---|---|
+| `3D90E0` (nowplus) | 58 secondi fa | ~2 giorni fa | `connected` |
+| `57FA28` (sense) | mai | 64 giorni fa | `disconnected` |
+
+Un device che trasmette adesso e porta quel campo a due giorni prima non lascia altra lettura:
+l'età di quel timestamp è **quanto dura lo stato corrente**. Confermate o smentite pure, ma
+per noi (e) è chiusa — e il controllo che l'ha misurata è ora permanente in
+`scripts/verify_m06_live.py`, così se la semantica cambiasse ce ne accorgeremmo.
+
+**Conseguenza pratica, e perché (b) resta il punto che ci manca di più.** Con quella semantica
+non esiste nessuna età di `connection_status_updated_at` che distingua un device connesso e
+stabile da un campo che ha smesso di essere scritto: un `connected` fermo da sei ore è
+esattamente ciò che ci si aspetta da un device online da sei ore. M-06 aveva scritto una rete
+di sicurezza su quella finestra (un WARNING oltre le 6 h dichiarate in D-16, mai una soglia di
+disponibilità) e **l'ha rimossa prima di chiudere**: sarebbe scattata su ogni device sano.
+Quindi oggi il caso «il campo si è congelato» non è rilevabile dal client in nessun modo.
+Serve (b): chi scrive quel campo, e con quale cadenza.
 
 **Serve.** (a) L'**enumerazione completa** di `connection_status` (`connected` e cos'altro:
 `disconnected`, `unknown`, `never_connected`?). (b) **Chi lo aggiorna, con quale cadenza, e dopo
@@ -776,8 +796,10 @@ quanto silenzio del device passa a non-connesso** — con la cadenza di 1 msg/mi
 soglia è probabilmente di pochi minuti, ma è un numero che deve venire da voi. (c) L'enumerazione
 di `status` e la sua relazione con `connection_status`: `status` è amministrativo
 (attivo/dismesso) e `connection_status` operativo? (d) Un device `connected` con
-`telemetry: null` è possibile, e come lo interpretiamo? (e) `connection_status_updated_at` è il
-momento dell'ultimo cambio di stato o dell'ultimo controllo?
+`telemetry: null` è possibile, e come lo interpretiamo? ~~(e) `connection_status_updated_at` è il
+momento dell'ultimo cambio di stato o dell'ultimo controllo?~~ → **risposta nostra, 2026-09-11:
+ultimo cambio di stato** (vedi l'aggiornamento qui sopra); resta da confermare solo se è quello
+che intendevate.
 
 **Risposta backend:**
 > _(da compilare)_

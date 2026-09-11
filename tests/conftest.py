@@ -80,12 +80,12 @@ def load_devices_fixture(name: str) -> dict[str, Any]:
     - `telemetry.timestamp`, which is published as the `last_measured_at`
       attribute of every entity of that device (card M-06; until that card
       it also fed the freshness check `RadoffEntity.available` used to run).
-    - `connection_status_updated_at`, which card M-06 compares against
-      `CONNECTION_STATUS_STALE_WINDOW` (6 hours): left as written, every
-      fixture device would be permanently past that window and every test
-      would carry the `connection_status_stale` attribute and its WARNING
-      as background noise. A test that wants a frozen connection status
-      sets the timestamp itself.
+    - `connection_status_updated_at`, published as an attribute by the same
+      card. Neither one is compared against a threshold any more - M-06
+      removed the last of those - so what the rewrite buys is a fixture
+      that describes a device alive *now* rather than one whose two
+      timestamps recede by a day for every day the suite is not touched.
+      A test that wants a specific age sets the timestamp itself.
 
     Card M-03 renamed this from `load_device_fixture` along with what it
     loads: a `GET /data/devices` page holding every device with its

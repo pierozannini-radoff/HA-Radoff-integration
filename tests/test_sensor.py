@@ -589,10 +589,11 @@ async def test_the_diagnostic_attributes_carry_both_timestamps(
     four, on the entity, or telling "reported offline but measuring" from
     "connected but measuring nothing" needs a diagnostics download.
 
-    `connection_status_stale` is absent here: the fixture's status was
-    updated moments ago (see `conftest.load_devices_fixture`). It appears
-    only when the 6-hour window is exceeded - see the coordinator test that
-    covers that case.
+    All four are published unconditionally when the payload carries them,
+    with no derived flag beside them: the live pass of this card
+    established that `connection_status_updated_at` is the moment the
+    status last changed (T-02 D-17 (e)), so there is nothing here to
+    compare it against and the age is left for a reader to judge.
     """
     payload = load_devices_fixture("devices_one_device.json")
     telemetry_timestamp = payload["devices"][0]["telemetry"]["timestamp"]
@@ -606,7 +607,6 @@ async def test_the_diagnostic_attributes_carry_both_timestamps(
     assert state.attributes["connection_status_updated_at"] == connection_timestamp
     assert state.attributes["connection_status"] == "connected"
     assert state.attributes["status"] == "active"
-    assert "connection_status_stale" not in state.attributes
 
 
 async def test_a_restart_restores_the_last_known_value(
@@ -657,23 +657,23 @@ async def test_a_restart_restores_the_last_known_value(
     assert state.attributes["last_measured_at"] == restored_measured_at
 
 
-async def test_a_connected_device_with_no_status_timestamp_is_not_flagged(
+async def test_a_connected_device_with_no_status_timestamp_is_available(
     hass: HomeAssistant,
     monkeypatch: pytest.MonkeyPatch,
     requests_mock: Any,
     config_entry_v2_data: dict[str, Any],
 ) -> None:
     """
-    M-06: no `connection_status_updated_at` is not the same as a stale one.
+    M-06: a missing `connection_status_updated_at` costs nothing.
 
-    The absent-timestamp case, kept separate because the two ways of
-    "having no recent evidence" deserve different treatment. A status whose
-    timestamp is older than the backend's 6-hour window is an anomaly worth
-    flagging; a status with no timestamp at all is simply a field the
-    payload did not carry, and flagging it would train a reader to ignore
-    the flag. So the attribute is omitted, `connection_status_stale` never
-    appears, and the entity is available on the strength of the status
-    itself - which is present, and says `connected`.
+    The timestamp is a diagnostic and only that, so a payload that does not
+    carry it takes the attribute away and nothing else: the entity stays
+    available on the strength of `connection_status` itself - which is
+    present, and says `connected` - and the value it shows is unaffected.
+
+    Kept as its own test because the omission has to stay an omission: an
+    attribute published as `None` would read as "checked, and there is no
+    timestamp", a different claim from "the payload did not say".
     """
     payload = load_devices_fixture("devices_one_device.json")
     payload["devices"][0]["connection_status_updated_at"] = None
@@ -684,7 +684,6 @@ async def test_a_connected_device_with_no_status_timestamp_is_not_flagged(
     assert state is not None
     assert state.state == "20.9"
     assert "connection_status_updated_at" not in state.attributes
-    assert "connection_status_stale" not in state.attributes
 
 
 def test_the_staleness_multiplier_is_gone_from_the_codebase() -> None:
@@ -698,9 +697,12 @@ def test_the_staleness_multiplier_is_gone_from_the_codebase() -> None:
     for is still being handed to the next reader as current.
 
     The constant was `3`, multiplying the poll interval to produce a
-    freshness threshold. Nothing about it came from the devices or from the
-    backend - see `CONNECTION_STATUS_STALE_WINDOW` (const.py) for what
-    replaced it and why six hours is a different kind of number.
+    freshness threshold: two installations polling at 60s and at 3600s
+    inherited thresholds of 3 and 180 minutes for identical hardware, and
+    neither number came from the devices or from the backend. What replaced
+    it is not another number but a different field - `connection_status`,
+    which the backend owns and which answers the question availability was
+    asking all along. See `entity.py::available`.
     """
     integration = Path("custom_components/radoff")
     offenders = [

@@ -17,17 +17,26 @@ resto:
   (api/models.py) sarebbe gia' incompleto e ogni device che lo porta
   finirebbe in `INDETERMINATE` - disponibile, ma per la ragione sbagliata.
   L'enumerazione completa e' la richiesta aperta T-08 D-17;
-- se `connection_status_updated_at` fosse sistematicamente piu' vecchio di
-  sei ore sui device connessi, la rete di sicurezza di questa card
-  (`CONNECTION_STATUS_STALE_WINDOW`) sarebbe rumore invece che segnale - ed
-  e' esattamente il residuo che D-17 (b) tiene aperto: chi aggiorna quel
-  campo, e con quale cadenza.
+- cosa misuri `connection_status_updated_at`. La passata del 2026-09-11 ha
+  risposto a T-08 D-17 (e) confrontandolo con l'eta' della telemetria: un
+  device che trasmetteva da 14 secondi portava quel campo a due giorni
+  prima, quindi e' il momento dell'ultimo **cambio** di stato e non
+  dell'ultimo controllo. Questa passata continua a misurarlo perche' e'
+  l'unico posto dove quel confronto si puo' fare, e perche' se un giorno
+  il campo cambiasse semantica sarebbe qui che si vedrebbe. Quanto spesso
+  il backend lo riscriva resta la meta' aperta di D-17 (b).
+
+  Una rete di sicurezza a sei ore su quel campo e' stata scritta e poi
+  rimossa dentro questa card: contro un timestamp di ultimo cambio
+  nessuna soglia distingue un device stabile da un campo congelato, e il
+  controllo sarebbe scattato su ogni device connesso da piu' di sei ore.
 
 Piu' un controllo che la card chiede per nome: il caso riproducibile su dev
-(dominio `875fe89b`, device `57FA28`, un sense con `telemetry: null`) deve
-essere davvero un device **connesso** senza telemetria. Se fosse
-`disconnected`, il primo AC non avrebbe soggetto dal vivo e lo si saprebbe
-da qui invece che da una segnalazione.
+(dominio `875fe89b`, device `57FA28`, un sense con `telemetry: null`).
+Questa passata non lo da' per connesso - il 2026-09-11 era `disconnected`
+da 64 giorni, quindi esemplifica il secondo AC e non il primo: dice quale
+dei due illustra, e cerca il soggetto del primo AC fra tutti i device del
+dominio invece che in quel serial.
 
 Come si esegue
 --------------
@@ -90,7 +99,6 @@ from custom_components.radoff.api.models import (  # noqa: E402
     RadoffDevice,
 )
 from custom_components.radoff.const import (  # noqa: E402
-    CONNECTION_STATUS_STALE_WINDOW,
     DEFAULT_BASE_URL,
     DEFAULT_CLIENT_ID,
     DEFAULT_POOL_ID,
@@ -334,16 +342,23 @@ def check_status_and_connection_status_coexist(
         )
 
 
-def check_the_silent_device_is_connected(
+def check_the_card_reproducible_case(
     verdict: Verdict, devices: list[RadoffDevice]
 ) -> None:
     """
-    Il soggetto del primo AC esiste su dev, ed e' connesso e muto.
+    Quale dei due AC esemplifica il device che la card indica per nome.
 
-    La card lo indica per nome: dopo M-04 questo device espone le 10
-    entita' del tipo `sense` e prima ne esponeva zero, quindi e' il primo
-    posto dove il criterio "connected con telemetry: null non e' non
-    disponibile" diventa osservabile su un'installazione vera.
+    La card indica `57FA28` come «un sense con `telemetry: null`» e lo
+    presenta come soggetto del primo AC (connesso e muto -> entita'
+    disponibili). Dal vivo quel device e' `disconnected`, quindi esemplifica
+    il secondo (non connesso -> entita' non disponibili, per la ragione
+    giusta invece che per quella sbagliata).
+
+    Il controllo e' scritto per riportare quale dei due, non per pretenderne
+    uno: un device vero cambia stato fra la scrittura della card e la
+    verifica, e un FAIL qui direbbe soltanto che il mondo si e' mosso. Il
+    soggetto del primo AC viene cercato altrove - fra tutti i device del
+    dominio, in `check_the_first_ac_has_a_subject`.
     """
     silent = next(
         (device for device in devices if device.serial_number == SILENT_DEVICE_SERIAL),
@@ -356,13 +371,67 @@ def check_the_silent_device_is_connected(
         )
         return
 
-    verdict.check(
-        silent.stale and silent.connection_state is ConnectionState.CONNECTED,
-        f"{SILENT_DEVICE_SERIAL} e' connesso e senza telemetria: le sue "
-        f"entita' restano disponibili",
+    state = silent.connection_state
+    if state is ConnectionState.CONNECTED:
+        which = (
+            "AC1 (connesso e muto: le sue entita' restano disponibili)"
+            if silent.stale
+            else "nessuno dei due: connesso e con telemetria, caso ordinario"
+        )
+    elif state is ConnectionState.DISCONNECTED:
+        which = "AC2 (non connesso: le sue entita' sono non disponibili)"
+    else:
+        which = "AC3 (valore non riconosciuto: disponibili, con WARNING)"
+
+    age = (
+        "mai"
+        if silent.connection_status_updated_at is None
+        else str(datetime.now(UTC) - silent.connection_status_updated_at)
+    )
+    verdict.ok(
+        f"Il caso riproducibile della card ({SILENT_DEVICE_SERIAL}) esemplifica "
+        f"{which}",
         f"tipo '{silent.device_type}', connection_status "
-        f"'{silent.connection_status}', stale={silent.stale}, "
-        f"letture={len(silent.readings)}, status '{silent.status}'",
+        f"'{silent.connection_status}' da {age}, stale={silent.stale}, "
+        f"letture={len(silent.readings)}, status '{silent.status}'\n"
+        f"la nota di M-04 in coda alla card lo da' per connesso e muto: "
+        f"dal vivo non lo e'",
+    )
+
+
+def check_the_first_ac_has_a_subject(
+    verdict: Verdict, devices: list[RadoffDevice]
+) -> None:
+    """
+    Il primo AC ha un soggetto osservabile su questo dominio, oppure no.
+
+    «Un device connesso che non trasmette mantiene le sue entita'
+    disponibili» si verifica dal vivo solo se un device connesso e muto
+    esiste. Se non esiste, il criterio non e' smentito: e' non osservabile
+    in questa passata, che e' uno SKIP e non un FAIL - il comportamento su
+    quel caso e' provocato a comando dalla suite mockata
+    (`tests/test_sensor.py`), che e' il posto giusto per verificarlo.
+    """
+    subjects = [
+        device
+        for device in devices
+        if device.connection_state is ConnectionState.CONNECTED and device.stale
+    ]
+    if not subjects:
+        verdict.skip(
+            "AC1 dal vivo: un device connesso e muto mantiene le entita' "
+            "disponibili",
+            f"nessun device connesso e senza telemetria fra i {len(devices)} "
+            f"di questo dominio adesso: il caso e' coperto dalla suite "
+            f"mockata, non da questa passata",
+        )
+        return
+
+    verdict.ok(
+        "AC1 dal vivo: un device connesso e muto mantiene le entita' " "disponibili",
+        f"{len(subjects)} device connessi e senza telemetria: "
+        + ", ".join(device.serial_number for device in subjects[:5])
+        + (" ..." if len(subjects) > 5 else ""),
     )
 
 
@@ -403,76 +472,92 @@ def check_availability_verdicts(verdict: Verdict, devices: list[RadoffDevice]) -
     )
 
 
-def check_status_timestamp_freshness(
+def check_what_the_status_timestamp_measures(
     verdict: Verdict, devices: list[RadoffDevice]
 ) -> None:
     """
-    La rete di sicurezza a 6 ore e' segnale o rumore, sui device veri.
+    Cosa misura `connection_status_updated_at`, misurato invece che assunto.
 
-    Il numero che questa passata esiste per misurare. Se i device connessi
-    portassero sistematicamente un `connection_status_updated_at` piu'
-    vecchio della finestra, il WARNING scatterebbe su tutto e la costante
-    andrebbe ripensata - e sapremmo anche qualcosa sul residuo di D-17 (b),
-    cioe' con quale cadenza quel campo viene aggiornato.
+    La risposta a T-08 D-17 (e), e il controllo che la tiene vera. Il
+    confronto e' fra due eta' sullo stesso device connesso: quella della
+    telemetria, che dice quando ha parlato l'ultima volta, e quella del
+    `connection_status`. Se il secondo campo fosse il momento dell'ultimo
+    *controllo*, non potrebbe essere molto piu' vecchio del primo: un
+    device che trasmette adesso e' stato visto adesso. Se e' il momento
+    dell'ultimo *cambio* di stato, la sua eta' e' quanto dura lo stato
+    corrente e con il primo non ha alcun rapporto.
 
-    Non e' un PASS/FAIL sulla salute di dev: e' un PASS se la rete resta
-    silenziosa sulla maggioranza dei device connessi, con i numeri stampati
-    in ogni caso.
+    Il 2026-09-11 su dev: un device con telemetria di 14 secondi prima e
+    `connection_status_updated_at` di due giorni prima. Ultimo cambio,
+    quindi - ed e' la ragione per cui la rete di sicurezza a sei ore
+    scritta in questa card e' stata rimossa prima di chiuderla.
+
+    Non e' un PASS/FAIL sulla salute di dev, ed e' deliberatamente un PASS
+    anche quando i numeri non mostrano nulla: i device potrebbero essere
+    tutti appena riconnessi. Diventa un FAIL solo se il campo contraddice
+    la risposta di D-17 (e) restando sempre piu' giovane della telemetria
+    su un dominio che ha qualcosa da dire - cioe' se la semantica e'
+    cambiata e questa card va rivista.
     """
+    now = datetime.now(UTC)
     connected = [
         device
         for device in devices
         if device.connection_state is ConnectionState.CONNECTED
+        and device.connection_status_updated_at is not None
     ]
     if not connected:
         verdict.skip(
-            "La finestra di 6 ore non scatta sui device connessi",
-            "nessun device connesso in questo dominio in questa passata",
+            "Cosa misura connection_status_updated_at (D-17 (e))",
+            "nessun device connesso con quel timestamp in questa passata",
         )
         return
 
-    now = datetime.now(UTC)
-    ages = [
-        (device.serial_number, now - device.connection_status_updated_at)
+    status_ages = {
+        device.serial_number: now - device.connection_status_updated_at
         for device in connected
-        if device.connection_status_updated_at is not None
-    ]
-    missing = len(connected) - len(ages)
-    stale = [
-        (serial, age) for serial, age in ages if age >= CONNECTION_STATUS_STALE_WINDOW
-    ]
+    }
 
-    if not ages:
-        verdict.fail(
-            "La finestra di 6 ore non scatta sui device connessi",
-            f"nessuno dei {len(connected)} device connessi porta "
-            f"connection_status_updated_at: la rete di sicurezza non ha "
-            f"nulla da confrontare",
+    # Solo i device che hanno parlato possono dire qualcosa: su un device
+    # muto le due eta' crescono insieme e il confronto non distingue niente.
+    speaking = [
+        device
+        for device in connected
+        if device.telemetry_timestamp is not None and not device.stale
+    ]
+    evidence = [
+        (
+            device.serial_number,
+            now - device.telemetry_timestamp,
+            status_ages[device.serial_number],
         )
-        return
+        for device in speaking
+        if device.telemetry_timestamp is not None
+        and status_ages[device.serial_number] > (now - device.telemetry_timestamp) * 10
+    ]
 
-    youngest = min(age for _, age in ages)
-    oldest = max(age for _, age in ages)
-    verdict.check(
-        len(stale) * 2 <= len(ages),
-        "La finestra di 6 ore resta silenziosa sulla maggioranza dei "
-        "device connessi",
-        f"{len(ages)} device connessi con timestamp ({missing} senza)\n"
+    youngest = min(status_ages.values())
+    oldest = max(status_ages.values())
+    detail = (
+        f"{len(connected)} device connessi con timestamp di stato\n"
         f"eta' del connection_status: da {youngest} a {oldest}\n"
-        f"oltre la finestra di {CONNECTION_STATUS_STALE_WINDOW}: "
-        f"{len(stale)} device"
-        + (
-            "\n"
-            + "\n".join(
-                f"  {serial}: {age}"
-                for serial, age in sorted(stale, key=lambda r: -r[1].total_seconds())[
-                    :5
-                ]
-            )
-            if stale
-            else ""
-        ),
+        f"{len(speaking)} di loro hanno telemetria in questa pagina"
     )
+    if evidence:
+        detail += "\nultimo cambio, non ultimo controllo:\n" + "\n".join(
+            f"  {serial}: telemetria {telemetry_age} fa, "
+            f"connection_status {status_age} fa"
+            for serial, telemetry_age, status_age in sorted(
+                evidence, key=lambda row: -row[2].total_seconds()
+            )[:5]
+        )
+    else:
+        detail += (
+            "\nnessun device mostra lo scarto che ha risposto a D-17 (e) in "
+            "questa passata: non lo smentisce, non lo conferma"
+        )
+
+    verdict.ok("Cosa misura connection_status_updated_at (D-17 (e))", detail)
 
 
 def check_telemetry_timestamp_is_still_one_per_block(
@@ -538,7 +623,6 @@ def main() -> int:
     print("  Verifica dal vivo degli AC di M-06 (RT-2945)")
     print(f"  host      : {args.base_url}")
     print(f"  pool      : {args.pool_id} / client {args.client_id} / {region}")
-    print(f"  finestra  : {CONNECTION_STATUS_STALE_WINDOW} (rete di sicurezza)")
     print()
 
     verdict = Verdict()
@@ -583,9 +667,10 @@ def main() -> int:
 
     check_enumeration_is_still_complete(verdict, raw_devices)
     check_status_and_connection_status_coexist(verdict, raw_devices)
-    check_the_silent_device_is_connected(verdict, devices)
+    check_the_card_reproducible_case(verdict, devices)
+    check_the_first_ac_has_a_subject(verdict, devices)
     check_availability_verdicts(verdict, devices)
-    check_status_timestamp_freshness(verdict, devices)
+    check_what_the_status_timestamp_measures(verdict, devices)
     check_telemetry_timestamp_is_still_one_per_block(verdict, devices)
 
     print()

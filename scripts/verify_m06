@@ -110,8 +110,9 @@ step "test_sensor.py e test_init.py interi" python3 -m pytest -q --no-cov \
 step "Tipi: nessun errore nuovo (baseline ${MYPY_BASELINE})" check_types
 
 # 6. La passata dal vivo su dev. E' l'unica che tocca la rete e l'unica che
-#    puo' dire quali valori di connection_status l'API serva davvero e
-#    quanto sia vecchio connection_status_updated_at sui device connessi.
+#    puo' dire quali valori di connection_status l'API serva davvero e cosa
+#    misuri connection_status_updated_at (T-02 D-17 (e): l'ultimo cambio di
+#    stato, non l'ultimo controllo - risposto da questa passata).
 if [[ "${OFFLINE}" -eq 1 ]]; then
     echo
     echo "═══ Verifica dal vivo su dev"
@@ -140,13 +141,17 @@ cat <<'NOTE'
   con ./scripts/develop:
 
     1. Un device connesso e muto mostra l'ultimo valore noto e non
-       "non disponibile". Su dev il caso e' il sense 57FA28 del dominio
-       875fe89b: dopo M-04 ha 10 entita'; con questa card devono essere
-       disponibili, non unavailable.
+       "non disponibile". Serve un soggetto: la nota della card indica il
+       sense 57FA28 del dominio 875fe89b, ma dal vivo quel device e'
+       disconnected (dal 2026-07-08), quindi illustra il secondo AC e le
+       sue 10 entita' sono unavailable per progetto. Il controllo
+       "AC1 dal vivo" della passata su dev dice se un soggetto esiste:
+       se e' skip, il caso si guarda solo sulla suite mockata.
     2. Il riavvio. Fermare Home Assistant, riavviarlo, e verificare che
-       quelle entita' tornino con il loro ultimo valore e con
-       last_measured_at vecchio - non con un timestamp fresco, che e'
-       proprio la bugia che l'attributo esiste per impedire.
+       le entita' di un device connesso e muto tornino con il loro ultimo
+       valore e con last_measured_at vecchio - non con un timestamp
+       fresco, che e' proprio la bugia che l'attributo esiste per
+       impedire.
 
 NOTE
 

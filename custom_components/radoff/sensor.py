@@ -431,8 +431,7 @@ class RadoffSensor(RadoffEntity, RestoreSensor):
 
         The base class contributes the four diagnostic fields of card M-06
         (`last_measured_at`, `connection_status`,
-        `connection_status_updated_at`, `status`, plus
-        `connection_status_stale` when it applies); these two are the
+        `connection_status_updated_at`, `status`); these two are the
         sensor-specific half.
 
         `measure_label`/`measure_acronym` are what `/analytics/measures-

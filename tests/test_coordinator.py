@@ -22,7 +22,6 @@ coordinator asks for, not Home Assistant's ability to honour a timer.
 
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import pytest
@@ -659,75 +658,3 @@ async def test_a_429_on_the_very_first_poll_retries_the_setup(
     await hass.async_block_till_done()
 
     assert entry.state is ConfigEntryState.SETUP_RETRY
-
-
-async def test_a_frozen_connection_status_is_flagged_not_hidden(
-    hass: HomeAssistant,
-    monkeypatch: pytest.MonkeyPatch,
-    requests_mock: Any,
-    config_entry_v2_data: dict[str, Any],
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    """
-    M-06: a `connected` older than the backend's own window warns, once.
-
-    The safety net that replaces the staleness multiplier, and the reason
-    it is only a net. Availability now rests on a single field this client
-    does not own, so the case where that field stops being updated - the
-    DynamoDB sync behind it stalls, a device leaves the sync but not the
-    list - has to be visible. `CONNECTION_STATUS_STALE_WINDOW` is six
-    hours because that is the window `GET /data/devices` itself looks at
-    (T-02 D-16), not a multiple of anything we chose.
-
-    What it deliberately does not do is decide - decided with Piero. The
-    entities stay available and the state keeps its value: the cadence at
-    which the backend refreshes that field is exactly what T-08 D-17 still
-    has open, so turning an old timestamp into "offline" would put a second
-    invented threshold where the first one has just been removed. The
-    warning and the attribute are the whole reaction.
-
-    Warned once per episode, and it stops when the status comes back inside
-    the window - that is the second half of this test, and the difference
-    between a signal and 288 lines a day.
-    """
-    stale_payload = load_devices_fixture("devices_one_device.json")
-    stale_payload["devices"][0]["connection_status_updated_at"] = (
-        datetime.now(UTC) - timedelta(hours=9)
-    ).isoformat()
-
-    caplog.clear()
-    register_devices(requests_mock, stale_payload)
-    await _setup_entry(hass, monkeypatch, config_entry_v2_data)
-
-    def _warnings() -> list[str]:
-        return [
-            record.getMessage()
-            for record in caplog.records
-            if record.levelname == "WARNING"
-            and "connection_status" in record.getMessage()
-        ]
-
-    assert len(_warnings()) == 1
-    assert "9.0 hours" in _warnings()[0]
-
-    state = hass.states.get("sensor.living_room_temperature")
-    assert state is not None
-    assert state.state == "20.9"
-    assert state.attributes["connection_status_stale"] is True
-
-    # A second cycle in the same condition adds nothing to the log.
-    register_devices(requests_mock, stale_payload)
-    await _repoll(hass)
-    assert len(_warnings()) == 1
-
-    # The status is refreshed: the flag clears, and so does the dedup - a
-    # later episode is reported again rather than swallowed.
-    register_devices(requests_mock, load_devices_fixture("devices_one_device.json"))
-    await _repoll(hass)
-
-    state = hass.states.get("sensor.living_room_temperature")
-    assert "connection_status_stale" not in state.attributes
-
-    register_devices(requests_mock, stale_payload)
-    await _repoll(hass)
-    assert len(_warnings()) == 2
