@@ -55,6 +55,13 @@ ignore = [
 # cio' che il README promette in pubblico.
 "verify_m05_live.py" = ["ALL"]
 
+# Verifica dal vivo degli AC di M-06 (RT-2945): stessa convenzione. Guarda
+# quali valori di connection_status l'API serva davvero e quanto sia vecchio
+# connection_status_updated_at sui device connessi - i due numeri da cui
+# dipende la disponibilita' delle entita' dopo questa card, e che una suite
+# mockata puo' solo assumere.
+"verify_m06_live.py" = ["ALL"]
+
 # Standalone verification scripts (S-06, S-07, S-08, S-09, S-10, S-11, S-12,
 # S-13): run by hand with `python3 verify_sXX.py`, not shipped code, and
 # deliberately monkeypatch/stub homeassistant modules and private attributes

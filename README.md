@@ -171,7 +171,9 @@ long-term statistics.
   verification (see "Supported devices" above).
 - **Per-device configuration**: the measurement schema is published per device
   *type*, not per device. An individual unit with a measurement switched off
-  in its Radoff configuration will still get that entity, permanently empty.
+  in its Radoff configuration will still get that entity, and it will show
+  `unknown` permanently - from here it is indistinguishable from a measurement
+  the device has simply not sent yet.
 - **Re-authentication timing**: if your Radoff account password changes, Home
   Assistant will prompt you to re-enter it (**Settings → Devices & Services →
   Radoff → Reconfigure**) without removing or re-adding the integration and
@@ -187,9 +189,28 @@ long-term statistics.
   been independently verified against a real account (Cognito's own default
   is 30 days). Reloading the integration or restarting Home Assistant forces
   an immediate full login instead of waiting.
-- **Availability**: entities do not yet reflect the freshness of the
-  underlying device data; a device that has stopped reporting to Radoff may
-  continue to show its last known values.
+- **Availability**: an entity is unavailable when Radoff reports its device
+  as disconnected, and at no other time. In particular, a connected device
+  that sends nothing keeps its entities available: Radoff's device list looks
+  at a six-hour window and does not widen it, so a device quieter than that
+  is reported without telemetry while still being online, and treating that
+  as a fault would report working devices as broken.
+
+  What such an entity shows is the last value it received, restored across
+  Home Assistant restarts - so history stays continuous - or `unknown` if it
+  has never received one. **The state alone does not tell you how old a value
+  is**: use the entity's `last_measured_at` attribute, which always carries
+  the timestamp of the value actually being shown. Radon is where this
+  matters most, since it is sampled more slowly than everything around it.
+
+  Two more attributes are there for support: `connection_status_updated_at`
+  (when Radoff last changed its mind about the device being connected) and
+  `status` (the administrative status, which is a different field and does
+  not affect availability). If a device claims to be connected but that claim
+  has not been refreshed within the same six-hour window, the entity gains a
+  `connection_status_stale` attribute and the log says so once - the entity
+  stays available, because how often Radoff refreshes that field is not yet
+  documented.
 
 ## Getting support
 

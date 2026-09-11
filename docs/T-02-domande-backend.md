@@ -703,6 +703,17 @@ ingest, e InfluxDB ha il tempo della singola colonna che state già pivotando.
 la staleness per campo invece di misurarla. Funziona, ma è un'euristica nostra che sbaglierà nei
 casi limite.
 
+**[agg. 2026-09-10 · M-06] Il ripiego è documentato e deliberatamente non implementato.** La card
+M-06 (RT-2945) ha valutato se stimare l'età del radon dalle cadenze note e ha deciso di no —
+deciso con Piero: sarebbe un secondo numero di nostra invenzione, nella stessa forma del
+moltiplicatore di staleness che quella card ha appena rimosso. Il limite è scritto per esteso nel
+docstring di `api/models.py::Reading.measured_at` invece che in un TODO. Cosa cambia comunque:
+l'età del blocco non decide più la disponibilità di nulla (quella viene da `connection_status`),
+quindi un `timestamp` grossolano non può più rendere un'entità non disponibile per la ragione
+sbagliata — resta che *sembra* più fresco del valore che accompagna, ed è per questo che
+l'integrazione pubblica `last_measured_at` come attributo di ogni entità. La richiesta resta
+questa.
+
 **Risposta backend:**
 > _(da compilare)_
 
@@ -747,6 +758,17 @@ dopo quanto silenzio un device diventa "non connesso"?
 D-21 ci dite di usare **`connection_status` per la disponibilità delle entità**, non l'assenza di
 telemetria: è quindi il campo su cui poggia tutta la logica di disponibilità del client, e ne
 sappiamo ancora solo il nome e un valore d'esempio.
+
+**[agg. 2026-09-10] Il client adesso ci poggia sopra davvero.** Con M-06 (RT-2945) la
+disponibilità delle entità è decisa da questo campo e da nient'altro. Il codice non si rompe su
+un valore nuovo — `api/models.py::ConnectionState` legge il campo in tre stati e tratta
+l'inatteso come "non determinabile", cioè entità disponibili più un WARNING una volta per valore
+— ma è una rete, non una risposta: finché (a) non arriva, un valore fuori enumerazione lascia
+disponibili entità di un device che potrebbe essere offline. Il punto (b) è quello che ci
+manca di più: senza la cadenza di aggiornamento non sappiamo dire se un `connected` fermo da
+sei ore sia un device online e silenzioso o un campo che ha smesso di essere scritto. Nel
+frattempo M-06 usa la finestra dichiarata in D-16 (6 h) come riferimento per un WARNING, mai
+come soglia di disponibilità.
 
 **Serve.** (a) L'**enumerazione completa** di `connection_status` (`connected` e cos'altro:
 `disconnected`, `unknown`, `never_connected`?). (b) **Chi lo aggiorna, con quale cadenza, e dopo
@@ -1346,7 +1368,7 @@ Aggiornata con le decisioni prese grazie alle risposte del 2026-09-09.
 | Modello dei dati | tre bucket, namespace piatto, entità "average" separate | un blocco `telemetry`, entità singole | ✅ deciso |
 | Filtro sui tipi | solo `Now+`, gli altri scartati **senza log** | **nessun filtro**; `type` solo come chiave di cache, WARNING sui tipi ignoti | ✅ deciso |
 | Radon | non disponibile | `radon_bqm3` + `radon_status` su `sense`/`city`/`sismoff` — **non** su `now`/`nowplus` | 🟨 enum di `radon_status` (D-10) |
-| Disponibilità | `lastDataReceivedAt` × moltiplicatore arbitrario (3×) | **`connection_status`**, non `telemetry: null` | 🟨 enum e cadenza (D-17) |
+| Disponibilità | `lastDataReceivedAt` × moltiplicatore arbitrario (3×) | **`connection_status`**, non `telemetry: null` — implementato in M-06 | 🟨 enum e cadenza (D-17) |
 | 429 | retry con backoff 0.5, 3 tentativi | salta il ciclo, backoff esponenziale + jitter da ~5 s | ✅ deciso |
 | `unique_id` delle entità | id device arch 1.x + bucket + proprietà | **`<serial_number>_<nome_campo>`**, serial usato verbatim | ✅ deciso |
 | Device di sviluppo | Now+ | Now+ **non ha l'hardware radon**: serve un `sense` o `city` su **dev** per validare il radon | ⬜ richiesta operativa |
