@@ -79,7 +79,11 @@ from typing import Any
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
-from custom_components.radoff.api import API  # noqa: E402
+from custom_components.radoff.api import (  # noqa: E402
+    API,
+    AuthExpiredError,
+    AuthInvalidError,
+)
 from custom_components.radoff.api.models import (  # noqa: E402
     KNOWN_CONNECTION_STATUSES,
     ConnectionState,
@@ -97,6 +101,55 @@ from custom_components.radoff.const import (  # noqa: E402
 # che non trasmette, che dopo M-04 espone comunque le 10 entita' del suo
 # tipo. E' il soggetto del primo AC.
 SILENT_DEVICE_SERIAL = "57FA28"
+
+# I due pool Cognito in gioco, con l'ambiente a cui appartengono. Servono
+# solo a spiegare un fallimento di autenticazione: vedi `auth_hint`.
+POOL_LABELS = {
+    "eu-west-1_5SsvW9t6S": "dev",
+    "eu-west-1_zD4CSIZ6i": "prod (il default di const.py)",
+}
+
+
+def auth_hint(err: Exception, pool_id: str) -> str:
+    """
+    Spiegare un fallimento di autenticazione invece di riportarlo e basta.
+
+    I due modi in cui questa passata puo' non partire si assomigliano nel
+    log e portano a conclusioni opposte, e distinguerli a mano e' costato
+    un'indagine il 2026-09-11:
+
+    - `AuthInvalidError` = Cognito ha rifiutato le credenziali **per quel
+      pool**. Dev e prod hanno utenze separate: un account che esiste su
+      uno non esiste necessariamente sull'altro, quindi le stesse
+      credenziali che funzionano altrove qui sono semplicemente sbagliate.
+    - `AuthExpiredError` / 401 dopo un handshake riuscito = le credenziali
+      erano buone, ma il token viene da un pool che quell'API non accetta
+      (M-01: `accepted_pool: pool_dev` in
+      `tests/fixtures/dev/_manifest.json`).
+
+    Nessuna chiamata in piu' per scoprirlo: un secondo tentativo su un
+    altro pool sarebbe un secondo login fallito a carico dell'account.
+    """
+    label = POOL_LABELS.get(pool_id, "sconosciuto")
+    if isinstance(err, AuthInvalidError):
+        return (
+            f"Cognito ha rifiutato le credenziali sul pool {pool_id} "
+            f"({label}).\n"
+            "Le utenze dei due pool sono separate: credenziali valide su un "
+            "ambiente non lo sono sull'altro.\n"
+            f"Verificare che il .env contenga l'utenza di {label}, non quella "
+            "di un altro ambiente."
+        )
+    if isinstance(err, AuthExpiredError):
+        return (
+            f"L'handshake sul pool {pool_id} ({label}) e' riuscito, ma l'API "
+            "ha risposto 401.\n"
+            "E' il token a essere del pool sbagliato per questo host: l'API "
+            "di dev accetta solo il pool dev (M-01, accepted_pool).\n"
+            "Passare --pool-id / --client-id del pool giusto per l'host in "
+            "uso (vedi l'intestazione qui sopra)."
+        )
+    return ""
 
 
 class Verdict:
@@ -521,9 +574,10 @@ def main() -> int:
         ]
         devices = api.get_devices()
     except Exception as err:  # noqa: BLE001
+        hint = auth_hint(err, args.pool_id)
         verdict.fail(
             "Gli AC di M-06 sull'API vera",
-            f"{type(err).__name__}: {err}",
+            f"{type(err).__name__}: {err}" + (f"\n{hint}" if hint else ""),
         )
         return verdict.exit_code()
 

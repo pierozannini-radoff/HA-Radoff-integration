@@ -181,13 +181,23 @@ verde il 2026-09-10 con gli stessi parametri, oggi fallisce identicamente.
 
 | Pool usato | Esito |
 |---|---|
-| `eu-west-1_5SsvW9t6S` (dev, l'override di M-04/M-05) | `AuthInvalidError` — Cognito rifiuta le credenziali |
-| `eu-west-1_zD4CSIZ6i` (il default di `const.py`) | handshake SRP ok, poi **401 su `/data/devices`** — il token è di un pool che l'API di dev non accetta |
+| `eu-west-1_5SsvW9t6S` (dev, l'override di M-04/M-05) | `NotAuthorizedException: Incorrect username or password` |
+| `eu-west-1_zD4CSIZ6i` (**prod**, il default di `const.py`) | handshake SRP **riuscito**, poi 401 su `/data/devices` |
 
-Le due righe insieme dicono una cosa sola: le credenziali in `.env` non
-sono più valide per il pool dev. La seconda riga è il residuo già noto e
-già documentato in `docs/M-04-verifica-dev.md` («Un residuo che blocca il
-collaudo end-to-end»), non una novità.
+**La causa, isolata sondando lo stesso utente sui due pool:** le
+credenziali in `.env` sono quelle di un'utenza **prod**, non dev. I due
+pool hanno utenze separate — `eu-west-1_zD4CSIZ6i` è il pool della
+versione rilasciata (prod), `eu-west-1_5SsvW9t6S` è dev — e l'account in
+`.env` esiste sul primo e non sul secondo. La seconda riga della tabella è
+il residuo già noto e documentato in `docs/M-04-verifica-dev.md` («Un
+residuo che blocca il collaudo end-to-end»): un token prod contro l'API di
+dev prende 401, perché dev accetta solo `pool_dev`
+(`accepted_pool` in `tests/fixtures/dev/_manifest.json`).
+
+I due errori si assomigliano e portano a conclusioni opposte —
+credenziali sbagliate contro pool sbagliato — quindi
+`verify_m06_live.py::auth_hint` ora li distingue e stampa quale dei due è,
+invece di riportare l'eccezione e basta.
 
 **Cosa resta da fare**, con credenziali valide per il pool dev:
 
@@ -197,6 +207,9 @@ python3 scripts/verify_m06_live.py \
     --client-id 2i63gbc9sim3b8paasaga7jb6g \
     --domain-prefix 875fe89b
 ```
+
+Serve un'utenza valida sul **pool dev**: quella con cui hanno chiuso
+M-03, M-04 e M-05, non l'utenza prod attualmente in `.env`.
 
 Il controllo che pesa di più è il primo della tabella qui sopra: finché
 non è passato, l'enumerazione `connected` / `disconnected` resta quella
