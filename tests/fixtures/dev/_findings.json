@@ -1,6 +1,6 @@
 [
   {
-    "id": "D-24",
+    "id": "cognito-pool",
     "question": "Il token del pool Cognito attuale e' accettato dall'host v2?",
     "outcome": "NON DETERMINATO: il login SRP sul pool attuale non ha prodotto un token (InvalidParameterException), quindi l'host v2 non e' mai stato interrogato",
     "evidence": {
@@ -41,7 +41,7 @@
     }
   },
   {
-    "id": "D-28",
+    "id": "srp-flow",
     "question": "L'app client Cognito permette il flusso SRP che l'integrazione usa?",
     "outcome": "SRP NON abilitato sull'app client di pool_dev. Verificato con un utente INESISTENTE, quindi la causa e' l'app client e non l'utenza: serve `ALLOW_USER_SRP_AUTH` su quel client, oppure il client id di un altro app client dello stesso pool che lo abbia gia'",
     "evidence": {
@@ -88,7 +88,7 @@
     }
   },
   {
-    "id": "D-24-surface",
+    "id": "auth-surface",
     "question": "Quali base path dell'host v2 accettano il token, e quali no?",
     "outcome": "accettano: /analytics/*, /data/*",
     "evidence": {
@@ -116,7 +116,7 @@
     }
   },
   {
-    "id": "D-03",
+    "id": "discovery",
     "question": "`GET /auth/user/me/domains` e' chiamabile con il solo bearer token, come previsto dal config flow?",
     "outcome": "chiamabile con il solo bearer token",
     "evidence": {
@@ -164,7 +164,7 @@
     }
   },
   {
-    "id": "D-30",
+    "id": "request-id-header",
     "question": "Qual e' il nome dell'header di request id nelle risposte?",
     "outcome": "x-amz-apigw-id, x-amzn-requestid, x-amzn-trace-id",
     "evidence": {
@@ -189,7 +189,7 @@
     }
   },
   {
-    "id": "D-29",
+    "id": "error-taxonomy",
     "question": "Tassonomia degli errori: status e forma del body per ogni caso.",
     "outcome": "5 casi provocati",
     "evidence": [
@@ -330,7 +330,7 @@
     ]
   },
   {
-    "id": "V1",
+    "id": "pagination-stable",
     "question": "L'ordinamento di GET /data/devices e' stabile fra pagine e fra chiamate ripetute? Esistono filtri o ordinamenti?",
     "outcome": "stabile",
     "evidence": {
@@ -355,7 +355,7 @@
     }
   },
   {
-    "id": "V2",
+    "id": "unit-enumeration",
     "question": "Enumerazione completa dei valori di `unit` (measures-ranges senza device_type).",
     "outcome": "8 unita' distinte",
     "evidence": {
@@ -388,7 +388,7 @@
     }
   },
   {
-    "id": "V3",
+    "id": "pm10-bands",
     "question": "pm10 ha davvero `excellent upperBound: 200` a runtime, o solo negli esempi?",
     "outcome": "vedi evidenza",
     "evidence": {
@@ -421,8 +421,8 @@
     }
   },
   {
-    "id": "V4",
-    "question": "Il sismoff espone pm1/pm25/pm10? (T-02 dice no, lo swagger dice si')",
+    "id": "sismoff-pm",
+    "question": "Il sismoff espone pm1/pm25/pm10? Lo swagger dice di si'.",
     "outcome": "non li espone",
     "evidence": {
       "presenza": {
@@ -434,16 +434,16 @@
     }
   },
   {
-    "id": "V5",
+    "id": "radon-status",
     "question": "Tipo reale e valori osservati di `radon_status`.",
-    "outcome": "campo NON presente nei payload di questo account (nessun sense/city: richiesta operativa T-08 7)",
+    "outcome": "campo NON presente nei payload di questo account (nessun sense o city fra i device raggiungibili)",
     "evidence": {
       "valori": {},
       "tipi_python": {}
     }
   },
   {
-    "id": "V6",
+    "id": "domain-label",
     "question": "La response di /data/user/me/domains contiene `prefix` e un nome visualizzabile distinto dal prefisso?",
     "outcome": "prefix + nome presenti",
     "evidence": {
@@ -478,7 +478,7 @@
     }
   },
   {
-    "id": "V7",
+    "id": "pressure-unit",
     "question": "Ordine di grandezza di `pressure`: Pa (~101300) come atteso?",
     "outcome": "ordine di grandezza 101300 (es. 100488.0)",
     "evidence": {
@@ -494,7 +494,7 @@
     }
   },
   {
-    "id": "V8",
+    "id": "temperature-unit",
     "question": "`internal_temperature` arriva in C (~21) o in centesimi (~2100)?",
     "outcome": "ordine di grandezza 21 (es. 26.0583)",
     "evidence": {

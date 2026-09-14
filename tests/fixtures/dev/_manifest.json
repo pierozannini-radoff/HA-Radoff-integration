@@ -2,7 +2,7 @@
   "generated_at": "2026-09-10T09:21:51.599086+00:00",
   "host": "https://v2.api.dev.iot.radoff.life",
   "user_agent": "HomeAssistant-Radoff/0.1.0 (+https://github.com/radoff/ha-radoff-integration)",
-  "note": "Fixture reali raccolte da scripts/probe_arch2.py (card M-01). Ogni body e' redatto: vedi README.md in questa cartella.",
+  "note": "Fixture reali raccolte da scripts/probe_arch2.py. Ogni body e' redatto: vedi README.md in questa cartella.",
   "pools": [
     {
       "label": "pool_current",
@@ -57,7 +57,7 @@
   "calls": [
     {
       "name": "auth_domains__pool_dev",
-      "step": "D-24",
+      "step": "cognito-pool",
       "method": "GET",
       "url": "https://v2.api.dev.iot.radoff.life/data/user/me/domains",
       "params": {},
@@ -79,7 +79,7 @@
     },
     {
       "name": "domain_scan__875fe89b",
-      "step": "D-20",
+      "step": "domain-census",
       "method": "GET",
       "url": "https://v2.api.dev.iot.radoff.life/data/devices",
       "params": {
@@ -284,7 +284,7 @@
     },
     {
       "name": "error__measures_ranges_unknown_type",
-      "step": "D-29",
+      "step": "error-taxonomy",
       "method": "GET",
       "url": "https://v2.api.dev.iot.radoff.life/analytics/measures-ranges",
       "params": {
@@ -310,7 +310,7 @@
     },
     {
       "name": "devices__page1_small",
-      "step": "D-19",
+      "step": "pagination-order",
       "method": "GET",
       "url": "https://v2.api.dev.iot.radoff.life/data/devices",
       "params": {
@@ -336,7 +336,7 @@
     },
     {
       "name": "devices__page2_small",
-      "step": "D-19",
+      "step": "pagination-order",
       "method": "GET",
       "url": "https://v2.api.dev.iot.radoff.life/data/devices",
       "params": {
@@ -362,7 +362,7 @@
     },
     {
       "name": "devices__page1_small_repeat",
-      "step": "D-19",
+      "step": "pagination-order",
       "method": "GET",
       "url": "https://v2.api.dev.iot.radoff.life/data/devices",
       "params": {
@@ -414,7 +414,7 @@
     },
     {
       "name": "devices__probe_sort",
-      "step": "D-19",
+      "step": "pagination-order",
       "method": "GET",
       "url": "https://v2.api.dev.iot.radoff.life/data/devices",
       "params": {
@@ -440,7 +440,7 @@
     },
     {
       "name": "devices__probe_order_by",
-      "step": "D-19",
+      "step": "pagination-order",
       "method": "GET",
       "url": "https://v2.api.dev.iot.radoff.life/data/devices",
       "params": {
@@ -466,7 +466,7 @@
     },
     {
       "name": "devices__probe_order",
-      "step": "D-19",
+      "step": "pagination-order",
       "method": "GET",
       "url": "https://v2.api.dev.iot.radoff.life/data/devices",
       "params": {
@@ -514,7 +514,7 @@
     },
     {
       "name": "error__device_detail_unknown_serial",
-      "step": "D-29",
+      "step": "error-taxonomy",
       "method": "GET",
       "url": "https://v2.api.dev.iot.radoff.life/data/devices/RADOFF-NOT-A-REAL-SERIAL-0000",
       "params": {},
@@ -536,7 +536,7 @@
     },
     {
       "name": "error__devices_foreign_domain",
-      "step": "D-29",
+      "step": "error-taxonomy",
       "method": "GET",
       "url": "https://v2.api.dev.iot.radoff.life/data/devices",
       "params": {
@@ -561,7 +561,7 @@
     },
     {
       "name": "error__devices_no_domain_prefix",
-      "step": "D-29",
+      "step": "error-taxonomy",
       "method": "GET",
       "url": "https://v2.api.dev.iot.radoff.life/data/devices",
       "params": {
@@ -585,7 +585,7 @@
     },
     {
       "name": "error__unauthenticated",
-      "step": "D-29",
+      "step": "error-taxonomy",
       "method": "GET",
       "url": "https://v2.api.dev.iot.radoff.life/data/devices",
       "params": {

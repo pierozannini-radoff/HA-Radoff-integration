@@ -754,8 +754,8 @@ class Recorder:
             "host": self.config.host,
             "user_agent": USER_AGENT,
             "note": (
-                "Fixture reali raccolte da scripts/probe_arch2.py (card M-01). "
-                "Ogni body e' redatto: vedi README.md in questa cartella."
+                "Fixture reali raccolte da scripts/probe_arch2.py. Ogni body "
+                "e' redatto: vedi README.md in questa cartella."
             ),
             **extra,
             "calls": [call.to_manifest_entry() for call in self.calls],
@@ -1108,7 +1108,7 @@ def attempt_pools(
                 suffix = "" if style == "bearer" else f"__{style}"
                 call = recorder.get(
                     f"auth_domains__{pool.label}{suffix}",
-                    step="D-24",
+                    step="cognito-pool",
                     path=DISCOVERY_PATH,
                     token=token,
                     auth_style=style,
@@ -1165,7 +1165,7 @@ def probe_discovery_paths(
         slug = path.strip("/").replace("/", "_")
         recorder.get(
             f"discovery_path__{slug}",
-            step="D-03",
+            step="discovery",
             path=path,
             token=token,
             auth_style=auth_style,
@@ -1199,11 +1199,11 @@ def probe_route_existence(recorder: Recorder) -> None:
         slug = path.strip("/").replace("/", "_")
         recorder.get(
             f"route__{slug}__noauth",
-            step="D-03",
+            step="discovery",
             path=path,
             token=None,
         )
-        recorder.options(f"route__{slug}__options", step="D-03", path=path)
+        recorder.options(f"route__{slug}__options", step="discovery", path=path)
 
 
 def probe_auth_flows(config: Config) -> list[dict[str, Any]]:
@@ -1323,7 +1323,7 @@ def pick_domain_with_devices(
             continue
         call = recorder.get(
             f"domain_scan__{prefix}",
-            step="D-20",
+            step="domain-census",
             path="/data/devices",
             token=token,
             auth_style=auth_style,
@@ -1401,7 +1401,7 @@ def probe_measures_ranges(
     )
     recorder.get(
         "error__measures_ranges_unknown_type",
-        step="D-29",
+        step="error-taxonomy",
         path="/analytics/measures-ranges",
         token=token,
         auth_style=auth_style,
@@ -1424,7 +1424,7 @@ def probe_devices(
     calls = [
         recorder.get(
             "devices__page1_small",
-            step="D-19",
+            step="pagination-order",
             path="/data/devices",
             token=token,
             auth_style=auth_style,
@@ -1432,7 +1432,7 @@ def probe_devices(
         ),
         recorder.get(
             "devices__page2_small",
-            step="D-19",
+            step="pagination-order",
             path="/data/devices",
             token=token,
             auth_style=auth_style,
@@ -1442,7 +1442,7 @@ def probe_devices(
         # chiamate ripetute, e' qui che si vede.
         recorder.get(
             "devices__page1_small_repeat",
-            step="D-19",
+            step="pagination-order",
             path="/data/devices",
             token=token,
             auth_style=auth_style,
@@ -1463,7 +1463,7 @@ def probe_devices(
     for param in ("sort", "order_by", "order"):
         recorder.get(
             f"devices__probe_{param}",
-            step="D-19",
+            step="pagination-order",
             path="/data/devices",
             token=token,
             auth_style=auth_style,
@@ -1486,7 +1486,7 @@ def probe_device_detail(
     )
     recorder.get(
         "error__device_detail_unknown_serial",
-        step="D-29",
+        step="error-taxonomy",
         path=f"/data/devices/{UNKNOWN_SERIAL}",
         token=token,
         auth_style=auth_style,
@@ -1500,7 +1500,7 @@ def probe_errors(
     print("\n[errori] provocati deliberatamente")
     recorder.get(
         "error__devices_foreign_domain",
-        step="D-29",
+        step="error-taxonomy",
         path="/data/devices",
         token=token,
         auth_style=auth_style,
@@ -1511,7 +1511,7 @@ def probe_errors(
     )
     recorder.get(
         "error__devices_no_domain_prefix",
-        step="D-29",
+        step="error-taxonomy",
         path="/data/devices",
         token=token,
         auth_style=auth_style,
@@ -1519,7 +1519,7 @@ def probe_errors(
     )
     recorder.get(
         "error__unauthenticated",
-        step="D-29",
+        step="error-taxonomy",
         path="/data/devices",
         token=None,
         params={"page_size": config.small_page_size},
@@ -1683,7 +1683,7 @@ def analyze(
         d24_outcome = "NON accettato - la migrazione ha una dipendenza in piu'"
     findings.append(
         _finding(
-            "D-24",
+            "cognito-pool",
             "Il token del pool Cognito attuale e' accettato dall'host v2?",
             d24_outcome,
             {
@@ -1743,7 +1743,7 @@ def analyze(
         d28_outcome = "login riuscito su tutti i pool provati"
     findings.append(
         _finding(
-            "D-28",
+            "srp-flow",
             "L'app client Cognito permette il flusso SRP che l'integrazione usa?",
             d28_outcome,
             {
@@ -1798,7 +1798,7 @@ def analyze(
     )
     findings.append(
         _finding(
-            "D-24-surface",
+            "auth-surface",
             "Quali base path dell'host v2 accettano il token, e quali no?",
             (
                 "accettano: " + ", ".join(reachable)
@@ -1862,7 +1862,7 @@ def analyze(
         )
     findings.append(
         _finding(
-            "D-03",
+            "discovery",
             "`GET /auth/user/me/domains` e' chiamabile con il solo bearer "
             "token, come previsto dal config flow?",
             d03_outcome,
@@ -1920,7 +1920,7 @@ def analyze(
     if route_calls:
         findings.append(
             _finding(
-                "D-03-routes",
+                "discovery-routes",
                 "Quali risorse esistono davvero sull'host v2, a prescindere dal token?",
                 (
                     "esistono: "
@@ -1940,7 +1940,7 @@ def analyze(
                 header_names.setdefault(header, value)
     findings.append(
         _finding(
-            "D-30",
+            "request-id-header",
             "Qual e' il nome dell'header di request id nelle risposte?",
             ", ".join(sorted(header_names)) if header_names else "nessuno osservato",
             {
@@ -1956,7 +1956,7 @@ def analyze(
     error_calls = [c for c in calls if c.name.startswith("error__")]
     findings.append(
         _finding(
-            "D-29",
+            "error-taxonomy",
             "Tassonomia degli errori: status e forma del body per ogni caso.",
             f"{len(error_calls)} casi provocati",
             [
@@ -1987,7 +1987,7 @@ def analyze(
     }
     findings.append(
         _finding(
-            "V1",
+            "pagination-stable",
             "L'ordinamento di GET /data/devices e' stabile fra pagine e fra "
             "chiamate ripetute? Esistono filtri o ordinamenti?",
             (
@@ -2018,7 +2018,7 @@ def analyze(
     units = collect_units(_body_of(calls, "measures_ranges__all"))
     findings.append(
         _finding(
-            "V2",
+            "unit-enumeration",
             "Enumerazione completa dei valori di `unit` "
             "(measures-ranges senza device_type).",
             f"{len(units)} unita' distinte" if units else "non osservato",
@@ -2030,7 +2030,7 @@ def analyze(
     pm10 = find_measure_entry(_body_of(calls, "measures_ranges__all"), "pm10")
     findings.append(
         _finding(
-            "V3",
+            "pm10-bands",
             "pm10 ha davvero `excellent upperBound: 200` a runtime, o solo "
             "negli esempi?",
             (
@@ -2050,8 +2050,8 @@ def analyze(
     }
     findings.append(
         _finding(
-            "V4",
-            "Il sismoff espone pm1/pm25/pm10? (T-02 dice no, lo swagger dice si')",
+            "sismoff-pm",
+            "Il sismoff espone pm1/pm25/pm10? Lo swagger dice di si'.",
             (
                 ("li espone" if any(sismoff_pm.values()) else "non li espone")
                 if _observed(calls, "measures_ranges__sismoff")
@@ -2094,7 +2094,7 @@ def analyze(
     elif not radon_status:
         radon_outcome = (
             "campo NON presente nei payload di questo account (nessun "
-            "sense/city: richiesta operativa T-08 7)"
+            "sense o city fra i device raggiungibili)"
         )
     elif all_null:
         radon_outcome = (
@@ -2105,7 +2105,7 @@ def analyze(
         radon_outcome = "osservato"
     findings.append(
         _finding(
-            "V5",
+            "radon-status",
             "Tipo reale e valori osservati di `radon_status`.",
             radon_outcome,
             {"valori": radon_status, "tipi_python": radon_types},
@@ -2121,7 +2121,7 @@ def analyze(
     )
     findings.append(
         _finding(
-            "V6",
+            "domain-label",
             f"La response di {DISCOVERY_PATH} contiene `prefix` e un nome "
             "visualizzabile distinto dal prefisso?",
             (
@@ -2153,7 +2153,7 @@ def analyze(
     ]
     findings.append(
         _finding(
-            "V7",
+            "pressure-unit",
             "Ordine di grandezza di `pressure`: Pa (~101300) come atteso?",
             _magnitude_verdict(pressure, expected=101_300, alternative=1013),
             {"valori_osservati": pressure[:20]},
@@ -2169,7 +2169,7 @@ def analyze(
     ]
     findings.append(
         _finding(
-            "V8",
+            "temperature-unit",
             "`internal_temperature` arriva in C (~21) o in centesimi (~2100)?",
             _magnitude_verdict(internal_temp, expected=21, alternative=2100),
             {"valori_osservati": internal_temp[:20]},
@@ -2217,9 +2217,9 @@ def domain_prefix_of(domains_body: Any) -> str | None:
 
 
 def render_findings_markdown(findings: list[dict[str, Any]], host: str) -> str:
-    """Il blocco di esiti, pronto da riportare a mano."""
+    """Il blocco di esiti in markdown, pronto da incollare dove serve."""
     lines = [
-        "# M-01 - esiti della ricognizione",
+        "# Esiti della ricognizione",
         "",
         f"Host: `{host}` - generato da `scripts/probe_arch2.py` il "
         f"{datetime.now(UTC).strftime('%Y-%m-%d %H:%M UTC')}.",
@@ -2244,12 +2244,9 @@ def render_findings_markdown(findings: list[dict[str, Any]], host: str) -> str:
 
 
 def write_findings(config: Config, findings: list[dict[str, Any]]) -> None:
-    """Scrive gli esiti in JSON e in markdown accanto alle fixture."""
+    """Scrive gli esiti in JSON accanto alle fixture."""
     (config.out_dir / "_findings.json").write_text(
         json.dumps(findings, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
-    )
-    (config.out_dir / "_findings.md").write_text(
-        render_findings_markdown(findings, config.host), encoding="utf-8"
     )
 
 
@@ -2261,8 +2258,10 @@ def print_summary(findings: list[dict[str, Any]], config: Config) -> None:
     for item in findings:
         print(f"  {item['id']:<5} {item['outcome']}")
     print("=" * 72)
-    print(f"Fixture e report in {config.out_dir}")
-    print("Da riportare come commento su RT-2938: _findings.md")
+    print(f"Fixture ed esiti in {config.out_dir}")
+    print()
+    print("--- da riportare a mano, se serve ---")
+    print(render_findings_markdown(findings, config.host))
 
 
 # --------------------------------------------------------------------------
