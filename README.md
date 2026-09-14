@@ -64,10 +64,12 @@ The setup form asks for two fields:
 - `password` - the password of that account
 
 If your account has access to more than one Radoff domain (tenant), you will
-see one additional step asking you to pick which domain to use; if it only
-has access to one, the integration entry is created immediately after
-authentication succeeds. There is no device-selection step: every Now+ device
-visible on the selected domain is added automatically.
+see one additional step asking you to pick which domain to use, listed by
+name; if it only has access to one, the integration entry is created
+immediately after authentication succeeds, with no extra question. There is
+no device-selection step: every device visible on the selected domain is added
+automatically - and if the domain you pick has no device at all, setup stops
+and says so rather than creating an integration with nothing in it.
 
 If your Radoff account password changes, Home Assistant will show a
 **Reconfigure** notification on the integration instead of silently failing
@@ -85,8 +87,9 @@ Radoff** and select **Configure** to change:
   needed. See "How much this integration polls" below for why those are the
   numbers.
 - **Generate index entities** - whether to also create a qualitative
-  `*_index` sensor (Excellent, Good, Medium, Poor, Terrible) alongside each
-  applicable measurement, in addition to its raw value. Enabled by default.
+  `*_index` sensor (Excellent, High, Good, Poor, Terrible - Low, Good, High
+  for temperature and humidity) alongside each applicable measurement, in
+  addition to its raw value. Enabled by default.
   Toggling this off removes the `*_index` entities on the next reload;
   toggling it back on recreates them.
 
@@ -159,10 +162,53 @@ Two entities behave differently on purpose:
   you and keeps the history.
 
 **TVOC** deserves a note: Radoff's API declares its unit as `V - Ix`, which is
-not a concentration, so the entity is published without a unit and without a
-device class. If you are upgrading from a version that showed TVOC in µg/m³,
-Home Assistant will treat the unit change as a break in that entity's
-long-term statistics.
+not a concentration. The entity is published with that unit exactly as the API
+gives it and with no device class - the alternative, a bare number with no
+unit, looks like a concentration whose unit went missing. If you are upgrading
+from a version that showed TVOC in µg/m³, see "Updating from an earlier
+version" below: the unit change breaks that entity's long-term statistics.
+
+## Updating from an earlier version
+
+Updating to this version migrates your existing entities rather than replacing
+them. Every sensor keeps its entity ID, so **your dashboards, automations and
+history keep working**, and nothing has to be removed and added again. What
+changes underneath is the identifier the integration uses internally: entities
+used to be keyed on Radoff's internal device ID, and are now keyed on the
+device's serial number, which is the only identifier the current API has.
+
+You may be asked to pick your domain once, after the update. Configurations
+created before this version either never recorded one or recorded it in a form
+the current API does not accept, and there is no way to work it out without
+asking Radoff - so the integration raises a repair under **Settings → System →
+Repairs** and the choice is one click. Your devices and their history are
+untouched while it is pending.
+
+Four things do change visibly, and they are worth knowing about *before* you
+see them in a graph:
+
+- **Temperature jumps by about 4 °C.** The released version multiplied the
+  raw reading by a wrong factor. The new values are the correct ones; the step
+  in your history is where the fix landed, not a sensor fault.
+- **TVOC's unit changes** from µg/m³ to `V - Ix` (see above). Home Assistant
+  treats a unit change on an existing entity as a break in its long-term
+  statistics: the old series is closed and a new one starts, so expect a gap
+  in that one graph. The short-term history is unaffected and the entity keeps
+  working throughout.
+- **The quality levels are renamed.** They now come from Radoff's API instead
+  of being invented here: `medium` no longer exists, and the scale is
+  Excellent → High → Good → Poor → Terrible (Low → Good → High for temperature
+  and humidity). If an automation compares an `*_index` sensor against a state
+  string, check it - the numeric sensors are unaffected.
+- **The air quality index behaves differently depending on where you came
+  from.** It is created disabled on a new installation (see "Entities produced"
+  above), but an AQI entity you already had stays enabled: an update does not
+  take away something you were already using. Two otherwise identical
+  installations can therefore show it differently.
+
+New entities simply appear where your devices support them - radon on a Sense,
+carbon monoxide and methane on a Sismoff - with no history behind them, because
+the released version never created them.
 
 ## Known limitations
 

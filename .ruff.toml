@@ -62,6 +62,12 @@ ignore = [
 # mockata puo' solo assumere.
 "verify_m06_live.py" = ["ALL"]
 
+# Verifica dal vivo degli AC di M-07 (RT-2946): stessa convenzione. Guarda
+# la sola meta' di quella card che dipende dall'API - la forma della
+# discovery, l'etichetta leggibile dei domini e il 403 su un dominio altrui.
+# La migrazione del registry e' offline e vive in tests/test_init.py.
+"verify_m07_live.py" = ["ALL"]
+
 # Standalone verification scripts (S-06, S-07, S-08, S-09, S-10, S-11, S-12,
 # S-13): run by hand with `python3 verify_sXX.py`, not shipped code, and
 # deliberately monkeypatch/stub homeassistant modules and private attributes
