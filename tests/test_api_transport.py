@@ -278,7 +278,7 @@ def test_429_is_no_longer_in_the_urllib3_retry_list() -> None:
 def test_5xx_is_a_transient_server_error(
     monkeypatch: pytest.MonkeyPatch, requests_mock: Any
 ) -> None:
-    """A 5xx is its own class, and it costs the whole cycle."""
+    """A 5xx raises `APIServerError`, its own class in the taxonomy."""
     register_devices(requests_mock, SERVER_ERROR_BODY, status_code=503)
 
     api = _api(monkeypatch)
@@ -325,7 +325,7 @@ def test_an_unparsable_error_body_is_still_classified_by_status(
 def test_a_status_outside_the_taxonomy_stays_a_generic_error(
     monkeypatch: pytest.MonkeyPatch, requests_mock: Any
 ) -> None:
-    """A status outside the taxonomy raises the base class and costs the cycle."""
+    """A status outside the taxonomy raises the base class, `APIAuthError`."""
     register_devices(requests_mock, {"error": "teapot"}, status_code=418)
 
     api = _api(monkeypatch)

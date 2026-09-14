@@ -415,7 +415,7 @@ async def test_no_discovery_on_reload(
 
 
 def test_the_domain_prefix_survives_session_invalidate() -> None:
-    """`CognitoSession.invalidate()` clears the tokens and never the domain."""
+    """`CognitoSession.invalidate()` leaves `domain_prefix` untouched."""
     api = API(
         username="user@example.com",
         password="hunter2",
@@ -521,7 +521,7 @@ async def test_a_base_url_equal_to_the_default_is_not_stored(
     requests_mock: Any,
     config_entry_v3_data: dict[str, Any],
 ) -> None:
-    """A base URL equal to the default, or blank, removes the override."""
+    """A base URL equal to the default, trailing slash included, removes the override."""
     entry = await _loaded_entry(
         hass,
         monkeypatch,

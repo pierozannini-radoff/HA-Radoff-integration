@@ -39,7 +39,7 @@ def _specs(device_type: str) -> dict[str, MeasureSpec]:
 
 @pytest.mark.parametrize("device_type", SCHEMA_TYPES)
 def test_measures_are_ordered_by_pos(device_type: str) -> None:
-    """The measures come out sorted by `pos`, whatever the JSON order."""
+    """The measures come out sorted by `pos`, with no `pos` missing."""
     positions = [spec.pos for spec in _specs(device_type).values()]
 
     assert positions == sorted(positions)
@@ -48,7 +48,7 @@ def test_measures_are_ordered_by_pos(device_type: str) -> None:
 
 @pytest.mark.parametrize("device_type", SCHEMA_TYPES)
 def test_pos_is_sparse_and_is_never_an_index(device_type: str) -> None:
-    """A sparse `pos` sorts correctly and is never used as a list index."""
+    """A `pos` with real gaps in it still sorts the measures end to end."""
     specs = _specs(device_type)
     positions = [spec.pos for spec in specs.values()]
 
@@ -129,7 +129,7 @@ def test_a_measure_with_no_bands_has_no_status() -> None:
 
 @pytest.mark.parametrize("device_type", SCHEMA_TYPES)
 def test_no_scale_factor_is_served_or_applied(device_type: str) -> None:
-    """No `scaleFactor` is served, and none is applied: values pass through."""
+    """No `scaleFactor` is served, and no `MeasureSpec` carries one."""
     payload = load_dev_fixture(f"measures_ranges__{device_type}")
 
     assert all("scaleFactor" not in measure for measure in payload.values())
@@ -157,7 +157,7 @@ def test_the_aqi_has_no_unit_and_tvoc_keeps_the_one_the_api_declares() -> None:
 
 
 def test_pressure_is_declared_in_pascal() -> None:
-    """Pressure keeps the unit the API sends; the UI converts, not the client."""
+    """Pressure keeps the `Pa` the API sends, with the pressure device class."""
     pressure = _specs("nowplus")["pressure"]
 
     assert pressure.unit == "Pa"
@@ -175,7 +175,7 @@ def test_radon_is_served_in_becquerel_and_passes_through() -> None:
 
 @pytest.mark.parametrize("measure", ["aqi_value", "tvoc"])
 def test_measures_with_no_honest_device_class_have_none(measure: str) -> None:
-    """`aqi_value` and `tvoc` carry no device class, because none would be true."""
+    """`aqi_value` and `tvoc` carry no device class, and are in no class map."""
     assert _specs("nowplus")[measure].device_class is None
     assert measure not in DEVICE_CLASSES
 
@@ -183,7 +183,7 @@ def test_measures_with_no_honest_device_class_have_none(measure: str) -> None:
 def test_an_unmappable_unit_warns_and_yields_no_unit(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """A unit outside the map costs the unit, not the setup."""
+    """A unit outside the map resolves to `None` and names itself in a WARNING."""
     with caplog.at_level(logging.WARNING):
         resolved = resolve_ha_unit(
             "parsecs per fortnight", measure="eco2", device_type="nowplus"

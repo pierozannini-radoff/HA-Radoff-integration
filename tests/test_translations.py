@@ -101,7 +101,7 @@ def test_index_translation_states_match_the_served_bands(path: Path, name: str) 
 
 @pytest.mark.parametrize("path", TRANSLATION_PATHS, ids=lambda p: p.name)
 def test_the_deleted_vocabulary_is_gone(path: Path) -> None:
-    """No state this integration invented survives in any translation file."""
+    """No `medium` state survives in any translation file."""
     sensor_entities = DOCS[path].get("entity", {}).get("sensor", {})
     with_medium = [
         slug

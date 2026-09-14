@@ -312,7 +312,7 @@ async def test_an_orphaned_average_entity_is_removed_not_left_unavailable(
 async def test_a_lone_average_entity_is_migrated_not_removed(
     hass: HomeAssistant, config_entry_v1_data: dict[str, Any]
 ) -> None:
-    """A lone `airqualityindex_average` is migrated onto `aqi_value`, keeping its history."""
+    """A lone `airqualityindex_average` is re-keyed onto `aqi_value`, same `entity_id`."""
     entry = MockConfigEntry(domain=DOMAIN, version=1, data=config_entry_v1_data)
     entry.add_to_hass(hass)
 

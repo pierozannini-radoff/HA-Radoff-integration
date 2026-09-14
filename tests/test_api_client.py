@@ -149,7 +149,7 @@ def test_telemetry_null_is_no_data_and_not_an_error(
 def test_a_device_of_another_type_is_kept(
     monkeypatch: pytest.MonkeyPatch, requests_mock: Any
 ) -> None:
-    """`type` is a schema cache key: no device the API returned is discarded."""
+    """No device is discarded for its `type`: both types on the page survive."""
     register_devices(requests_mock, _real_page())
 
     devices = _api(monkeypatch).get_devices()
@@ -315,7 +315,7 @@ def test_a_nested_life_is_logged_and_produces_no_device(
     requests_mock: Any,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """A nested LIFE yields one log line, no device and no exception."""
+    """A nested LIFE is logged by serial and produces no device of its own."""
     page = _real_page()
     controller = copy.deepcopy(_devices_of(page)[REPORTING_SERIAL])
     slave = copy.deepcopy(_devices_of(page)[SILENT_SERIAL])
