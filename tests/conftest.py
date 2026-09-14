@@ -1,9 +1,8 @@
 """
 Shared fixtures and helpers for the suite.
 
-The Radoff API is mocked at the transport level - `requests_mock` for HTTP,
-`AWSSRP.authenticate_user` for the Cognito handshake - so every test runs
-auth, discovery, entity construction and migration as Home Assistant does.
+The API is mocked at the transport level: `requests_mock` for HTTP,
+`AWSSRP.authenticate_user` for the Cognito handshake.
 """
 
 from __future__ import annotations
