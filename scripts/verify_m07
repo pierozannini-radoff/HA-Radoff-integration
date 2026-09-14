@@ -9,8 +9,7 @@
 # RADOFF_PASSWORD: questo script non le contiene e non le stampa.
 #
 # I due override di pool servono finche' const.py punta a un pool diverso
-# dall'ambiente di DEFAULT_BASE_URL - vedi «Un residuo che blocca il
-# collaudo end-to-end» in docs/M-04-verifica-dev.md. Sovrascrivibili
+# dall'ambiente di DEFAULT_BASE_URL. Sovrascrivibili
 # dall'ambiente:  M07_POOL_ID=... M07_DOMAIN_PREFIX=... ./scripts/verify_m07
 
 set -uo pipefail
@@ -152,8 +151,7 @@ cat <<'NOTE'
   dell'harness, che conteneva 16 entita' vere ancora su identificatori
   arch 1.x: 52 entita' su 52 hanno tenuto il loro entity_id, 16 sono
   passate al serial, nessuna serie statistica e' andata persa e il riavvio
-  successivo non ha cambiato niente. L'esito completo, e le tre cose che
-  quella passata NON ha potuto vedere, stanno in docs/M-07-verifica-dev.md.
+  successivo non ha cambiato niente.
 
   Cio' che resta e' un ripristino che possa parlare con l'ambiente a cui le
   sue credenziali appartengono, per vedere i grafici proseguire davvero:

@@ -2217,7 +2217,7 @@ def domain_prefix_of(domains_body: Any) -> str | None:
 
 
 def render_findings_markdown(findings: list[dict[str, Any]], host: str) -> str:
-    """Il blocco da incollare in docs/M-01 e nel commento su RT-2938."""
+    """Il blocco di esiti, pronto da riportare a mano."""
     lines = [
         "# M-01 - esiti della ricognizione",
         "",
@@ -2378,8 +2378,7 @@ def main(argv: list[str] | None = None) -> int:
             "ATTENZIONE: questo NON e' l'esito di D-24 - l'host v2 non e' mai "
             "stato interrogato.\nIl problema e' fra credenziali e pool "
             "Cognito, non fra token e API 2.0.\n"
-            "Vedi il codice Cognito stampato sopra e la sezione "
-            "'Diagnosi del login' in docs/M-01-ricognizione-dev.md."
+            "Vedi il codice Cognito stampato sopra."
         )
         return 4
 

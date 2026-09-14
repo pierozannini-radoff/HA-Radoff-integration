@@ -39,8 +39,7 @@ from .conftest import load_dev_fixture
 # `sismoff` *is* here, and only here. Its schema is read like every other
 # type's - that costs nothing and keeps `co`/`ch4` covered - but the card
 # excludes it from the entity-level checks, because M-01 captured no
-# sismoff device to run them against (decision of 2026-09-10, see
-# `docs/M-04-verifica-dev.md`).
+# sismoff device to run them against (decision of 2026-09-10).
 SCHEMA_TYPES = ("nowplus", "sense", "city", "now", "sismoff")
 
 

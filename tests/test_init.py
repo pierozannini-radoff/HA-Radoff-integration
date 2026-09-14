@@ -14,9 +14,8 @@ installation already has" that these tests care about most: its *entities*.
 The AQI step of T-06/F2 is gone as a separate stage - it is absorbed into
 the one that re-keys every entity onto `radoff-{serial}-{measure}` - and
 what replaces its tests is a migration run against the registry of a real
-released installation, the 32 entities card RT-2827 measured and
-`docs/T-06-evidenze.md` recorded one by one (see
-`conftest.seed_released_registry`).
+released installation, the 32 entities card RT-2827 measured one by one
+(see `conftest.seed_released_registry`).
 
 That is the card's third acceptance criterion, and the reason it is worth
 the fixture: the identifiers change on both halves at once, and the only

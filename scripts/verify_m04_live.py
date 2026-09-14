@@ -23,7 +23,7 @@ Come si esegue
     python3 scripts/verify_m04_live.py
 
     # i due override di pool servono finche' const.py punta a un pool
-    # diverso dall'ambiente di DEFAULT_BASE_URL (vedi docs/M-04-verifica-dev.md)
+    # diverso dall'ambiente di DEFAULT_BASE_URL
     python3 scripts/verify_m04_live.py \
         --pool-id eu-west-1_XXXXXXXX --client-id XXXXXXXX \
         --domain-prefix XXXXXXXX
@@ -46,8 +46,8 @@ Cosa NON verifica
   quali sono disabilitate. Serve un HA vivo, e lo coprono `test_sensor.py`
   e `test_init.py`, che girano dentro `hass`. Qui si verifica cio' che
   l'integrazione *deduce* dalla response, che e' l'input di quel wiring.
-- `sismoff`: escluso da questa card per decisione presa il 2026-09-10
-  (vedi `docs/M-04-verifica-dev.md`). Il suo schema viene comunque letto e
+- `sismoff`: escluso da questa card per decisione presa il 2026-09-10.
+  Il suo schema viene comunque letto e
   confrontato con la fixture, perche' costa una richiesta e la deriva del
   catalogo si misura meglio tutta insieme; nessun controllo sulle entita'
   di un sismoff.

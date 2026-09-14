@@ -9,7 +9,7 @@ vivo.
 La migrazione del registry - il re-keying degli `unique_id` di
 un'installazione esistente - non tocca la rete: e' deterministica, offline,
 e la suite mockata la esercita su una ricostruzione del registry vero
-misurato da RT-2827 (32 entita', due device, `docs/T-06-evidenze.md`). Una
+misurato da RT-2827 (32 entita', due device). Una
 passata su dev non aggiungerebbe niente e non potrebbe provocare nessuno dei
 casi limite. Resta la passata a mano su un'istanza reale, che chiude M-08.
 
@@ -45,7 +45,7 @@ Come si esegue
     python3 scripts/verify_m07_live.py --domain-prefix 875fe89b
 
     # i due override di pool servono finche' const.py punta a un pool
-    # diverso dall'ambiente di DEFAULT_BASE_URL (vedi docs/M-04-verifica-dev.md)
+    # diverso dall'ambiente di DEFAULT_BASE_URL
     python3 scripts/verify_m07_live.py \
         --pool-id eu-west-1_XXXXXXXX --client-id XXXXXXXX \
         --domain-prefix XXXXXXXX

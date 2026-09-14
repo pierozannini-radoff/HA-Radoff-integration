@@ -335,8 +335,8 @@ def config_entry_v3_data() -> dict[str, Any]:
 
 
 # The entity/device registry of a real installation running the released
-# version (30e0cde), as card RT-2827 measured it and `docs/T-06-evidenze.md`
-# recorded it entry by entry: two devices, sixteen entities each, 32
+# version (30e0cde), as card RT-2827 measured it entry by entry: two
+# devices, sixteen entities each, 32
 # `unique_id`s of the form `radoff-{device_uuid}-{slug}`.
 #
 # The *shape* is the measured one - the exact slug set, the `-index` suffix

@@ -9,8 +9,7 @@
 # RADOFF_PASSWORD: questo script non le contiene e non le stampa.
 #
 # I due override di pool servono finche' const.py punta a un pool diverso
-# dall'ambiente di DEFAULT_BASE_URL - vedi «Un residuo che blocca il
-# collaudo end-to-end» in docs/M-04-verifica-dev.md. Sovrascrivibili
+# dall'ambiente di DEFAULT_BASE_URL. Sovrascrivibili
 # dall'ambiente:  M05_POOL_ID=... M05_DOMAIN_PREFIX=... ./scripts/verify_m05
 
 set -uo pipefail

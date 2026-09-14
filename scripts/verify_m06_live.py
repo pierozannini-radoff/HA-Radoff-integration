@@ -45,7 +45,7 @@ Come si esegue
     python3 scripts/verify_m06_live.py --domain-prefix 875fe89b
 
     # i due override di pool servono finche' const.py punta a un pool
-    # diverso dall'ambiente di DEFAULT_BASE_URL (vedi docs/M-04-verifica-dev.md)
+    # diverso dall'ambiente di DEFAULT_BASE_URL
     python3 scripts/verify_m06_live.py \
         --pool-id eu-west-1_XXXXXXXX --client-id XXXXXXXX \
         --domain-prefix XXXXXXXX
