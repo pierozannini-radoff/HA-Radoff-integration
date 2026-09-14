@@ -1,42 +1,25 @@
 """
-Verifica dal vivo dei criteri di accettazione di M-06 (RT-2945), su dev.
+Verifica dal vivo, su dev, di `connection_status` e del suo timestamp.
 
-Perche' esiste
---------------
-M-06 sposta la disponibilita' delle entita' su un campo che non e' nostro:
-`connection_status`. La suite mockata verifica cosa fa il codice per ogni
-valore di quel campo - `connected`, `disconnected`, un valore mai visto, il
-campo assente - e lo fa meglio di qualunque passata dal vivo, perche' puo'
-provocare tutti e quattro i casi a comando.
+La disponibilita' delle entita' dipende da un campo che non e' nostro. La
+suite mockata verifica cosa fa il codice per ogni valore di quel campo -
+`connected`, `disconnected`, un valore mai visto, il campo assente - e lo fa
+meglio di qualunque passata dal vivo, perche' puo' provocarli a comando.
 
 Cio' che nessuna suite mockata puo' dire e' quali valori l'API serva
-*davvero* oggi, e con che eta'. Sono due numeri da cui dipende tutto il
-resto:
+*davvero* oggi, e con che eta':
 
 - se dev servisse un terzo valore, `KNOWN_CONNECTION_STATUSES`
   (api/models.py) sarebbe gia' incompleto e ogni device che lo porta
-  finirebbe in `INDETERMINATE` - disponibile, ma per la ragione sbagliata.
-  L'enumerazione completa e' la richiesta aperta T-08 D-17;
-- cosa misuri `connection_status_updated_at`. La passata del 2026-09-11 ha
-  risposto a T-08 D-17 (e) confrontandolo con l'eta' della telemetria: un
-  device che trasmetteva da 14 secondi portava quel campo a due giorni
-  prima, quindi e' il momento dell'ultimo **cambio** di stato e non
+  finirebbe in `INDETERMINATE` - disponibile, ma per la ragione sbagliata;
+- cosa misuri `connection_status_updated_at`. Il confronto con l'eta' della
+  telemetria dice che e' il momento dell'ultimo **cambio** di stato, non
   dell'ultimo controllo. Questa passata continua a misurarlo perche' e'
-  l'unico posto dove quel confronto si puo' fare, e perche' se un giorno
-  il campo cambiasse semantica sarebbe qui che si vedrebbe. Quanto spesso
-  il backend lo riscriva resta la meta' aperta di D-17 (b).
+  l'unico posto dove quel confronto si puo' fare: se un giorno il campo
+  cambiasse semantica, e' qui che si vedrebbe.
 
-  Una rete di sicurezza a sei ore su quel campo e' stata scritta e poi
-  rimossa dentro questa card: contro un timestamp di ultimo cambio
-  nessuna soglia distingue un device stabile da un campo congelato, e il
-  controllo sarebbe scattato su ogni device connesso da piu' di sei ore.
-
-Piu' un controllo che la card chiede per nome: il caso riproducibile su dev
-(dominio `875fe89b`, device `57FA28`, un sense con `telemetry: null`).
-Questa passata non lo da' per connesso - il 2026-09-11 era `disconnected`
-da 64 giorni, quindi esemplifica il secondo AC e non il primo: dice quale
-dei due illustra, e cerca il soggetto del primo AC fra tutti i device del
-dominio invece che in quel serial.
+Su un timestamp di ultimo cambio nessuna soglia di eta' distingue un device
+stabile da un campo congelato, e per questo l'integrazione non ne ha una.
 
 Come si esegue
 --------------
@@ -61,7 +44,7 @@ Cosa NON verifica, e perche'
   Assistant, non l'API: si verifica in
   `tests/test_sensor.py::test_a_restart_restores_the_last_known_value`, e
   a mano con `./scripts/develop`.
-- **Il 429.** Come per M-05: saturare una quota condivisa con l'app mobile
+- **Il 429.** Saturare una quota condivisa con l'app mobile
   per vedere un errore degraderebbe dev per chiunque altro. La
   coordinazione fra 429 e disponibilita' e' verificata in
   `tests/test_coordinator.py`.
@@ -105,9 +88,8 @@ from custom_components.radoff.const import (  # noqa: E402
     DEFAULT_POOL_REGION,
 )
 
-# Il caso che la card indica per nome come riproducibile su dev: un sense
-# che non trasmette, che dopo M-04 espone comunque le 10 entita' del suo
-# tipo. E' il soggetto del primo AC.
+# Il caso riproducibile su dev: un sense che non trasmette, e che espone
+# comunque le 10 entita' del suo tipo.
 SILENT_DEVICE_SERIAL = "57FA28"
 
 # I due pool Cognito in gioco, con l'ambiente a cui appartengono. Servono
@@ -132,8 +114,7 @@ def auth_hint(err: Exception, pool_id: str) -> str:
       credenziali che funzionano altrove qui sono semplicemente sbagliate.
     - `AuthExpiredError` / 401 dopo un handshake riuscito = le credenziali
       erano buone, ma il token viene da un pool che quell'API non accetta
-      (M-01: `accepted_pool: pool_dev` in
-      `tests/fixtures/dev/_manifest.json`).
+      (`accepted_pool: pool_dev` in `tests/fixtures/dev/_manifest.json`).
 
     Nessuna chiamata in piu' per scoprirlo: un secondo tentativo su un
     altro pool sarebbe un secondo login fallito a carico dell'account.
@@ -153,7 +134,7 @@ def auth_hint(err: Exception, pool_id: str) -> str:
             f"L'handshake sul pool {pool_id} ({label}) e' riuscito, ma l'API "
             "ha risposto 401.\n"
             "E' il token a essere del pool sbagliato per questo host: l'API "
-            "di dev accetta solo il pool dev (M-01, accepted_pool).\n"
+            "di dev accetta solo il pool dev (accepted_pool).\n"
             "Passare --pool-id / --client-id del pool giusto per l'host in "
             "uso (vedi l'intestazione qui sopra)."
         )
@@ -297,10 +278,10 @@ def check_status_and_connection_status_coexist(
     verdict: Verdict, raw_devices: list[dict[str, Any]]
 ) -> None:
     """
-    I due campi sono distinti e coesistono, come T-02 D-17 (c) dice.
+    I due campi sono distinti e coesistono: uno amministrativo, l'altro
+    operativo.
 
-    La card lo pone come vincolo di lettura ("non confonderli: uno e'
-    amministrativo, l'altro operativo") e questo lo misura: quanti device
+    Questo lo misura: quanti device
     portano entrambi i campi, e con quali valori. Il caso interessante e'
     `status: active` con `connection_status: disconnected` - un device
     regolarmente in servizio che in questo momento non parla: se non
@@ -389,13 +370,10 @@ def check_the_card_reproducible_case(
         else str(datetime.now(UTC) - silent.connection_status_updated_at)
     )
     verdict.ok(
-        f"Il caso riproducibile della card ({SILENT_DEVICE_SERIAL}) esemplifica "
-        f"{which}",
+        f"Il caso riproducibile ({SILENT_DEVICE_SERIAL}) esemplifica {which}",
         f"tipo '{silent.device_type}', connection_status "
         f"'{silent.connection_status}' da {age}, stale={silent.stale}, "
-        f"letture={len(silent.readings)}, status '{silent.status}'\n"
-        f"la nota di M-04 in coda alla card lo da' per connesso e muto: "
-        f"dal vivo non lo e'",
+        f"letture={len(silent.readings)}, status '{silent.status}'",
     )
 
 
@@ -439,11 +417,10 @@ def check_availability_verdicts(verdict: Verdict, devices: list[RadoffDevice]) -
     """
     Quante entita' questa card rende disponibili, e quante ne toglie.
 
-    Il conto che dice se la card ha l'effetto che dichiara sul dominio
-    vero: i device connessi senza telemetria guadagnano entita'
-    disponibili (con `unknown` o l'ultimo valore noto), i device non
-    connessi le perdono anche se la loro ultima telemetria e' ancora nel
-    payload - cioe' l'inverso esatto di come si comportavano fino a S-07.
+    Il conto sul dominio vero: i device connessi senza telemetria hanno
+    entita' disponibili (con `unknown` o l'ultimo valore noto), i device non
+    connessi non le hanno, anche se la loro ultima telemetria e' ancora nel
+    payload.
     """
     connected_silent = [
         device
@@ -478,8 +455,7 @@ def check_what_the_status_timestamp_measures(
     """
     Cosa misura `connection_status_updated_at`, misurato invece che assunto.
 
-    La risposta a T-08 D-17 (e), e il controllo che la tiene vera. Il
-    confronto e' fra due eta' sullo stesso device connesso: quella della
+    Il confronto e' fra due eta' sullo stesso device connesso: quella della
     telemetria, che dice quando ha parlato l'ultima volta, e quella del
     `connection_status`. Se il secondo campo fosse il momento dell'ultimo
     *controllo*, non potrebbe essere molto piu' vecchio del primo: un
@@ -487,17 +463,11 @@ def check_what_the_status_timestamp_measures(
     dell'ultimo *cambio* di stato, la sua eta' e' quanto dura lo stato
     corrente e con il primo non ha alcun rapporto.
 
-    Il 2026-09-11 su dev: un device con telemetria di 14 secondi prima e
-    `connection_status_updated_at` di due giorni prima. Ultimo cambio,
-    quindi - ed e' la ragione per cui la rete di sicurezza a sei ore
-    scritta in questa card e' stata rimossa prima di chiuderla.
-
     Non e' un PASS/FAIL sulla salute di dev, ed e' deliberatamente un PASS
     anche quando i numeri non mostrano nulla: i device potrebbero essere
-    tutti appena riconnessi. Diventa un FAIL solo se il campo contraddice
-    la risposta di D-17 (e) restando sempre piu' giovane della telemetria
-    su un dominio che ha qualcosa da dire - cioe' se la semantica e'
-    cambiata e questa card va rivista.
+    tutti appena riconnessi. Diventa un FAIL solo se il campo resta sempre
+    piu' giovane della telemetria su un dominio che ha qualcosa da dire -
+    cioe' se la semantica e' cambiata.
     """
     now = datetime.now(UTC)
     connected = [
@@ -508,7 +478,7 @@ def check_what_the_status_timestamp_measures(
     ]
     if not connected:
         verdict.skip(
-            "Cosa misura connection_status_updated_at (D-17 (e))",
+            "Cosa misura connection_status_updated_at",
             "nessun device connesso con quel timestamp in questa passata",
         )
         return
@@ -553,11 +523,11 @@ def check_what_the_status_timestamp_measures(
         )
     else:
         detail += (
-            "\nnessun device mostra lo scarto che ha risposto a D-17 (e) in "
-            "questa passata: non lo smentisce, non lo conferma"
+            "\nnessun device mostra lo scarto in questa passata: non lo "
+            "smentisce, non lo conferma"
         )
 
-    verdict.ok("Cosa misura connection_status_updated_at (D-17 (e))", detail)
+    verdict.ok("Cosa misura connection_status_updated_at", detail)
 
 
 def check_telemetry_timestamp_is_still_one_per_block(
@@ -566,16 +536,15 @@ def check_telemetry_timestamp_is_still_one_per_block(
     """
     Il limite noto e' ancora un limite: un timestamp per blocco, non per campo.
 
-    Se il backend avesse iniziato a servire un timestamp per campo - la
-    richiesta T-08 D-15 - il ripiego documentato per il radon diventerebbe
-    inutile e `last_measured_at` potrebbe dire la verita' per ciascuna
-    grandezza. Vale controllarlo a ogni passata: e' cio' che sblocca il
-    residuo di questa card.
+    Se il backend iniziasse a servire un timestamp per campo, il ripiego
+    documentato per il radon diventerebbe inutile e `last_measured_at`
+    potrebbe dire la verita' per ciascuna grandezza. Vale controllarlo a
+    ogni passata.
     """
     with_data = [device for device in devices if device.readings]
     if not with_data:
         verdict.skip(
-            "Un solo timestamp per blocco di telemetria (D-15 ancora aperta)",
+            "Un solo timestamp per blocco di telemetria",
             "nessun device con telemetria in questo dominio",
         )
         return
@@ -587,12 +556,12 @@ def check_telemetry_timestamp_is_still_one_per_block(
     ]
     verdict.check(
         not per_field,
-        "Un solo timestamp per blocco di telemetria (D-15 ancora aperta)",
+        "Un solo timestamp per blocco di telemetria",
         f"{len(with_data)} device con letture, tutti con un timestamp unico "
         f"per l'intero blocco"
         if not per_field
         else f"{len(per_field)} device portano timestamp diversi per campo: "
-        f"D-15 potrebbe essere stata implementata, rileggere il ripiego "
+        f"il backend potrebbe servirli per campo, rileggere il ripiego "
         f"documentato in Reading.measured_at",
     )
 
@@ -620,7 +589,7 @@ def main() -> int:
     )
 
     print()
-    print("  Verifica dal vivo degli AC di M-06 (RT-2945)")
+    print("  Verifica dal vivo di connection_status")
     print(f"  host      : {args.base_url}")
     print(f"  pool      : {args.pool_id} / client {args.client_id} / {region}")
     print()
@@ -639,7 +608,7 @@ def main() -> int:
     domain = pick_domain(api, args.domain_prefix or None)
     if not domain:
         verdict.skip(
-            "Gli AC di M-06 sull'API vera",
+            "I controlli sull'API vera",
             "nessun dominio disponibile: passare --domain-prefix",
         )
         return verdict.exit_code()
@@ -660,7 +629,7 @@ def main() -> int:
     except Exception as err:  # noqa: BLE001
         hint = auth_hint(err, args.pool_id)
         verdict.fail(
-            "Gli AC di M-06 sull'API vera",
+            "I controlli sull'API vera",
             f"{type(err).__name__}: {err}" + (f"\n{hint}" if hint else ""),
         )
         return verdict.exit_code()
@@ -676,7 +645,7 @@ def main() -> int:
     print()
     print("  Nota: questa passata guarda una pagina di device (page_size 200).")
     print("  Su un dominio piu' grande i conti valgono per quella pagina, non")
-    print("  per il dominio intero - la paginazione e' verificata da M-03/M-05.")
+    print("  per il dominio intero: la paginazione e' verificata altrove.")
 
     return verdict.exit_code()
 

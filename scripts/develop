@@ -5,7 +5,7 @@ set -e
 cd "$(dirname "$0")/.."
 
 # HA config directory for the dev harness lives under .devcontainer/, not at
-# the repo root (S-04): this makes the separation between the distributable
+# the repo root: this makes the separation between the distributable
 # custom_components/radoff content and the local runtime — which HA fills
 # with the Radoff account credentials and Cognito tokens on first run —
 # structural instead of relying only on .gitignore.

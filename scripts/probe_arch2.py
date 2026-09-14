@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """
-M-01 - Ricognizione dell'API arch 2.0 su dev, con salvataggio di fixture reali.
+Ricognizione dell'API arch 2.0 su dev, con salvataggio di fixture reali.
 
 One-shot, eseguito a mano contro un account reale su
 `https://v2.api.dev.iot.radoff.life`. NON fa parte dell'integrazione: vive
 fuori da `custom_components/`, che non lo importa e non deve mai importarlo.
 La dipendenza va nella direzione opposta - questo script carica
 `custom_components/radoff/api/auth.py` per riusare l'handshake SRP del
-client, cosi' il token che verifichiamo (D-24) e' esattamente quello che
+client, cosi' il token che verifichiamo e' esattamente quello che
 l'integrazione usera'.
 
 Cosa fa, in sequenza:
@@ -15,9 +15,8 @@ Cosa fa, in sequenza:
 1. login SRP sul pool Cognito **attuale** (quello di `const.py`, usato da
    arch 1.x) e, se configurato, su un **pool dev** dedicato;
 2. la stessa `GET /data/user/me/domains` sull'host v2 con entrambi i token,
-   per stabilire quale dei due l'API 2.0 accetta (D-24). Il path e' sotto
-   il base path `data`, non `auth` come diceva la risposta a T-02 D-03:
-   `/auth/user/me/domains` su arch 2.0 non esiste;
+   per stabilire quale dei due l'API 2.0 accetta. Il path e' sotto il base
+   path `data`, non `auth`: `/auth/user/me/domains` su arch 2.0 non esiste;
 3. `GET /analytics/measures-ranges` per ognuno dei sei `device_type` del
    catalogo e una volta senza `device_type` (che unisce tutti i tipi, ed e'
    da li' che esce l'enumerazione completa delle `unit`);
@@ -28,21 +27,20 @@ Cosa fa, in sequenza:
 6. errori provocati deliberatamente: `domain_prefix` di un dominio non
    proprio (403 atteso), serial inesistente, `device_type` ignoto su
    `measures-ranges` (404 con `available` atteso), `/data/devices` senza
-   `domain_prefix` (D-29);
+   `domain_prefix`;
 7. sonde su `sort`/`order_by` per stabilire se filtri e ordinamenti
-   esistono (D-19).
+   esistono.
 
 Di ogni chiamata registra **anche gli header di risposta**, non solo il
-body: e' da li' che esce il nome effettivo dell'header di request id (D-30).
+body: e' da li' che esce il nome effettivo dell'header di request id.
 
 Redazione: nessun body grezzo tocca il disco. Ogni response passa per
 `redact()` prima di essere scritta. Politica allineata a
-`custom_components/radoff/diagnostics.py` (card S-17), con due differenze
+`custom_components/radoff/diagnostics.py`, con due differenze
 deliberate, documentate nel README che questo script genera:
 
-- i **serial restano in chiaro** (la card lo dice esplicitamente, e in arch
-  2.0 `deviceId` == `serial_number` == `deviceSerial`, quindi redigerli
-  svuoterebbe le fixture);
+- i **serial restano in chiaro**: sono l'identita' del device, quindi
+  redigerli svuoterebbe le fixture;
 - la redazione e' **basata sul valore**, non solo sulla chiave: qualunque
   UUID, email o JWT viene sostituito con un segnaposto stabile
   (`<uuid-1>`, `<email-1>`, ...), cosi' i riferimenti incrociati fra
@@ -55,7 +53,7 @@ Uso:
 
     export RADOFF_DEV_USERNAME='...'
     export RADOFF_DEV_PASSWORD='...'
-    # facoltativi, per il confronto fra pool di D-24:
+    # facoltativi, per il confronto fra i due pool Cognito:
     export RADOFF_DEV_POOL_ID='eu-west-1_XXXXXXXX'
     export RADOFF_DEV_CLIENT_ID='...'
     python3 scripts/probe_arch2.py
@@ -94,15 +92,15 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_HOST = "https://v2.api.dev.iot.radoff.life"
 DEFAULT_OUT_DIR = REPO_ROOT / "tests" / "fixtures" / "dev"
 
-# D-13: enumerazione confermata dal backend.
+# Enumerazione dei device type confermata dal backend.
 DEVICE_TYPES = ("sense", "now", "nowplus", "city", "life", "sismoff")
 
-# Valori deliberatamente inesistenti per le sonde d'errore (D-29).
+# Valori deliberatamente inesistenti per le sonde d'errore.
 UNKNOWN_DEVICE_TYPE = "not-a-real-device-type"
 UNKNOWN_SERIAL = "RADOFF-NOT-A-REAL-SERIAL-0000"
 DEFAULT_FOREIGN_DOMAIN_PREFIX = "radoff-hq"
 
-# Il primo e' quello indicato dalla risposta a T-02 D-03. Gli altri servono a
+# Il primo e' quello documentato dal backend. Gli altri servono a
 # distinguere "endpoint autorizzato in modo diverso" da "path sbagliato": API
 # Gateway, davanti a una route inesistente CON un header `Authorization`,
 # prova a leggerlo come firma SigV4 e risponde `IncompleteSignatureException`
@@ -110,7 +108,7 @@ DEFAULT_FOREIGN_DOMAIN_PREFIX = "radoff-hq"
 DISCOVERY_PATH = "/data/user/me/domains"
 
 # Varianti storiche, sondate solo se quella buona fallisce. `/auth/...` e' il
-# path che la risposta a T-02 D-03 indicava: su arch 2.0 non esiste, la
+# path che la documentazione indicava: su arch 2.0 non esiste, la
 # discovery e' passata sotto il base path `data` (swagger
 # `yama-be-core-platform`, operationId `getUserDomains`).
 DISCOVERY_PATH_CANDIDATES = (
@@ -122,11 +120,11 @@ DISCOVERY_PATH_CANDIDATES = (
 
 HTTP_OK = 200
 REQUEST_TIMEOUT_SECONDS = 30
-# D-21: 50 rps per stage, condivisi con app mobile e web. Una pausa fra le
+# 50 rps per stage, condivisi con app mobile e web. Una pausa fra le
 # chiamate tiene la ricognizione a due ordini di grandezza dal tetto.
 PAUSE_BETWEEN_CALLS_SECONDS = 0.25
 
-# Misure che le verifiche di T-08 6 vogliono osservare nei payload reali.
+# Misure da osservare nei payload reali.
 MEASURES_OF_INTEREST = (
     "radon",
     "radon_status",
@@ -705,7 +703,7 @@ class Recorder:
             raw_body = {"__non_json_body__": response.text[:2000]}
 
         body = self.redactor.redact(raw_body)
-        # Gli header di risposta servono per intero (D-30): l'unico da
+        # Gli header di risposta servono per intero: l'unico da
         # togliere e' `set-cookie`, che qui non porta informazione.
         response_headers = {
             key.lower(): (REDACTED if _normalize_key(key) in _SECRET_KEYS else value)
@@ -929,7 +927,7 @@ def find_measure_entry(body: Any, measure: str) -> dict[str, Any] | None:
 _COGNITO_CODE_HINTS = {
     "UserNotFoundException": (
         "l'utente NON esiste in questo pool - se le stesse credenziali "
-        "funzionano nell'app dev, il pool di arch 2.0 e' un altro (D-24 b)"
+        "funzionano nell'app dev, il pool di arch 2.0 e' un altro"
     ),
     "NotAuthorizedException": (
         "password errata, utente disabilitato, OPPURE utente inesistente "
@@ -1053,7 +1051,7 @@ def attempt_pools(
     """
     Login SRP su ogni pool configurato, poi la stessa chiamata su host v2.
 
-    E' il test di D-24 nella sua forma minima: lo stesso account, la stessa
+    Il confronto fra pool nella sua forma minima: lo stesso account, la stessa
     richiesta, due token diversi. Quale dei due l'API 2.0 accetta e' la
     risposta.
     """
@@ -1302,7 +1300,7 @@ def pick_domain_with_devices(
 
     Non basta "ha device": il primo dominio della lista puo' essere vuoto, e
     uno pieno di device che non hanno mai trasmesso (`telemetry: null`, →
-    D-16) fa uscire "non osservato" da ogni verifica sui valori. Nemmeno
+    fa uscire "non osservato" da ogni verifica sui valori. Nemmeno
     basta "ha telemetria": con due device la verifica sull'ordinamento in
     paginazione (V1) non dimostra niente, perche' la seconda pagina e'
     vuota.
@@ -1310,7 +1308,7 @@ def pick_domain_with_devices(
     Scandisce quindi tutti i domini e sceglie, in ordine di preferenza, **il
     piu' popoloso fra quelli che hanno telemetria**, poi il piu' popoloso in
     assoluto, poi il primo. Il censimento che ne esce - quanti device per
-    dominio - e' anche il dato che serve a D-20.
+    dominio - e' anche il censimento dei domini dell'account.
     """
     items = find_list_of_objects(domains_body)
     if not items:
@@ -1364,7 +1362,7 @@ def _has_telemetry(body: Any) -> bool:
     """
     Vero se almeno un device della risposta porta telemetria valorizzata.
 
-    Un device che non ha mai trasmesso arriva con `telemetry: null` (→ D-16),
+    Un device che non ha mai trasmesso arriva con `telemetry: null`,
     ed e' indistinguibile da uno vivo finche' non si guarda quel campo. Un
     dominio pieno di device muti produce una ricognizione che risponde 200 a
     tutto e non osserva niente: e' il caso che questa funzione evita.
@@ -1496,7 +1494,7 @@ def probe_device_detail(
 def probe_errors(
     config: Config, recorder: Recorder, token: str, auth_style: str = "bearer"
 ) -> None:
-    """Errori provocati deliberatamente, per la tassonomia di M-02 (D-29)."""
+    """Errori provocati deliberatamente, per la tassonomia degli errori."""
     print("\n[errori] provocati deliberatamente")
     recorder.get(
         "error__devices_foreign_domain",
@@ -1527,7 +1525,7 @@ def probe_errors(
 
 
 # --------------------------------------------------------------------------
-# Verifiche (T-08 6) ricavate dalle response, non scritte a mano
+# Verifiche ricavate dalle response, non scritte a mano
 # --------------------------------------------------------------------------
 _REQUEST_ID_HINTS = ("request-id", "requestid", "apigw-id", "trace-id", "correlation")
 
@@ -1560,7 +1558,8 @@ def _call_named(calls: list[Call], name: str) -> Call | None:
 # rifiuto del genere NON dice niente sul pool Cognito di provenienza.
 # L'authorizer Cognito, quando valuta il JWT e lo respinge, risponde 401
 # `{"message": "Unauthorized"}` con questo errortype. E' l'unico rifiuto
-# che risponde davvero a D-24: gli altri avvengono prima della validazione.
+# che dice davvero quale pool l'host accetta: gli altri avvengono prima
+# della validazione.
 _AUTHORIZER_LEVEL_ERRORS = frozenset({"UnauthorizedException", "AccessDeniedException"})
 
 _GATEWAY_LEVEL_ERRORS = frozenset(
@@ -1621,7 +1620,7 @@ def analyze(
     """Calcola un esito per ogni verifica dell'elenco della card."""
     findings: list[dict[str, Any]] = []
 
-    # --- D-24 -------------------------------------------------------------
+    # --- cognito-pool -----------------------------------------------------
     accepted = [a.label for a in attempts if a.v2_status == 200]
     rejected = [
         f"{a.label}={a.v2_status if a.login_ok else 'login fallito'}"
@@ -1629,7 +1628,7 @@ def analyze(
         if a.v2_status != 200
     ]
     # Tre esiti, non due: "il login non e' nemmeno riuscito" non e' una
-    # risposta a D-24, che chiede se l'host v2 accetta un token del pool
+    # domanda se l'host v2 accetta un token del pool
     # attuale. Senza token, l'host v2 non e' mai stato interrogato.
     current = next((a for a in attempts if a.label == "pool_current"), None)
     gateway_error = next(
@@ -1641,7 +1640,7 @@ def analyze(
         ),
         None,
     )
-    # Un rifiuto dell'authorizer su QUALUNQUE base path risponde a D-24: il
+    # Un rifiuto dell'authorizer su QUALUNQUE base path e' una risposta: il
     # JWT e' stato valutato e respinto. Vale piu' del rifiuto della sola
     # discovery, che avviene prima della validazione e non guarda il token.
     authorizer_rejections = sorted(
@@ -1670,7 +1669,7 @@ def analyze(
             "NON DETERMINATO: la discovery e' stata rifiutata da API Gateway "
             f"con `{gateway_error}`, cioe' PRIMA di validare il JWT. Il "
             "rifiuto riguarda come l'endpoint e' autorizzato, non da quale "
-            "pool viene il token - vedi D-24-surface"
+            "pool viene il token - vedi auth-surface"
         )
     elif current is not None and not current.login_ok:
         d24_outcome = (
@@ -1694,7 +1693,7 @@ def analyze(
         )
     )
 
-    # --- D-28 -------------------------------------------------------------
+    # --- srp-flow ---------------------------------------------------------
     # Un app client puo' esistere, essere quello giusto, e comunque non
     # permettere il login: i flussi di autenticazione si abilitano uno per
     # uno. Se SRP non e' fra quelli, questa integrazione non ha un piano B -
@@ -1764,8 +1763,8 @@ def analyze(
         )
     )
 
-    # --- D-24-surface -----------------------------------------------------
-    # Tre base path mapping distinti sullo stesso host (T-02 D-01): possono
+    # --- auth-surface -----------------------------------------------------
+    # Tre base path mapping distinti sullo stesso host: possono
     # avere autorizzazioni diverse, e un rifiuto su uno non implica gli altri.
     surface: dict[str, dict[str, Any]] = {}
     for call in calls:
@@ -1809,7 +1808,7 @@ def analyze(
         )
     )
 
-    # --- D-03 -------------------------------------------------------------
+    # --- discovery --------------------------------------------------------
     discovery_calls = [c for c in calls if c.name.startswith("auth_domains__")]
     discovery_errors = {err for c in discovery_calls if (err := _amzn_error_type(c))}
     # Ragiona per BASE PATH, non per singolo path. Un base path dietro
@@ -1895,7 +1894,7 @@ def analyze(
         )
     )
 
-    # --- D-03-routes ------------------------------------------------------
+    # --- discovery-routes -------------------------------------------------
     # Le sonde non autenticate: e' qui che si stabilisce se una risorsa
     # esiste. `MissingAuthenticationTokenException` su una GET senza header
     # non discrimina da sola (anche un metodo IAM risponde cosi'), ma una
@@ -1932,7 +1931,7 @@ def analyze(
             )
         )
 
-    # --- D-30 -------------------------------------------------------------
+    # --- request-id-header ------------------------------------------------
     header_names: dict[str, str] = {}
     for call in calls:
         for header, value in call.response_headers.items():
@@ -1952,7 +1951,7 @@ def analyze(
         )
     )
 
-    # --- D-29 -------------------------------------------------------------
+    # --- error-taxonomy ---------------------------------------------------
     error_calls = [c for c in calls if c.name.startswith("error__")]
     findings.append(
         _finding(
@@ -1971,7 +1970,7 @@ def analyze(
         )
     )
 
-    # --- V1: ordinamento e filtri ----------------------------------------
+    # --- pagination-stable: ordinamento e filtri --------------------------
     page1 = serials_of(_body_of(calls, "devices__page1_small"))
     page2 = serials_of(_body_of(calls, "devices__page2_small"))
     repeat = serials_of(_body_of(calls, "devices__page1_small_repeat"))
@@ -2014,7 +2013,7 @@ def analyze(
         )
     )
 
-    # --- V2: enumerazione delle unit --------------------------------------
+    # --- unit-enumeration: i valori di unit -------------------------------
     units = collect_units(_body_of(calls, "measures_ranges__all"))
     findings.append(
         _finding(
@@ -2026,7 +2025,7 @@ def analyze(
         )
     )
 
-    # --- V3: pm10 excellent upperBound ------------------------------------
+    # --- pm10-bands: excellent upperBound ---------------------------------
     pm10 = find_measure_entry(_body_of(calls, "measures_ranges__all"), "pm10")
     findings.append(
         _finding(
@@ -2042,7 +2041,7 @@ def analyze(
         )
     )
 
-    # --- V4: PM sul sismoff ------------------------------------------------
+    # --- sismoff-pm: i PM sul sismoff -------------------------------------
     sismoff_body = _body_of(calls, "measures_ranges__sismoff")
     sismoff_pm = {
         measure: find_measure_entry(sismoff_body, measure) is not None
@@ -2069,7 +2068,7 @@ def analyze(
         )
     )
 
-    # --- V5, V7, V8: valori realmente osservati nei payload ---------------
+    # --- radon-status, pressure-unit, temperature-unit: valori osservati ---
     observed: dict[str, list[Any]] = {}
     for call in calls:
         if call.name.startswith(("devices__", "device_detail")):
@@ -2112,7 +2111,7 @@ def analyze(
         )
     )
 
-    # --- V6: forma di /auth/user/me/domains -------------------------------
+    # --- domain-label: forma della discovery ------------------------------
     domain_items = find_list_of_objects(domains_body)
     domain_keys = sorted({k for item in domain_items for k in _domain_object(item)})
     has_prefix = any(_normalize_key(k) == "prefix" for k in domain_keys)
@@ -2272,7 +2271,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
             "Ricognizione dell'API Radoff arch 2.0 su dev, con salvataggio "
-            "di fixture reali redatte (card M-01)."
+            "di fixture reali redatte."
         )
     )
     parser.add_argument(
@@ -2352,7 +2351,7 @@ def main(argv: list[str] | None = None) -> int:
     if len(config.pools) == 1:
         print(
             "  NOTA: RADOFF_DEV_POOL_ID/RADOFF_DEV_CLIENT_ID non impostati - "
-            "D-24 resta parziale (nessun confronto con un pool dev)."
+            "il confronto fra pool resta parziale (nessun pool dev)."
         )
 
     # I flussi si sondano PRIMA di tentare il login: costano una chiamata a
@@ -2374,7 +2373,8 @@ def main(argv: list[str] | None = None) -> int:
         write_findings(config, findings)
         print(
             "\nNessun login SRP e' riuscito: la ricognizione non e' partita.\n"
-            "ATTENZIONE: questo NON e' l'esito di D-24 - l'host v2 non e' mai "
+            "ATTENZIONE: questo NON dice quale pool l'host accetta - l'host "
+            "v2 non e' mai "
             "stato interrogato.\nIl problema e' fra credenziali e pool "
             "Cognito, non fra token e API 2.0.\n"
             "Vedi il codice Cognito stampato sopra."
@@ -2383,7 +2383,7 @@ def main(argv: list[str] | None = None) -> int:
 
     # Un token c'e'. Che la discovery lo abbia rifiutato NON e' una ragione
     # per fermarsi: `/auth/*`, `/analytics/*` e `/data/*` sono tre base path
-    # mapping distinti sullo stesso host (T-02 D-01), e possono benissimo
+    # mapping distinti sullo stesso host, e possono benissimo
     # avere autorizzazioni diverse. Sapere QUALI accettano il token e quali
     # no e' informazione che vale quanto la ricognizione stessa.
     token = logged_in.token

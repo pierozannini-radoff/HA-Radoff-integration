@@ -1,24 +1,16 @@
 """
-Verifica dal vivo dei criteri di accettazione di M-05 (RT-2944), su dev.
+Verifica dal vivo, su dev, del budget di richieste di un ciclo di polling.
 
-Perche' esiste
---------------
-M-05 e' una card di scheduling: decide *quando* parte la richiesta che M-03
-ha reso unica, non cosa quella richiesta porta indietro. Quasi tutto cio'
-che decide e' locale - l'offset di un'installazione, il minimo del form, il
-comportamento dopo un 429 - e vive nella suite mockata, che lo verifica
-meglio e senza toccare l'API.
-
-Quello che una suite mockata non puo' verificare e' il numero su cui la
-card poggia: che un ciclo, sull'API vera e sul dominio vero, costi **una
-richiesta**. E' l'affermazione che il README fa in pubblico ("una richiesta
-ogni N secondi, piu' una per tipo di device a ogni riavvio") ed e' la
-ragione per cui 300 s e' difendibile su una quota condivisa. Se il backend
-cambiasse `page_size` massimo o smettesse di servire la telemetria inline,
-la suite resterebbe verde e quel numero diventerebbe falso.
-
-Cosa guarda, in una frase: che il budget di richieste che M-05 documenta
-sia quello che l'API vera addebita oggi.
+Lo scheduling e' quasi tutto locale - l'offset di un'installazione, il
+minimo del form, il comportamento dopo un 429 - e vive nella suite mockata,
+che lo verifica meglio e senza toccare l'API. Quello che una suite mockata
+non puo' verificare e' il numero su cui poggia il resto: che un ciclo,
+sull'API vera e sul dominio vero, costi **una richiesta**. E'
+l'affermazione che il README fa in pubblico ("una richiesta ogni N secondi,
+piu' una per tipo di device a ogni riavvio") ed e' la ragione per cui 300 s
+e' difendibile su una quota condivisa. Se il backend cambiasse il
+`page_size` massimo o smettesse di servire la telemetria inline, la suite
+resterebbe verde e quel numero diventerebbe falso.
 
 Come si esegue
 --------------
@@ -39,12 +31,12 @@ vuoto, e i controlli sul costo di un ciclo finiscono in `skip`.
 Cosa NON verifica, e perche'
 ----------------------------
 - **Il 429.** Non e' provocabile in modo onesto: il tetto e' 50 req/s
-  steady per *stage*, condiviso con l'app mobile e con il web (T-02), e
+  steady per *stage*, condiviso con l'app mobile e con il web, e
   saturarlo per vedere l'errore significherebbe degradare il servizio di
   chiunque altro stia usando dev in quel momento. Il comportamento dopo un
   429 e' verificato in `tests/test_coordinator.py` con una response
-  montata, e la forma del corpo e' quella che il backend ha documentato in
-  T-02 D-22. Qui compare come `skip` esplicito, non come `PASS`.
+  montata, nella forma del corpo che il backend ha documentato. Qui compare
+  come `skip` esplicito, non come `PASS`.
 - **La cadenza reale nel tempo.** Osservare che due cicli distino davvero
   300 s vorrebbe dire tenere lo script acceso per un quarto d'ora per
   guardare un timer di Home Assistant: e' il framework a garantirlo, e la
@@ -96,7 +88,7 @@ from custom_components.radoff.const import (  # noqa: E402
 from custom_components.radoff.coordinator import _stable_fraction  # noqa: E402
 
 # Il tetto del catalogo: cinque tipi, quindi al massimo cinque richieste di
-# schema a ogni riavvio, qualunque sia il numero di device (M-04).
+# schema a ogni riavvio, qualunque sia il numero di device.
 CATALOGUE_SIZE = 5
 
 # Quanti entry_id sintetici usare per mostrare la dispersione dell'offset.
@@ -215,12 +207,10 @@ def check_one_request_per_cycle(
     verdict: Verdict, api: API, counter: RequestCounter
 ) -> list[Any]:
     """
-    Il numero su cui poggia tutta la card: un ciclo, una richiesta.
+    Il numero su cui poggia tutto il resto: un ciclo, una richiesta.
 
-    Non e' un AC di M-05 - l'AC sulla chiamata unica si e' spostato in M-03
-    con il passo 1 - ma e' il presupposto di ogni numero che questa card
-    scrive nel README e nel form. Vale rimisurarlo sull'API vera prima di
-    pubblicarlo.
+    E' il presupposto di ogni numero scritto nel README e nel form, e vale
+    rimisurarlo sull'API vera prima di pubblicarlo.
     """
     counter.paths.clear()
     started = time.monotonic()
@@ -239,7 +229,7 @@ def check_one_request_per_cycle(
     budget = DEFAULT_SCAN_INTERVAL * UPDATE_TIMEOUT_FACTOR
     verdict.check(
         elapsed < budget,
-        f"Il ciclo sta dentro il budget di {budget:.0f}s (S-13, riletto da M-05)",
+        f"Il ciclo sta dentro il budget di {budget:.0f}s",
         f"misurato {elapsed:.2f}s, cioe' il {elapsed / budget * 100:.2f}% del budget",
     )
     return devices
@@ -249,11 +239,10 @@ def check_setup_cost(
     verdict: Verdict, api: API, counter: RequestCounter, devices: list[Any]
 ) -> None:
     """
-    L'altra meta' del budget: una richiesta per tipo, a ogni riavvio (M-04).
+    L'altra meta' del budget: una richiesta per tipo, a ogni riavvio.
 
-    La nota di M-04 in fondo alla card di M-05 dice che il setup costa una
-    `measures-ranges` per tipo distinto e che il tetto e' il catalogo, cioe'
-    cinque, anche sul dominio da 83 device censito da M-01. E' cio' che il
+    Il setup costa una `measures-ranges` per tipo distinto, e il tetto e' il
+    catalogo - cinque - qualunque sia il numero di device. E' cio' che il
     README promette; si misura contando le richieste, non fidandosi.
     """
     types = sorted({device.device_type for device in devices if device.device_type})
@@ -331,7 +320,7 @@ def report_rate_limit_not_provoked(verdict: Verdict) -> None:
     verdict.skip(
         "Un 429 salta il ciclo e non marca le entita' non disponibili",
         "il tetto e' 50 req/s per stage, condiviso con l'app mobile e il web "
-        "(T-02): saturarlo per vedere l'errore degraderebbe il servizio di "
+        "saturarlo per vedere l'errore degraderebbe il servizio di "
         "chiunque altro stia usando dev. Verificato in "
         "tests/test_coordinator.py con una response montata",
     )
@@ -358,7 +347,7 @@ def main(argv: list[str] | None = None) -> int:
     region = args.pool_region or args.pool_id.partition("_")[0]
 
     print()
-    print("  Verifica dal vivo degli AC di M-05 (RT-2944)")
+    print("  Verifica dal vivo del budget di richieste")
     print(f"  host      : {args.base_url}")
     print(f"  pool      : {args.pool_id} / client {args.client_id} / {region}")
     print(

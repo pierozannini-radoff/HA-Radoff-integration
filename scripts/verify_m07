@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Tutte le verifiche della card M-07 (RT-2946), in ordine, in un colpo solo.
+# Tutte le verifiche di domain_prefix e config entry VERSION 3, in un colpo.
 #
 #   ./scripts/verify_m07              # tutto, verifica dal vivo compresa
 #   ./scripts/verify_m07 --offline    # salta la passata su dev (nessuna rete)
@@ -25,17 +25,15 @@ OFFLINE=0
 
 FAILED=()
 
-# Errori mypy preesistenti a questa card, misurati a fine M-06.
+# Errori mypy gia' presenti prima di questo lavoro.
 MYPY_BASELINE="${MYPY_BASELINE:-21}"
 
-# I file di questa card in cui un errore di tipo non puo' essere debito
-# ereditato. config_flow.py, repairs.py e coordinator.py sono fuori dalla
-# lista pur essendo riscritti: portano da prima di M-07 dodici errori
-# `ConfigEntry | None` (il tipo che Home Assistant dichiara e che questi
-# flussi usano sapendo che non e' None), e includerli qui significherebbe
-# far fallire lo script su debito che questa card non ha contratto. Su
-# quelli vigila il conto totale: 21 e' la misura a fine M-06, e questa card
-# non lo alza.
+# I file in cui un errore di tipo non puo' essere debito ereditato.
+# config_flow.py, repairs.py e coordinator.py restano fuori pur essendo
+# riscritti: portano dodici errori `ConfigEntry | None` preesistenti (il tipo
+# che Home Assistant dichiara e che questi flussi usano sapendo che non e'
+# None), e includerli farebbe fallire lo script su debito non contratto qui.
+# Su quelli vigila il conto totale, che non deve salire sopra la baseline.
 MYPY_OWNED='custom_components/radoff/(__init__|issues|const|schema|diagnostics)\.py'
 
 check_types() {
@@ -76,7 +74,7 @@ step() {
 }
 
 echo
-echo "  Verifiche della card M-07 (RT-2946) - domain_prefix e config entry VERSION 3"
+echo "  Verifiche di domain_prefix e config entry VERSION 3"
 echo "  branch: $(git branch --show-current)"
 
 # 1. Formattazione e lint. --check non riscrive nulla: se fallisce, il
@@ -85,8 +83,8 @@ step "Formattazione (nessuna riscrittura)" ruff format --check .
 step "Lint" ruff check .
 
 # 2. La suite intera. Non solo i test di questa card: rinominare la chiave
-#    del dominio e cambiare l'unita' del tvoc tocca file che test scritti
-#    per S-11, M-04 e M-06 asserivano per conto loro.
+#    del dominio e cambiare l'unita' del tvoc tocca file che altri test
+#    asserivano per conto loro.
 step "Suite completa" python3 -m pytest -q
 
 # 3. Gli AC di questa card, isolati e con i nomi in chiaro: serve a leggere
@@ -100,7 +98,7 @@ step "Suite completa" python3 -m pytest -q
 #    AC6 entry senza dominio -> fix   -> test_repair_single_domain_loads_the_entry
 #                                        + test_upgrade_of_a_real_v1_entry_raises_a_repair_not_a_keyerror
 #    AC7 migrazione idempotente       -> test_the_released_backup_migration_is_idempotent
-step "AC di M-07, uno per riga" python3 -m pytest -v --no-cov -p no:randomly \
+step "Criteri, uno per riga" python3 -m pytest -v --no-cov -p no:randomly \
     tests/test_init.py \
     tests/test_config_flow.py \
     tests/test_repairs.py \

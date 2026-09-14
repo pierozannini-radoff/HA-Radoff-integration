@@ -1,42 +1,30 @@
 """
-Verifica dal vivo dei criteri di accettazione di M-07 (RT-2946), su dev.
+Verifica dal vivo, su dev, della discovery del dominio e del 403.
 
-Perche' esiste
---------------
-M-07 fa due cose molto diverse, e solo una delle due si puo' guardare dal
-vivo.
+La migrazione del registry non e' qui: e' deterministica e offline, e la
+suite la esercita su una ricostruzione del registry di un'installazione
+reale. Il config flow invece dipende interamente da cosa risponde l'API, e
+le risposte mockate della suite sono una fotografia. Questa passata
+verifica che la forma su cui il flow e' scritto sia ancora quella servita:
 
-La migrazione del registry - il re-keying degli `unique_id` di
-un'installazione esistente - non tocca la rete: e' deterministica, offline,
-e la suite mockata la esercita su una ricostruzione del registry vero
-misurato da RT-2827 (32 entita', due device). Una
-passata su dev non aggiungerebbe niente e non potrebbe provocare nessuno dei
-casi limite. Resta la passata a mano su un'istanza reale, che chiude M-08.
-
-Il config flow invece dipende interamente da cosa risponde l'API, e le
-risposte mockate della suite sono quelle che M-01 ha catturato mesi fa.
-Questa passata verifica che la forma su cui il flow si e' basato sia ancora
-quella servita oggi:
-
-1. **la discovery e' chiamabile col solo bearer**, sul path di `/data/*` e
-   non su quello di `/auth/*` di arch 1.x (T-02 D-03). Il tranello di M-01
-   e' che un path inesistente con un header `Authorization` risponde
-   `IncompleteSignatureException` - API Gateway prova a leggerlo come firma
-   SigV4 - quindi un path sbagliato ha la stessa faccia di un problema di
-   autorizzazione: qui i due casi vengono distinti per nome;
+1. **la discovery e' chiamabile col solo bearer**, sul path sotto `/data/*`
+   e non su quello sotto `/auth/*`. Il tranello: un path inesistente con un
+   header `Authorization` risponde `IncompleteSignatureException` - API
+   Gateway prova a leggerlo come firma SigV4 - quindi un path sbagliato ha
+   la stessa faccia di un problema di autorizzazione, e qui i due casi
+   vengono distinti per nome;
 2. **la forma della risposta e' annidata**: ogni elemento e'
    `{"domain": {...}, "role": {...}}`, non un oggetto dominio piatto. E' il
    punto su cui `config_flow.py::domain_choices` e' scritto;
-3. **l'etichetta leggibile e' `name`, non `prefix`** (T-08 D-03). Su dev
-   M-01 aveva contato 14 prefissi su 15 che sono frammenti di UUID (riserva
-   20): questa passata ricalcola quel rapporto, perche' se un giorno i
-   prefissi diventassero leggibili la scelta dell'etichetta andrebbe
-   ridiscussa;
-4. **il dominio scelto ha dei device**, che e' l'abort dedicato di T-08 D-32;
+3. **l'etichetta leggibile e' `name`, non `prefix`**: su dev quasi tutti i
+   prefissi sono frammenti di UUID. Questa passata ricalcola il rapporto,
+   perche' se un giorno diventassero leggibili la scelta dell'etichetta
+   andrebbe ridiscussa;
+4. **il dominio scelto ha dei device**, il ramo opposto dell'abort
+   `no_devices`;
 5. **un `domain_prefix` a cui l'account non appartiene risponde 403**, e non
    401 ne' 200 con i device di qualcun altro. E' il presupposto del flusso
-   Repairs che questa card rende interattivo: senza un 403 distinguibile non
-   c'e' niente da riparare.
+   Repairs: senza un 403 distinguibile non c'e' niente da riparare.
 
 Come si esegue
 --------------
@@ -54,7 +42,7 @@ Cosa NON verifica, e perche'
 ----------------------------
 - **La migrazione degli unique_id.** Offline e deterministica: vive in
   `tests/test_init.py`, sulla ricostruzione del registry reale. Quello che
-  nessuno script puo' fare e' la passata su un backup vero, che e' M-08.
+  nessuno script puo' fare e' la passata su un backup vero.
 - **Il flusso Repairs end to end.** Richiede l'interfaccia di Home
   Assistant. Qui si verifica solo il suo presupposto, il 403 al punto 5;
   il flusso e' in `tests/test_repairs.py` e si guarda a mano con
@@ -101,8 +89,8 @@ from custom_components.radoff.const import (  # noqa: E402
     DEFAULT_POOL_REGION,
 )
 
-# Un prefisso "non leggibile" nel senso della riserva 20 di M-01: otto
-# caratteri esadecimali, cioe' il primo blocco di un UUID. Non e' una regola
+# Un prefisso "non leggibile": otto caratteri esadecimali, cioe' il primo
+# blocco di un UUID. Non e' una regola
 # del backend, e' cio' che dev serve di fatto - ed e' esattamente il motivo
 # per cui l'etichetta della scelta e' `name`.
 UUID_FRAGMENT = re.compile(r"^[0-9a-f]{8}$")
@@ -140,7 +128,7 @@ def auth_hint(err: Exception, pool_id: str) -> str:
             f"L'handshake sul pool {pool_id} ({label}) e' riuscito, ma l'API "
             "ha risposto 401.\n"
             "E' il token a essere del pool sbagliato per questo host: l'API "
-            "di dev accetta solo il pool dev (M-01, accepted_pool)."
+            "di dev accetta solo il pool dev (accepted_pool)."
         )
     return ""
 
@@ -296,10 +284,10 @@ def check_the_label_is_worth_showing(
     verdict: Verdict, domains: list[dict[str, Any]]
 ) -> None:
     """
-    Punto 3: `name` e' leggibile dove `prefix` non lo e' (T-08 D-03).
+    Punto 3: `name` e' leggibile dove `prefix` non lo e'.
 
-    Ricalcola il rapporto che M-01 aveva misurato - 14 prefissi su 15 sono
-    frammenti di UUID - perche' e' l'unica giustificazione dell'etichetta.
+    Ricalcola quanti prefissi sono frammenti di UUID, perche' e' l'unica
+    giustificazione dell'etichetta.
     Non e' un FAIL se i prefissi diventassero leggibili: sarebbe una buona
     notizia e una decisione da ridiscutere, quindi viene detta e basta.
     """
@@ -317,8 +305,7 @@ def check_the_label_is_worth_showing(
         len(named) == len(choices),
         "Ogni dominio porta un name diverso dal prefisso",
         f"{len(named)}/{len(choices)} con etichetta propria; "
-        f"{len(opaque)}/{len(choices)} prefissi sono frammenti di UUID "
-        "(M-01, riserva 20)",
+        f"{len(opaque)}/{len(choices)} prefissi sono frammenti di UUID",
     )
 
 
@@ -326,7 +313,7 @@ def check_the_chosen_domain_has_devices(
     verdict: Verdict, api: API, domain_prefix: str
 ) -> None:
     """
-    Punto 4: il dominio scelto ha almeno un device (il ramo opposto di D-32).
+    Punto 4: il dominio scelto ha almeno un device.
 
     Il config flow chiude il setup con l'abort `no_devices` quando la
     risposta e' vuota. Qui si verifica che su un dominio popolato la
@@ -354,13 +341,12 @@ def check_a_foreign_domain_is_a_403(verdict: Verdict, api: API) -> None:
     """
     Punto 5: un dominio altrui risponde 403, distinguibile da un 401.
 
-    E' il presupposto del flusso Repairs interattivo che questa card
-    aggiunge: il client traduce il 403 in `APIDomainAccessError`, il
-    coordinator lo traduce in un `ConfigEntryError` piu' una issue
-    riparabile, e il flusso ri-seleziona il dominio. Se l'API rispondesse
-    401 sarebbe indistinguibile da una sessione scaduta e l'utente finirebbe
-    a reinserire una password che non e' il problema (il difetto che M-02 ha
-    corretto); se rispondesse 200 sarebbe molto peggio.
+    E' il presupposto del flusso Repairs interattivo: il client traduce il
+    403 in `APIDomainAccessError`, il coordinator lo traduce in un
+    `ConfigEntryError` piu' una issue riparabile, e il flusso ri-seleziona
+    il dominio. Se l'API rispondesse 401 sarebbe indistinguibile da una
+    sessione scaduta e l'utente finirebbe a reinserire una password che non
+    e' il problema; se rispondesse 200 sarebbe molto peggio.
     """
     original = api.domain_prefix
     api.domain_prefix = FOREIGN_DOMAIN_PREFIX
@@ -385,8 +371,8 @@ def check_a_foreign_domain_is_a_403(verdict: Verdict, api: API) -> None:
 
     verdict.fail(
         "Un domain_prefix altrui risponde 403 (non 401, non 200)",
-        f"ha risposto 200 con {len(devices)} device: la query non e' filtrata "
-        "dal domain_prefix come M-01 aveva misurato.",
+        f"ha risposto 200 con {len(devices)} device: la query non e' "
+        "filtrata dal domain_prefix.",
     )
 
 
@@ -413,7 +399,7 @@ def main() -> int:
     )
 
     print()
-    print("  Verifica dal vivo degli AC di M-07 (RT-2946)")
+    print("  Verifica dal vivo della discovery del dominio e del 403")
     print(f"  host      : {args.base_url}")
     print(f"  pool      : {args.pool_id} / client {args.client_id} / {region}")
     print()
@@ -454,8 +440,8 @@ def main() -> int:
 
     print()
     print("  Nota: la migrazione del registry non e' qui e non puo' esserlo -")
-    print("  e' offline. Vive in tests/test_init.py, sulla ricostruzione del")
-    print("  registry reale di RT-2827, e la passata su un backup vero e' M-08.")
+    print("  e' offline. Vive in tests/test_init.py, sulla ricostruzione di")
+    print("  un registry reale; la passata su un backup vero si fa a mano.")
 
     return verdict.exit_code()
 

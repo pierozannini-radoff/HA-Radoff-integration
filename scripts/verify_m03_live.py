@@ -1,20 +1,12 @@
 """
-Verifica dal vivo dei criteri di accettazione di M-03 (RT-2941), su dev.
+Verifica dal vivo, su dev, della chiamata dati e del modello che ne esce.
 
-Perche' esiste
---------------
-La suite automatica di M-03 gira col trasporto mockato: prova che il client
-concorda con le fixture reali di M-01, non che concordi con l'API di oggi.
-M-03 e' anche il punto della serie in cui il pattern di chiamata cambia -
-da `1 + N` (search + una GET per device) a una sola `GET /data/devices`
-paginata - e un cambio del genere si guarda una volta contro il backend
-vero prima di chiudere la card.
-
-Questo script fa esattamente quello: costruisce il client vero
-(`custom_components.radoff.api.API`), chiama `get_devices()` una volta
-contro `DEFAULT_BASE_URL`, e verifica gli AC della card sulla response che
+La suite automatica gira col trasporto mockato: prova che il client concorda
+con le fixture, non che concordi con l'API di oggi. Questo script costruisce
+il client vero (`custom_components.radoff.api.API`), chiama `get_devices()`
+una volta contro `DEFAULT_BASE_URL` e stampa un verdetto sulla response che
 torna davvero. Non e' codice spedito e non e' un test: vive in `scripts/`,
-si esegue a mano con le proprie credenziali, e stampa un verdetto.
+si esegue a mano con le proprie credenziali.
 
 Come si esegue
 --------------
@@ -25,8 +17,8 @@ Come si esegue
     # su un dominio specifico, invece del primo con telemetria
     python3 scripts/verify_m03_live.py --domain-prefix 875fe89b
 
-    # se l'app client del pool dev non ha ancora ALLOW_USER_SRP_AUTH
-    # (la richiesta aperta di M-01), l'unico modo di arrivare ai dati:
+    # se l'app client del pool dev non ha ALLOW_USER_SRP_AUTH, l'unico
+    # modo di arrivare ai dati:
     python3 scripts/verify_m03_live.py --auth-flow password \
         --pool-id eu-west-1_XXXXXXXX --client-id XXXXXXXX
 
@@ -35,16 +27,16 @@ Cosa NON verifica
 - Il wiring lato Home Assistant (entita', registry, availability): serve un
   HA vivo, e quello lo coprono i test di `tests/test_sensor.py` e
   `tests/test_coordinator.py`, che girano dentro `hass`.
-- Con `--auth-flow password` non verifica l'handshake di autenticazione
-  dell'integrazione, che usa SRP: quel flusso viene scavalcato e il token
-  iniettato nella sessione. Lo script lo dice a schermo, forte, perche' un
-  PASS ottenuto cosi' non e' un PASS sull'autenticazione.
+- Con `--auth-flow password` non verifica l'handshake SRP
+  dell'integrazione: quel flusso viene scavalcato e il token iniettato nella
+  sessione. Lo script lo dice a schermo, perche' un PASS ottenuto cosi' non
+  e' un PASS sull'autenticazione.
 
 Politica di stampa
 ------------------
 Stessa di `probe_arch2.py` e di `diagnostics.py`: i serial si stampano (in
-arch 2.0 sono l'identita' del device e M-01 li tiene in chiaro nelle
-fixture), le etichette scritte da persone no - `name`, `room_name`,
+sono l'identita' del device), le etichette scritte da persone no - `name`,
+`room_name`,
 `building_name` non compaiono mai, ne' le coordinate, ne' l'email, ne'
 alcun token.
 """
@@ -76,9 +68,8 @@ from custom_components.radoff.const import (  # noqa: E402
     DOMAIN,
 )
 
-# Intervalli di plausibilita' per i due valori su cui M-03 ha tolto una
-# conversione (il fattore 0.00835 su internal_temperature). Non sono
-# soglie di prodotto - quelle arrivano con lo schema in M-04 - sono la
+# Intervalli di plausibilita' per i due valori serviti senza conversione.
+# Non sono soglie di prodotto - quelle arrivano con lo schema - sono la
 # domanda "questo numero e' gia' nell'unita' dichiarata?": una temperatura
 # fuori da questo intervallo vorrebbe dire che una scala serve ancora.
 PLAUSIBLE_CELSIUS = (-40.0, 85.0)
@@ -183,8 +174,8 @@ def inject_password_flow_token(api: API, username: str, password: str) -> None:
     Autentica con USER_PASSWORD_AUTH e infila il token nella sessione.
 
     Scorciatoia deliberata, e l'unica strada finche' l'app client del pool
-    dev non ha `ALLOW_USER_SRP_AUTH` (la richiesta aperta di M-01):
-    l'integrazione autentica solo via SRP, che su quel client oggi non e'
+    dev non ha `ALLOW_USER_SRP_AUTH`: l'integrazione autentica solo via
+    SRP, che su quel client oggi non e'
     abilitato. Serve a poter guardare la chiamata dati dal vivo; non dice
     nulla sull'autenticazione dell'integrazione, e lo script lo dichiara.
     """
@@ -212,18 +203,15 @@ def pick_domain(api: API, forced: str | None, max_domains: int) -> str:
     """
     Sceglie il dominio da interrogare: quello passato, o il migliore che c'e'.
 
-    M-01 ha imparato a sue spese che "ha device" non implica "ha dati": la
-    sua prima passata scelse un dominio i cui device erano tutti muti, e i
-    due criteri di accettazione che riguardano i valori restarono non
-    osservati. Qui il dominio si censisce invece di indovinarlo, e si
-    preferisce quello che esercita entrambe le condizioni della card - un
-    device che trasmette E uno con `telemetry: null` - perche' solo li'
-    nessun controllo degrada a `skip`.
+    "Ha device" non implica "ha dati": un dominio i cui device sono tutti
+    muti lascia non osservati i controlli sui valori. Qui il dominio si
+    censisce invece di indovinarlo, e si preferisce quello che esercita
+    entrambe le condizioni - un device che trasmette E uno con
+    `telemetry: null` - perche' solo li' nessun controllo degrada a `skip`.
 
-    Costa una richiesta per dominio, sulla stessa quota condivisa di T-02
-    D-21 (50 req/s): con i 15 domini dell'account di dev e' rumore, ma il
-    tetto e' esplicito in `--max-domains` per non trasformare un account
-    grande in una passata lunga.
+    Costa una richiesta per dominio, sulla quota condivisa con le app
+    Radoff: il tetto e' esplicito in `--max-domains` per non trasformare un
+    account grande in una passata lunga.
     """
     if forced:
         return forced
@@ -374,11 +362,11 @@ def check_model(verdict: Verdict, devices: list[Any]) -> None:
 
 
 def check_timestamps(verdict: Verdict, devices: list[Any]) -> None:
-    """AC/T-08 D-15: measured_at e' il timestamp del blocco, uguale per tutti."""
+    """measured_at e' il timestamp del blocco, uguale per ogni lettura."""
     reporting = [device for device in devices if device.readings]
     if not reporting:
         verdict.skip(
-            "measured_at e' il timestamp del blocco telemetry (T-08 D-15)",
+            "measured_at e' il timestamp del blocco telemetry",
             "nessun device del dominio ha telemetria in questo ciclo",
         )
         return
@@ -495,7 +483,7 @@ def check_unique_ids(verdict: Verdict, devices: list[Any]) -> None:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        description="Verifica dal vivo degli AC di M-03 (RT-2941) contro dev."
+        description="Verifica dal vivo della chiamata dati e del modello, su dev."
     )
     parser.add_argument("--env-file", default=".env")
     parser.add_argument("--username", default=None)
@@ -511,7 +499,7 @@ def main(argv: list[str] | None = None) -> int:
         help=(
             "srp: come fa l'integrazione. password: scavalca l'handshake e "
             "inietta un token USER_PASSWORD_AUTH, unica strada finche' il "
-            "pool dev non abilita ALLOW_USER_SRP_AUTH (richiesta di M-01)."
+            "pool dev non abilita ALLOW_USER_SRP_AUTH."
         ),
     )
     parser.add_argument(
@@ -535,7 +523,7 @@ def main(argv: list[str] | None = None) -> int:
     region = args.pool_region or args.pool_id.partition("_")[0]
 
     print()
-    print("  Verifica dal vivo degli AC di M-03 (RT-2941)")
+    print("  Verifica dal vivo della chiamata dati e del modello")
     print(f"  host      : {args.base_url}")
     print(f"  pool      : {args.pool_id} / client {args.client_id} / {region}")
     print(f"  auth flow : {args.auth_flow}")
@@ -543,8 +531,8 @@ def main(argv: list[str] | None = None) -> int:
         print()
         print("  ATTENZIONE: l'handshake SRP dell'integrazione e' SCAVALCATO.")
         print("  Questa passata NON verifica l'autenticazione, solo la")
-        print("  chiamata dati e il modello. Vedi la richiesta aperta di M-01")
-        print("  su ALLOW_USER_SRP_AUTH per il pool dev.")
+        print("  chiamata dati e il modello: al pool dev manca")
+        print("  ALLOW_USER_SRP_AUTH.")
     print()
 
     api = API(
@@ -567,9 +555,9 @@ def main(argv: list[str] | None = None) -> int:
         print(f"\n  Impossibile arrivare alla discovery: {type(err).__name__}: {err}")
         if args.auth_flow == "srp":
             print(
-                "  Se e' un errore di autenticazione, e' probabilmente la "
-                "richiesta aperta di M-01:\n  l'app client del pool dev non ha "
-                "ALLOW_USER_SRP_AUTH. Riprova con --auth-flow password."
+                "  Se e' un errore di autenticazione, all'app client del "
+                "pool dev manca\n  ALLOW_USER_SRP_AUTH. Riprova con "
+                "--auth-flow password."
             )
         return 1
 

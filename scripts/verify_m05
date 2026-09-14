@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Tutte le verifiche della card M-05 (RT-2944), in ordine, in un colpo solo.
+# Tutte le verifiche di polling, jitter e 429, in ordine, in un colpo solo.
 #
 #   ./scripts/verify_m05              # tutto, verifica dal vivo compresa
 #   ./scripts/verify_m05 --offline    # salta la passata su dev (nessuna rete)
@@ -43,7 +43,7 @@ step() {
 }
 
 echo
-echo "  Verifiche della card M-05 (RT-2944) - polling, jitter, 429"
+echo "  Verifiche di polling, jitter e 429"
 echo "  branch: $(git branch --show-current)"
 
 # 1. Formattazione e lint. --check non riscrive nulla: se fallisce, il
@@ -56,9 +56,9 @@ step "Lint" ruff check .
 #    altri test asseriscono.
 step "Suite completa" python3 -m pytest -q
 
-# 3. Gli AC di questa card, isolati e con i nomi in chiaro: serve a leggere
+# 3. Gli stessi criteri, isolati e con i nomi in chiaro: serve a leggere
 #    quale criterio e' coperto da quale test, non a coprire di piu'.
-step "AC di M-05, uno per riga" python3 -m pytest -v --no-cov -p no:randomly \
+step "Criteri, uno per riga" python3 -m pytest -v --no-cov -p no:randomly \
     tests/test_coordinator.py \
     tests/test_config_flow.py::test_the_form_refuses_an_interval_below_the_floor \
     tests/test_config_flow.py::test_an_entry_that_never_set_an_interval_polls_at_the_default \

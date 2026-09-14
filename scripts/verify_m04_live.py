@@ -1,20 +1,13 @@
 """
-Verifica dal vivo dei criteri di accettazione di M-04 (RT-2942), su dev.
+Verifica dal vivo, su dev, dello schema servito da `measures-ranges`.
 
-Perche' esiste
---------------
-La suite automatica di M-04 gira contro le fixture di M-01: prova che il
-codice concorda con la response che l'API dava il 10 settembre 2026, non
-con quella che da' oggi. Ed e' esattamente il punto della card: le unita',
-le etichette e le soglie non sono piu' nostre, sono del backend. Se il
-backend le cambia, la suite resta verde e l'integrazione cambia
-comportamento - e' il pregio di questa architettura, non un difetto, ma
-significa che una passata contro l'API vera prima di chiudere la card
-verifica qualcosa che nessun test mockato puo' verificare.
-
-Cosa guarda, in una frase: che lo schema servito oggi sia ancora quello su
-cui questa card e' stata scritta, e che ogni AC che dipende dalla response
-regga sulla response vera.
+La suite automatica gira contro le fixture catturate su dev: prova che il
+codice concorda con la response che l'API dava quel giorno, non con quella
+che da' oggi. Unita', etichette e soglie sono del backend: se le cambia, la
+suite resta verde e l'integrazione cambia comportamento. Questo script
+guarda se lo schema servito oggi e' ancora quello su cui il client e' stato
+scritto, e se ogni controllo che dipende dalla response regge sulla
+response vera.
 
 Come si esegue
 --------------
@@ -28,15 +21,14 @@ Come si esegue
         --pool-id eu-west-1_XXXXXXXX --client-id XXXXXXXX \
         --domain-prefix XXXXXXXX
 
-    # --auth-flow password NON serve piu': ALLOW_USER_SRP_AUTH e' stato
-    # abilitato sul pool dev (RT-2952, verificato il 2026-09-10). Resta
-    # come ripiego se quel flag dovesse tornare indietro.
+    # --auth-flow password non serve: ALLOW_USER_SRP_AUTH e' abilitato sul
+    # pool dev. Resta come ripiego se quel flag tornasse indietro.
 
     # su un dominio specifico, invece del primo con device
     python3 scripts/verify_m04_live.py --domain-prefix 875fe89b
 
 Lo schema non e' scoped per dominio: i controlli sul catalogo (ordinamento,
-fasce, unita', 404, deriva rispetto a M-01) girano anche su un account
+fasce, unita', 404, deriva rispetto alle fixture) girano anche su un account
 senza device. Il dominio serve solo ai due controlli che confrontano lo
 schema con dei device veri.
 
@@ -46,15 +38,12 @@ Cosa NON verifica
   quali sono disabilitate. Serve un HA vivo, e lo coprono `test_sensor.py`
   e `test_init.py`, che girano dentro `hass`. Qui si verifica cio' che
   l'integrazione *deduce* dalla response, che e' l'input di quel wiring.
-- `sismoff`: escluso da questa card per decisione presa il 2026-09-10.
-  Il suo schema viene comunque letto e
-  confrontato con la fixture, perche' costa una richiesta e la deriva del
-  catalogo si misura meglio tutta insieme; nessun controllo sulle entita'
-  di un sismoff.
+- `sismoff`: fuori scopo. Il suo schema viene comunque letto e confrontato
+  con la fixture, perche' costa una richiesta e la deriva del catalogo si
+  misura meglio tutta insieme; nessun controllo sulle entita' di un sismoff.
 - Con `--auth-flow password` non verifica l'handshake SRP: viene
-  scavalcato e il token iniettato. Lo script lo dice a schermo, forte -
-  ed e' il motivo per cui quel ripiego non va usato senza bisogno, ora
-  che SRP su dev funziona.
+  scavalcato e il token iniettato. Lo script lo dice a schermo, ed e' il
+  motivo per cui quel ripiego non va usato senza bisogno.
 
 Politica di stampa
 ------------------
@@ -62,8 +51,8 @@ Stessa di `probe_arch2.py` e di `verify_m03_live.py`: i serial si stampano,
 le etichette scritte da persone no - `name`, `room_name`, `building_name`
 non compaiono mai, ne' le coordinate, ne' l'email, ne' alcun token. Le
 etichette che stampa sono quelle di `measures-ranges` ("Volatile organic
-compounds"), che descrivono un prodotto e non una persona: M-01 aveva gia'
-deciso di tenerle in chiaro nelle fixture per la stessa ragione.
+compounds"), che descrivono un prodotto e non una persona - la stessa
+ragione per cui restano in chiaro nelle fixture.
 """
 
 from __future__ import annotations
@@ -98,17 +87,17 @@ from custom_components.radoff.schema import (  # noqa: E402
 )
 from custom_components.radoff.sensor import DISABLED_BY_DEFAULT  # noqa: E402
 
-# I tipi del catalogo, come M-01 li ha censiti. `life` non ha uno schema su
+# I tipi del catalogo, come censiti su dev. `life` non ha uno schema su
 # dev (404), ed e' incluso apposta: e' il caso reale di "tipo che il
 # catalogo non riconosce" e serve al controllo sul 404.
 CATALOGUE_TYPES = ("nowplus", "sense", "city", "now", "sismoff")
 NO_SCHEMA_TYPE = "life"
 UNKNOWN_TYPE = "not-a-real-device-type"
 
-# Le fixture di M-01 contro cui si misura la deriva del catalogo.
+# Le fixture contro cui si misura la deriva del catalogo.
 FIXTURES_DIR = REPO_ROOT / "tests" / "fixtures" / "dev"
 
-# Fuori scope in questa card, per decisione del 2026-09-10.
+# Fuori scopo: nessun device di questo tipo e' raggiungibile su dev.
 EXCLUDED_FROM_CARD = ("sismoff",)
 
 
@@ -206,10 +195,9 @@ def inject_password_flow_token(api: API, username: str, password: str) -> None:
     """
     Autentica con USER_PASSWORD_AUTH e infila il token nella sessione.
 
-    Identica a quella di `verify_m03_live.py`. Era l'unico modo di arrivare
-    ai dati finche' l'app client del pool dev non aveva `ALLOW_USER_SRP_AUTH`;
-    dal 2026-09-10 quel flag c'e' (RT-2952) e questa scorciatoia serve solo
-    se dovesse tornare indietro. Non dice nulla sull'autenticazione
+    Identica a quella di `verify_m03_live.py`. Serve solo se
+    `ALLOW_USER_SRP_AUTH` sparisse dall'app client del pool dev: oggi c'e',
+    e l'integrazione autentica via SRP. Non dice nulla sull'autenticazione
     dell'integrazione, e lo script lo dichiara a schermo.
     """
     import boto3
@@ -330,7 +318,7 @@ def check_band_order(verdict: Verdict, payloads: dict[str, dict[str, Any]]) -> N
 def check_no_scale_factor(
     verdict: Verdict, payloads: dict[str, dict[str, Any]]
 ) -> None:
-    """AC/T-08: `scaleFactor` non c'e', e il client non applica nulla."""
+    """`scaleFactor` non e' servito, e il client non applica nulla."""
     found = [
         f"{device_type}.{name}"
         for device_type, payload in payloads.items()
@@ -407,7 +395,7 @@ def check_device_classes(verdict: Verdict, payloads: dict[str, dict[str, Any]]) 
 
     verdict.check(
         "aqi_value" in DISABLED_BY_DEFAULT,
-        "AC: `aqi_value` nasce disabilitata (T-08 D-08, divisore 120)",
+        "`aqi_value` nasce disabilitata (il backend sbaglia il divisore)",
         "riabilitare per default quando il backend corregge il calcolo",
     )
 
@@ -439,13 +427,12 @@ def check_drift_from_fixtures(
     verdict: Verdict, payloads: dict[str, dict[str, Any]]
 ) -> None:
     """
-    Lo schema servito oggi e' ancora quello su cui la card e' stata scritta?
+    Lo schema servito oggi e' ancora quello su cui il client e' scritto?
 
-    Il controllo che nessun test mockato puo' fare. Le fixture di M-01 sono
-    la fotografia del 2026-09-10; se il backend ha cambiato una soglia,
-    un'unita' o un'etichetta, l'integrazione lo segue in silenzio - ed e'
-    quello che vogliamo - ma la card va chiusa sapendolo, e le fixture
-    vanno ricatturate.
+    Il controllo che nessun test mockato puo' fare. Le fixture sono una
+    fotografia; se il backend ha cambiato una soglia, un'unita' o
+    un'etichetta, l'integrazione lo segue in silenzio - ed e' quello che
+    vogliamo - ma va saputo, e le fixture vanno ricatturate.
     """
     drifted: list[str] = []
     compared = 0
@@ -473,10 +460,10 @@ def check_drift_from_fixtures(
 
     verdict.check(
         not drifted,
-        f"Lo schema servito coincide con le fixture di M-01 ({compared} tipi)",
+        f"Lo schema servito coincide con le fixture ({compared} tipi)",
         "\n".join(drifted)
         if drifted
-        else "nessuna deriva: soglie, unita' ed etichette sono quelle della card",
+        else "nessuna deriva: soglie, unita' ed etichette sono quelle attese",
     )
 
 
@@ -527,12 +514,12 @@ def check_devices_against_schema(
     verdict: Verdict, api: API, payloads: dict[str, dict[str, Any]], domain: str | None
 ) -> None:
     """
-    AC: nessun device sparisce, e le sue letture stanno dentro il suo schema.
+    Nessun device sparisce, e le sue letture stanno dentro il suo schema.
 
     Due controlli su device veri, gli unici di questa passata che hanno
-    bisogno di un dominio. Il primo e' l'AC di M-04 che ha cambiato
-    `_build_device`: ogni entry della response diventa un device, anche di
-    un tipo che il catalogo non conosce. Il secondo guarda dall'altro lato -
+    bisogno di un dominio. Il primo: ogni entry della response diventa un
+    device, anche di un tipo che il catalogo non conosce. Il secondo guarda
+    dall'altro lato -
     una lettura che nessuno schema dichiara diventa un'entita' grezza, e va
     saputo quali sono (su dev ci aspettiamo al massimo `radon_status`).
     """
@@ -600,7 +587,7 @@ def pick_domain(api: API, forced: str | None) -> str | None:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        description="Verifica dal vivo degli AC di M-04 (RT-2942) contro dev."
+        description="Verifica dal vivo dello schema servito da measures-ranges."
     )
     parser.add_argument("--env-file", default=".env")
     parser.add_argument("--username", default=None)
@@ -614,8 +601,8 @@ def main(argv: list[str] | None = None) -> int:
         choices=("srp", "password"),
         default="srp",
         help=(
-            "srp: come fa l'integrazione, ed e' il default perche' dal "
-            "2026-09-10 funziona anche su dev (RT-2952). password: scavalca "
+            "srp: come fa l'integrazione, ed e' il default perche' funziona "
+            "anche su dev. password: scavalca "
             "l'handshake e inietta un token USER_PASSWORD_AUTH - ripiego, "
             "da usare solo se ALLOW_USER_SRP_AUTH sparisse di nuovo."
         ),
@@ -632,17 +619,16 @@ def main(argv: list[str] | None = None) -> int:
     region = args.pool_region or args.pool_id.partition("_")[0]
 
     print()
-    print("  Verifica dal vivo degli AC di M-04 (RT-2942)")
+    print("  Verifica dal vivo dello schema servito da measures-ranges")
     print(f"  host      : {args.base_url}")
     print(f"  pool      : {args.pool_id} / client {args.client_id} / {region}")
     print(f"  auth flow : {args.auth_flow}")
-    print(f"  fuori card: {', '.join(EXCLUDED_FROM_CARD)} (decisione 2026-09-10)")
+    print(f"  fuori scopo: {', '.join(EXCLUDED_FROM_CARD)}")
     if args.auth_flow == "password":
         print()
         print("  ATTENZIONE: l'handshake SRP dell'integrazione e' SCAVALCATO.")
         print("  Questa passata NON verifica l'autenticazione, solo lo schema")
-        print("  e il modello. Vedi la richiesta aperta di M-01 su")
-        print("  ALLOW_USER_SRP_AUTH per il pool dev.")
+        print("  e il modello: al pool dev manca ALLOW_USER_SRP_AUTH.")
     print()
 
     api = API(
@@ -671,9 +657,9 @@ def main(argv: list[str] | None = None) -> int:
         print(f"\n  Impossibile leggere lo schema: {type(err).__name__}: {err}")
         if args.auth_flow == "srp":
             print(
-                "  Se e' un errore di autenticazione, e' probabilmente la "
-                "richiesta aperta di M-01:\n  l'app client del pool dev non ha "
-                "ALLOW_USER_SRP_AUTH. Riprova con --auth-flow password."
+                "  Se e' un errore di autenticazione, all'app client del "
+                "pool dev manca\n  ALLOW_USER_SRP_AUTH. Riprova con "
+                "--auth-flow password."
             )
         return 1
     elapsed_ms = (time.monotonic() - started) * 1000
