@@ -1,12 +1,18 @@
 """
-Repairs fix flow tests (RT-2926): resolving a missing `domain_id`.
+Repairs fix flow tests (RT-2926, M-07): giving an entry a `domain_prefix`.
 
 The flow is driven through the real repairs flow manager - the same object
-the frontend talks to - rather than by calling `MissingDomainIdRepairFlow`
-directly, so issue registration, platform discovery (`repairs.py` being
-found at all) and the manager's own "delete the issue unless the flow
-aborts" rule are all part of what these tests cover. The Radoff API is
-mocked at the transport level exactly as everywhere else in this suite.
+the frontend talks to - rather than by calling `DomainRepairFlow` directly,
+so issue registration, platform discovery (`repairs.py` being found at all)
+and the manager's own "delete the issue unless the flow aborts" rule are all
+part of what these tests cover. The Radoff API is mocked at the transport
+level exactly as everywhere else in this suite.
+
+Card M-07 adds the second way in. The tests above the divider drive the
+repair RT-2926 wrote it for - an entry that has no domain - and the ones
+below drive the 403 one: an entry that has a domain the account has lost
+access to, which used to leave "remove the integration and add it again" as
+the only remedy.
 """
 
 from __future__ import annotations
@@ -24,24 +30,28 @@ from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.radoff.const import (
     CONF_BASE_URL,
-    CONF_DOMAIN_ID,
+    CONF_DOMAIN_PREFIX,
     CONF_INDEX,
     DOMAIN,
-    ISSUE_MISSING_DOMAIN_ID,
+    ISSUE_DOMAIN_ACCESS_DENIED,
+    ISSUE_MISSING_DOMAIN_PREFIX,
 )
 
 from .conftest import (
     BASE_URL,
     auth_result,
+    load_dev_fixture,
     load_fixture,
     make_id_token,
     patch_authenticate_user,
     register_domains,
     register_devices,
+    register_measures_ranges,
 )
 
 DOMAIN_ID = "aaaaaaaa-0000-0000-0000-000000000001"
-OTHER_DOMAIN_ID = "bbbbbbbb-0000-0000-0000-000000000002"
+DOMAIN_PREFIX = "home1234"
+OTHER_DOMAIN_PREFIX = "office56"
 
 
 async def _setup_broken_entry(
@@ -49,7 +59,7 @@ async def _setup_broken_entry(
     config_entry_v1_data: dict[str, Any],
     options: dict[str, Any] | None = None,
 ) -> MockConfigEntry:
-    """Add a real-shaped v1 entry (no `domain_id`) and let its setup fail."""
+    """Add a real-shaped v1 entry (no domain at all) and let its setup fail."""
     await async_setup_component(hass, "repairs", {})
 
     entry = MockConfigEntry(
@@ -65,7 +75,7 @@ async def _setup_broken_entry(
 
 async def _start_fix_flow(hass: HomeAssistant, entry: MockConfigEntry) -> Any:
     """Open the fix flow for this entry's issue, as the frontend would."""
-    issue_id = f"{ISSUE_MISSING_DOMAIN_ID}_{entry.entry_id}"
+    issue_id = f"{ISSUE_MISSING_DOMAIN_PREFIX}_{entry.entry_id}"
     assert ir.async_get(hass).async_get_issue(DOMAIN, issue_id) is not None
 
     flow_manager = hass.data["repairs"]["flow_manager"]
@@ -80,7 +90,7 @@ async def _configure(hass: HomeAssistant, flow_id: str, user_input: Any) -> Any:
 
 def _issue(hass: HomeAssistant, entry: MockConfigEntry) -> Any:
     return ir.async_get(hass).async_get_issue(
-        DOMAIN, f"{ISSUE_MISSING_DOMAIN_ID}_{entry.entry_id}"
+        DOMAIN, f"{ISSUE_MISSING_DOMAIN_PREFIX}_{entry.entry_id}"
     )
 
 
@@ -94,8 +104,8 @@ async def test_repair_single_domain_loads_the_entry(
     The nominal upgrade path: one accessible domain, one confirmation, done.
 
     This is the acceptance criterion of RT-2926 in one test - an entry
-    created by the released version, with no `domain_id`, ends up loaded
-    without the user ever retyping a credential.
+    created by the released version, with no domain, ends up loaded without
+    the user ever retyping a credential.
     """
     patch_authenticate_user(monkeypatch, result=auth_result(make_id_token([DOMAIN_ID])))
     register_domains(requests_mock, load_fixture("domains_single.json"))
@@ -111,7 +121,7 @@ async def test_repair_single_domain_loads_the_entry(
     await hass.async_block_till_done()
 
     assert result["type"] is FlowResultType.CREATE_ENTRY
-    assert entry.data[CONF_DOMAIN_ID] == DOMAIN_ID
+    assert entry.data[CONF_DOMAIN_PREFIX] == DOMAIN_PREFIX
     assert entry.state is ConfigEntryState.LOADED
     assert _issue(hass, entry) is None
 
@@ -124,7 +134,7 @@ async def test_repair_multiple_domains_asks_which_one(
 ) -> None:
     """More than one accessible domain: the choice is put to the user, not guessed."""
     patch_authenticate_user(
-        monkeypatch, result=auth_result(make_id_token([DOMAIN_ID, OTHER_DOMAIN_ID]))
+        monkeypatch, result=auth_result(make_id_token([DOMAIN_ID, OTHER_DOMAIN_PREFIX]))
     )
     register_domains(requests_mock, load_fixture("domains_multi.json"))
     register_devices(requests_mock, load_fixture("devices_empty.json"))
@@ -138,12 +148,12 @@ async def test_repair_multiple_domains_asks_which_one(
     assert result["step_id"] == "domain"
 
     result = await _configure(
-        hass, result["flow_id"], {CONF_DOMAIN_ID: OTHER_DOMAIN_ID}
+        hass, result["flow_id"], {CONF_DOMAIN_PREFIX: OTHER_DOMAIN_PREFIX}
     )
     await hass.async_block_till_done()
 
     assert result["type"] is FlowResultType.CREATE_ENTRY
-    assert entry.data[CONF_DOMAIN_ID] == OTHER_DOMAIN_ID
+    assert entry.data[CONF_DOMAIN_PREFIX] == OTHER_DOMAIN_PREFIX
     assert entry.state is ConfigEntryState.LOADED
     assert _issue(hass, entry) is None
 
@@ -154,7 +164,7 @@ async def test_repair_keeps_generate_index_option_from_the_migration(
     requests_mock: Any,
     config_entry_v1_data: dict[str, Any],
 ) -> None:
-    """The repair only writes `domain_id`: what the migration moved stays put."""
+    """The repair only writes the domain: what the migration moved stays put."""
     patch_authenticate_user(monkeypatch, result=auth_result(make_id_token([DOMAIN_ID])))
     register_domains(requests_mock, load_fixture("domains_single.json"))
     register_devices(requests_mock, load_fixture("devices_empty.json"))
@@ -197,7 +207,7 @@ async def test_repair_aborts_and_keeps_the_issue_on_invalid_auth(
 
     assert result["type"] is FlowResultType.ABORT
     assert result["reason"] == "invalid_auth"
-    assert CONF_DOMAIN_ID not in entry.data
+    assert CONF_DOMAIN_PREFIX not in entry.data
     assert _issue(hass, entry) is not None
 
 
@@ -276,7 +286,7 @@ async def test_repair_aborts_when_the_entry_is_gone(
     patch_authenticate_user(monkeypatch, result=auth_result(make_id_token([DOMAIN_ID])))
 
     entry = await _setup_broken_entry(hass, config_entry_v1_data)
-    issue_id = f"{ISSUE_MISSING_DOMAIN_ID}_{entry.entry_id}"
+    issue_id = f"{ISSUE_MISSING_DOMAIN_PREFIX}_{entry.entry_id}"
 
     flow_manager = hass.data["repairs"]["flow_manager"]
     await hass.config_entries.async_remove(entry.entry_id)
@@ -322,8 +332,167 @@ async def test_repair_discovers_on_the_environment_the_entry_points_at(
     await hass.async_block_till_done()
 
     assert result["type"] is FlowResultType.CREATE_ENTRY
-    assert entry.data[CONF_DOMAIN_ID] == DOMAIN_ID
+    assert entry.data[CONF_DOMAIN_PREFIX] == DOMAIN_PREFIX
     assert entry.state is ConfigEntryState.LOADED
     assert {request.netloc for request in requests_mock.request_history} == {
         "api.int.iot.radoff.life"
     }
+
+
+# ---------------------------------------------------------------------------
+# Card M-07: the 403 repair - an entry whose domain the account has lost
+# ---------------------------------------------------------------------------
+
+
+def _access_denied_issue(hass: HomeAssistant, entry: MockConfigEntry) -> Any:
+    return ir.async_get(hass).async_get_issue(
+        DOMAIN, f"{ISSUE_DOMAIN_ACCESS_DENIED}_{entry.entry_id}"
+    )
+
+
+async def _setup_entry_refused_with_403(
+    hass: HomeAssistant,
+    requests_mock: Any,
+    config_entry_v3_data: dict[str, Any],
+) -> tuple[MockConfigEntry, dict[str, bool]]:
+    """
+    Load an entry whose domain the API refuses, and return a switch to stop refusing.
+
+    The switch is what makes this a repair rather than a snapshot: the fix
+    flow has to be able to reach a state where the entry works again, and
+    the API answering 403 forever would only ever test the abort.
+    """
+    await async_setup_component(hass, "repairs", {})
+
+    state = {"refused": True}
+
+    def _devices(request: Any, context: Any) -> Any:  # noqa: ARG001
+        if state["refused"]:
+            context.status_code = 403
+            return load_dev_fixture("error__devices_foreign_domain")
+        context.status_code = 200
+        return load_fixture("devices_empty.json")
+
+    requests_mock.get(f"{BASE_URL}/data/devices", json=_devices)
+    register_measures_ranges(requests_mock)
+
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        version=3,
+        minor_version=1,
+        data=config_entry_v3_data,
+        options={CONF_INDEX: True},
+    )
+    entry.add_to_hass(hass)
+
+    assert not await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    return entry, state
+
+
+async def test_a_403_raises_a_fixable_repair_beside_its_setup_error(
+    hass: HomeAssistant,
+    monkeypatch: pytest.MonkeyPatch,
+    requests_mock: Any,
+    config_entry_v3_data: dict[str, Any],
+) -> None:
+    """
+    Card M-07: the 403 stops being a dead end.
+
+    M-02 made the refusal legible - a translated `ConfigEntryError` saying
+    the domain, not the password, is the problem - and left the user with
+    one way to act on it: remove the integration and add it again, which
+    throws away every entity's history. The error stays (it is what shows on
+    the integration card, where a repair is not visible) and the repair is
+    what can actually be acted on.
+    """
+    patch_authenticate_user(monkeypatch, result=auth_result(make_id_token([DOMAIN_ID])))
+
+    entry, _ = await _setup_entry_refused_with_403(
+        hass, requests_mock, config_entry_v3_data
+    )
+
+    assert entry.state is ConfigEntryState.SETUP_ERROR
+    assert entry.error_reason_translation_key == "domain_access_denied"
+
+    issue = _access_denied_issue(hass, entry)
+    assert issue is not None
+    assert issue.is_fixable
+    assert issue.data == {"entry_id": entry.entry_id}
+    assert issue.translation_placeholders == {"username": "user@example.com"}
+
+
+async def test_the_403_repair_reselects_a_domain_and_reloads_the_entry(
+    hass: HomeAssistant,
+    monkeypatch: pytest.MonkeyPatch,
+    requests_mock: Any,
+    config_entry_v3_data: dict[str, Any],
+) -> None:
+    """
+    The point of the whole thing: a new domain, the same entities, the same history.
+
+    The entry starts on `home1234`, which the account can no longer reach,
+    and ends on `office56` without anything being removed and re-added -
+    which is what preserves the `entity_id`s every dashboard and automation
+    refers to.
+    """
+    patch_authenticate_user(monkeypatch, result=auth_result(make_id_token([DOMAIN_ID])))
+    register_domains(requests_mock, load_fixture("domains_multi.json"))
+
+    entry, state = await _setup_entry_refused_with_403(
+        hass, requests_mock, config_entry_v3_data
+    )
+    assert entry.data[CONF_DOMAIN_PREFIX] == DOMAIN_PREFIX
+
+    issue_id = f"{ISSUE_DOMAIN_ACCESS_DENIED}_{entry.entry_id}"
+    flow_manager = hass.data["repairs"]["flow_manager"]
+    result = await flow_manager.async_init(DOMAIN, data={"issue_id": issue_id})
+
+    assert result["type"] is FlowResultType.FORM
+    assert result["step_id"] == "confirm"
+
+    result = await _configure(hass, result["flow_id"], {})
+    assert result["step_id"] == "domain"
+
+    # The account can reach the new domain, which is the situation the user
+    # is repairing their way into.
+    state["refused"] = False
+
+    result = await _configure(
+        hass, result["flow_id"], {CONF_DOMAIN_PREFIX: OTHER_DOMAIN_PREFIX}
+    )
+    await hass.async_block_till_done()
+
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert entry.data[CONF_DOMAIN_PREFIX] == OTHER_DOMAIN_PREFIX
+    assert entry.state is ConfigEntryState.LOADED
+    assert _access_denied_issue(hass, entry) is None
+
+
+async def test_a_successful_setup_clears_a_stale_403_repair(
+    hass: HomeAssistant,
+    monkeypatch: pytest.MonkeyPatch,
+    requests_mock: Any,
+    config_entry_v3_data: dict[str, Any],
+) -> None:
+    """
+    A 403 that stops happening takes its repair with it, without a fix flow.
+
+    Access can come back on the backend's side - the account is put back
+    into the domain - and a repair card still sitting there afterwards would
+    be pointing at a problem that no longer exists.
+    """
+    patch_authenticate_user(monkeypatch, result=auth_result(make_id_token([DOMAIN_ID])))
+
+    entry, state = await _setup_entry_refused_with_403(
+        hass, requests_mock, config_entry_v3_data
+    )
+    assert _access_denied_issue(hass, entry) is not None
+
+    state["refused"] = False
+    await hass.config_entries.async_reload(entry.entry_id)
+    await hass.async_block_till_done()
+
+    assert entry.state is ConfigEntryState.LOADED
+    assert _access_denied_issue(hass, entry) is None

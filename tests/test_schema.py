@@ -181,14 +181,24 @@ def test_every_served_unit_is_mapped(device_type: str) -> None:
     assert {measure["unit"] for measure in payload.values()} <= set(HA_UNITS)
 
 
-def test_units_without_a_home_assistant_equivalent_map_to_none() -> None:
-    """The AQI's empty unit and tvoc's `V - Ix` are mapped, deliberately, to nothing."""
+def test_the_aqi_has_no_unit_and_tvoc_keeps_the_one_the_api_declares() -> None:
+    """
+    The AQI's empty unit maps to nothing; tvoc's `V - Ix` passes through (M-07).
+
+    The two are not the same case, which is why they stopped sharing a test.
+    An index has no unit and Home Assistant renders that correctly, so
+    inventing one would be worse than none. `V - Ix` is not a standard unit
+    either (T-02 D-07) but it is what the API says the number is in, and
+    publishing it is what stops the reading from looking like a
+    concentration whose unit went missing - the shape it had in the
+    released version, where tvoc was µg/m³.
+    """
     specs = _specs("nowplus")
 
     assert specs["aqi_value"].unit == ""
     assert specs["aqi_value"].ha_unit is None
     assert specs["tvoc"].unit == "V - Ix"
-    assert specs["tvoc"].ha_unit is None
+    assert specs["tvoc"].ha_unit == "V - Ix"
 
 
 def test_pressure_is_declared_in_pascal() -> None:

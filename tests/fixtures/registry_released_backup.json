@@ -1,0 +1,180 @@
+{
+  "devices": [
+    {
+      "name": "Piero Test",
+      "device_uuid": "11111111-1111-4111-8111-111111111111",
+      "serial_number": "AA11BB",
+      "device_type": "nowplus",
+      "entities": [
+        {
+          "unique_id": "radoff-11111111-1111-4111-8111-111111111111-airqualityindex",
+          "entity_id": "sensor.piero_test_qualita_aria",
+          "slug": "airqualityindex"
+        },
+        {
+          "unique_id": "radoff-11111111-1111-4111-8111-111111111111-eco2",
+          "entity_id": "sensor.piero_test_anidride_carbonica",
+          "slug": "eco2"
+        },
+        {
+          "unique_id": "radoff-11111111-1111-4111-8111-111111111111-eco2-index",
+          "entity_id": "sensor.piero_test_co2_indice",
+          "slug": "eco2-index"
+        },
+        {
+          "unique_id": "radoff-11111111-1111-4111-8111-111111111111-internal_temperature",
+          "entity_id": "sensor.piero_test_temperatura",
+          "slug": "internal_temperature"
+        },
+        {
+          "unique_id": "radoff-11111111-1111-4111-8111-111111111111-internal_temperature-index",
+          "entity_id": "sensor.piero_test_temperatura_indice",
+          "slug": "internal_temperature-index"
+        },
+        {
+          "unique_id": "radoff-11111111-1111-4111-8111-111111111111-pm1",
+          "entity_id": "sensor.piero_test_pm1",
+          "slug": "pm1"
+        },
+        {
+          "unique_id": "radoff-11111111-1111-4111-8111-111111111111-pm1-index",
+          "entity_id": "sensor.piero_test_pm1_indice",
+          "slug": "pm1-index"
+        },
+        {
+          "unique_id": "radoff-11111111-1111-4111-8111-111111111111-pm10",
+          "entity_id": "sensor.piero_test_pm10",
+          "slug": "pm10"
+        },
+        {
+          "unique_id": "radoff-11111111-1111-4111-8111-111111111111-pm10-index",
+          "entity_id": "sensor.piero_test_pm10_indice",
+          "slug": "pm10-index"
+        },
+        {
+          "unique_id": "radoff-11111111-1111-4111-8111-111111111111-pm25",
+          "entity_id": "sensor.piero_test_pm2_5",
+          "slug": "pm25"
+        },
+        {
+          "unique_id": "radoff-11111111-1111-4111-8111-111111111111-pm25-index",
+          "entity_id": "sensor.piero_test_pm2_5_indice",
+          "slug": "pm25-index"
+        },
+        {
+          "unique_id": "radoff-11111111-1111-4111-8111-111111111111-pressure",
+          "entity_id": "sensor.piero_test_pressione",
+          "slug": "pressure"
+        },
+        {
+          "unique_id": "radoff-11111111-1111-4111-8111-111111111111-relative_humidity",
+          "entity_id": "sensor.piero_test_umidita",
+          "slug": "relative_humidity"
+        },
+        {
+          "unique_id": "radoff-11111111-1111-4111-8111-111111111111-relative_humidity-index",
+          "entity_id": "sensor.piero_test_umidita_indice",
+          "slug": "relative_humidity-index"
+        },
+        {
+          "unique_id": "radoff-11111111-1111-4111-8111-111111111111-tvoc",
+          "entity_id": "sensor.piero_test_vocs",
+          "slug": "tvoc"
+        },
+        {
+          "unique_id": "radoff-11111111-1111-4111-8111-111111111111-tvoc-index",
+          "entity_id": "sensor.piero_test_vocs_indice",
+          "slug": "tvoc-index"
+        }
+      ]
+    },
+    {
+      "name": "Test Now",
+      "device_uuid": "22222222-2222-4222-8222-222222222222",
+      "serial_number": "CC22DD",
+      "device_type": "now",
+      "entities": [
+        {
+          "unique_id": "radoff-22222222-2222-4222-8222-222222222222-airqualityindex",
+          "entity_id": "sensor.test_now_qualita_aria",
+          "slug": "airqualityindex"
+        },
+        {
+          "unique_id": "radoff-22222222-2222-4222-8222-222222222222-eco2",
+          "entity_id": "sensor.test_now_anidride_carbonica",
+          "slug": "eco2"
+        },
+        {
+          "unique_id": "radoff-22222222-2222-4222-8222-222222222222-eco2-index",
+          "entity_id": "sensor.test_now_co2_indice",
+          "slug": "eco2-index"
+        },
+        {
+          "unique_id": "radoff-22222222-2222-4222-8222-222222222222-internal_temperature",
+          "entity_id": "sensor.test_now_temperatura",
+          "slug": "internal_temperature"
+        },
+        {
+          "unique_id": "radoff-22222222-2222-4222-8222-222222222222-internal_temperature-index",
+          "entity_id": "sensor.test_now_temperatura_indice",
+          "slug": "internal_temperature-index"
+        },
+        {
+          "unique_id": "radoff-22222222-2222-4222-8222-222222222222-pm1",
+          "entity_id": "sensor.test_now_pm1",
+          "slug": "pm1"
+        },
+        {
+          "unique_id": "radoff-22222222-2222-4222-8222-222222222222-pm1-index",
+          "entity_id": "sensor.test_now_pm1_indice",
+          "slug": "pm1-index"
+        },
+        {
+          "unique_id": "radoff-22222222-2222-4222-8222-222222222222-pm10",
+          "entity_id": "sensor.test_now_pm10",
+          "slug": "pm10"
+        },
+        {
+          "unique_id": "radoff-22222222-2222-4222-8222-222222222222-pm10-index",
+          "entity_id": "sensor.test_now_pm10_indice",
+          "slug": "pm10-index"
+        },
+        {
+          "unique_id": "radoff-22222222-2222-4222-8222-222222222222-pm25",
+          "entity_id": "sensor.test_now_pm2_5",
+          "slug": "pm25"
+        },
+        {
+          "unique_id": "radoff-22222222-2222-4222-8222-222222222222-pm25-index",
+          "entity_id": "sensor.test_now_pm2_5_indice",
+          "slug": "pm25-index"
+        },
+        {
+          "unique_id": "radoff-22222222-2222-4222-8222-222222222222-pressure",
+          "entity_id": "sensor.test_now_pressione",
+          "slug": "pressure"
+        },
+        {
+          "unique_id": "radoff-22222222-2222-4222-8222-222222222222-relative_humidity",
+          "entity_id": "sensor.test_now_umidita",
+          "slug": "relative_humidity"
+        },
+        {
+          "unique_id": "radoff-22222222-2222-4222-8222-222222222222-relative_humidity-index",
+          "entity_id": "sensor.test_now_umidita_indice",
+          "slug": "relative_humidity-index"
+        },
+        {
+          "unique_id": "radoff-22222222-2222-4222-8222-222222222222-tvoc",
+          "entity_id": "sensor.test_now_vocs",
+          "slug": "tvoc"
+        },
+        {
+          "unique_id": "radoff-22222222-2222-4222-8222-222222222222-tvoc-index",
+          "entity_id": "sensor.test_now_vocs_indice",
+          "slug": "tvoc-index"
+        }
+      ]
+    }
+  ]
+}

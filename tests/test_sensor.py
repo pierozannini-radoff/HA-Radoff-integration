@@ -65,7 +65,7 @@ async def setup_nominal_entry(
     hass: HomeAssistant,
     monkeypatch: pytest.MonkeyPatch,
     requests_mock: Any,
-    config_entry_v2_data: dict[str, Any],
+    config_entry_v3_data: dict[str, Any],
 ) -> MockConfigEntry:
     """Set up one config entry against the nominal one-device fixture."""
     patch_authenticate_user(
@@ -75,9 +75,9 @@ async def setup_nominal_entry(
     register_devices(requests_mock, load_devices_fixture("devices_one_device.json"))
     entry = MockConfigEntry(
         domain=DOMAIN,
-        data=config_entry_v2_data,
+        data=config_entry_v3_data,
         options={"generate_index": True},
-        version=2,
+        version=3,
     )
     entry.add_to_hass(hass)
     assert await hass.config_entries.async_setup(entry.entry_id)
@@ -88,9 +88,12 @@ async def setup_nominal_entry(
 @pytest.mark.parametrize(
     ("entity_id", "expected_state", "expected_unit", "expected_device_class"),
     [
-        # tvoc: unit `V - Ix` in the response, which maps onto no Home
-        # Assistant unit and therefore onto no device class either (M-04).
-        ("sensor.living_room_vocs", "50.0", None, None),
+        # tvoc: the response declares `V - Ix`, which card M-07 publishes
+        # verbatim - it is not a concentration, so there is still no device
+        # class, and that is what makes an arbitrary unit string legal.
+        # The released version showed µg/m³ here; the change is deliberate
+        # and announced in the README, statistics gap included.
+        ("sensor.living_room_vocs", "50.0", "V - Ix", None),
         ("sensor.living_room_co2", "600.0", "ppm", "carbon_dioxide"),
         ("sensor.living_room_pm10", "10.0", "µg/m³", "pm10"),
         ("sensor.living_room_pm2_5", "8.0", "µg/m³", "pm25"),
@@ -183,7 +186,7 @@ async def test_no_index_entities_when_generate_index_disabled(
     hass: HomeAssistant,
     monkeypatch: pytest.MonkeyPatch,
     requests_mock: Any,
-    config_entry_v2_data: dict[str, Any],
+    config_entry_v3_data: dict[str, Any],
 ) -> None:
     """`generate_index=False` (options) suppresses every *_index sibling entity."""
     patch_authenticate_user(
@@ -193,9 +196,9 @@ async def test_no_index_entities_when_generate_index_disabled(
     register_devices(requests_mock, load_devices_fixture("devices_one_device.json"))
     entry = MockConfigEntry(
         domain=DOMAIN,
-        data=config_entry_v2_data,
+        data=config_entry_v3_data,
         options={"generate_index": False},
-        version=2,
+        version=3,
     )
     entry.add_to_hass(hass)
     assert await hass.config_entries.async_setup(entry.entry_id)
@@ -209,7 +212,7 @@ async def test_a_field_the_schema_does_not_declare_becomes_a_raw_entity(
     hass: HomeAssistant,
     monkeypatch: pytest.MonkeyPatch,
     requests_mock: Any,
-    config_entry_v2_data: dict[str, Any],
+    config_entry_v3_data: dict[str, Any],
 ) -> None:
     """
     A telemetry field outside the schema is published as a bare value (M-04).
@@ -231,9 +234,9 @@ async def test_a_field_the_schema_does_not_declare_becomes_a_raw_entity(
 
     entry = MockConfigEntry(
         domain=DOMAIN,
-        data=config_entry_v2_data,
+        data=config_entry_v3_data,
         options={"generate_index": True},
-        version=2,
+        version=3,
     )
     entry.add_to_hass(hass)
     assert await hass.config_entries.async_setup(entry.entry_id)
@@ -275,7 +278,7 @@ async def test_entities_match_the_measures_the_type_declares(
     hass: HomeAssistant,
     monkeypatch: pytest.MonkeyPatch,
     requests_mock: Any,
-    config_entry_v2_data: dict[str, Any],
+    config_entry_v3_data: dict[str, Any],
     serial: str,
     fixture_name: str,
 ) -> None:
@@ -299,9 +302,9 @@ async def test_entities_match_the_measures_the_type_declares(
 
     entry = MockConfigEntry(
         domain=DOMAIN,
-        data=config_entry_v2_data,
+        data=config_entry_v3_data,
         options={"generate_index": True},
-        version=2,
+        version=3,
     )
     entry.add_to_hass(hass)
     assert await hass.config_entries.async_setup(entry.entry_id)
@@ -323,7 +326,7 @@ async def test_an_unknown_device_type_keeps_the_device(
     hass: HomeAssistant,
     monkeypatch: pytest.MonkeyPatch,
     requests_mock: Any,
-    config_entry_v2_data: dict[str, Any],
+    config_entry_v3_data: dict[str, Any],
 ) -> None:
     """
     M-04 AC: a device type the catalogue does not know does not lose the device.
@@ -344,9 +347,9 @@ async def test_an_unknown_device_type_keeps_the_device(
 
     entry = MockConfigEntry(
         domain=DOMAIN,
-        data=config_entry_v2_data,
+        data=config_entry_v3_data,
         options={"generate_index": True},
-        version=2,
+        version=3,
     )
     entry.add_to_hass(hass)
     assert await hass.config_entries.async_setup(entry.entry_id)
@@ -394,7 +397,7 @@ async def test_a_unit_outside_the_map_costs_the_unit_not_the_setup(
     hass: HomeAssistant,
     monkeypatch: pytest.MonkeyPatch,
     requests_mock: Any,
-    config_entry_v2_data: dict[str, Any],
+    config_entry_v3_data: dict[str, Any],
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     """
@@ -417,9 +420,9 @@ async def test_a_unit_outside_the_map_costs_the_unit_not_the_setup(
 
     entry = MockConfigEntry(
         domain=DOMAIN,
-        data=config_entry_v2_data,
+        data=config_entry_v3_data,
         options={"generate_index": True},
-        version=2,
+        version=3,
     )
     entry.add_to_hass(hass)
     assert await hass.config_entries.async_setup(entry.entry_id)
@@ -451,7 +454,7 @@ async def _setup_with(
     hass: HomeAssistant,
     monkeypatch: pytest.MonkeyPatch,
     requests_mock: Any,
-    config_entry_v2_data: dict[str, Any],
+    config_entry_v3_data: dict[str, Any],
     payload: dict[str, Any],
 ) -> MockConfigEntry:
     """Set one entry up against `payload` as the device list."""
@@ -462,9 +465,9 @@ async def _setup_with(
     register_devices(requests_mock, payload)
     entry = MockConfigEntry(
         domain=DOMAIN,
-        data=config_entry_v2_data,
+        data=config_entry_v3_data,
         options={"generate_index": True},
-        version=2,
+        version=3,
     )
     entry.add_to_hass(hass)
     assert await hass.config_entries.async_setup(entry.entry_id)
@@ -495,7 +498,7 @@ async def test_availability_follows_connection_status(
     hass: HomeAssistant,
     monkeypatch: pytest.MonkeyPatch,
     requests_mock: Any,
-    config_entry_v2_data: dict[str, Any],
+    config_entry_v3_data: dict[str, Any],
     connection_status: str | None,
     expected_available: bool,
 ) -> None:
@@ -517,7 +520,7 @@ async def test_availability_follows_connection_status(
     payload = load_devices_fixture("devices_one_device.json")
     payload["devices"][0]["connection_status"] = connection_status
 
-    await _setup_with(hass, monkeypatch, requests_mock, config_entry_v2_data, payload)
+    await _setup_with(hass, monkeypatch, requests_mock, config_entry_v3_data, payload)
 
     state = hass.states.get("sensor.living_room_temperature")
     assert state is not None
@@ -531,7 +534,7 @@ async def test_an_unknown_connection_status_warns_once(
     hass: HomeAssistant,
     monkeypatch: pytest.MonkeyPatch,
     requests_mock: Any,
-    config_entry_v2_data: dict[str, Any],
+    config_entry_v3_data: dict[str, Any],
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     """
@@ -553,7 +556,7 @@ async def test_an_unknown_connection_status_warns_once(
         device["connection_status"] = "evaporated"
 
     caplog.clear()
-    await _setup_with(hass, monkeypatch, requests_mock, config_entry_v2_data, payload)
+    await _setup_with(hass, monkeypatch, requests_mock, config_entry_v3_data, payload)
 
     warnings = [
         record
@@ -576,7 +579,7 @@ async def test_the_diagnostic_attributes_carry_both_timestamps(
     hass: HomeAssistant,
     monkeypatch: pytest.MonkeyPatch,
     requests_mock: Any,
-    config_entry_v2_data: dict[str, Any],
+    config_entry_v3_data: dict[str, Any],
 ) -> None:
     """
     M-06 AC6: the entity carries the measurement time and the status time.
@@ -599,7 +602,7 @@ async def test_the_diagnostic_attributes_carry_both_timestamps(
     telemetry_timestamp = payload["devices"][0]["telemetry"]["timestamp"]
     connection_timestamp = payload["devices"][0]["connection_status_updated_at"]
 
-    await _setup_with(hass, monkeypatch, requests_mock, config_entry_v2_data, payload)
+    await _setup_with(hass, monkeypatch, requests_mock, config_entry_v3_data, payload)
 
     state = hass.states.get("sensor.living_room_temperature")
     assert state is not None
@@ -613,7 +616,7 @@ async def test_a_restart_restores_the_last_known_value(
     hass: HomeAssistant,
     monkeypatch: pytest.MonkeyPatch,
     requests_mock: Any,
-    config_entry_v2_data: dict[str, Any],
+    config_entry_v3_data: dict[str, Any],
 ) -> None:
     """
     M-06: a value survives a restart onto a device that is still silent.
@@ -649,7 +652,7 @@ async def test_a_restart_restores_the_last_known_value(
     )
 
     payload = load_devices_fixture("devices_no_telemetry.json")
-    await _setup_with(hass, monkeypatch, requests_mock, config_entry_v2_data, payload)
+    await _setup_with(hass, monkeypatch, requests_mock, config_entry_v3_data, payload)
 
     state = hass.states.get("sensor.living_room_temperature")
     assert state is not None
@@ -661,7 +664,7 @@ async def test_a_connected_device_with_no_status_timestamp_is_available(
     hass: HomeAssistant,
     monkeypatch: pytest.MonkeyPatch,
     requests_mock: Any,
-    config_entry_v2_data: dict[str, Any],
+    config_entry_v3_data: dict[str, Any],
 ) -> None:
     """
     M-06: a missing `connection_status_updated_at` costs nothing.
@@ -678,7 +681,7 @@ async def test_a_connected_device_with_no_status_timestamp_is_available(
     payload = load_devices_fixture("devices_one_device.json")
     payload["devices"][0]["connection_status_updated_at"] = None
 
-    await _setup_with(hass, monkeypatch, requests_mock, config_entry_v2_data, payload)
+    await _setup_with(hass, monkeypatch, requests_mock, config_entry_v3_data, payload)
 
     state = hass.states.get("sensor.living_room_temperature")
     assert state is not None

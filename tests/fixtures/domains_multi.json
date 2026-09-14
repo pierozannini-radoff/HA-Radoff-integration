@@ -1,6 +1,38 @@
 {
+  "email": "user@example.com",
   "domains": [
-    { "id": "aaaaaaaa-0000-0000-0000-000000000001", "name": "Home" },
-    { "id": "bbbbbbbb-0000-0000-0000-000000000002", "name": "Office" }
-  ]
+    {
+      "domain": {
+        "prefix": "home1234",
+        "name": "Home",
+        "type": "customer",
+        "parent_domain_prefix": "root0000",
+        "created_at": "2026-04-09T12:50:06"
+      },
+      "role": { "code": "user", "name": "User", "description": "Standard user access" },
+      "assigned_at": "2026-04-09T12:51:36"
+    },
+    {
+      "domain": {
+        "prefix": "office56",
+        "name": "Office",
+        "type": "customer",
+        "parent_domain_prefix": "root0000",
+        "created_at": "2026-04-09T12:52:06"
+      },
+      "role": { "code": "admin", "name": "Admin", "description": "Administrator" },
+      "assigned_at": "2026-04-09T12:53:36"
+    },
+    {
+      "domain": {
+        "prefix": "nameless",
+        "type": "customer",
+        "parent_domain_prefix": "root0000",
+        "created_at": "2026-04-09T12:54:06"
+      },
+      "role": { "code": "user", "name": "User", "description": "Standard user access" },
+      "assigned_at": "2026-04-09T12:55:36"
+    }
+  ],
+  "pagination": { "page": 1, "page_size": 20, "total": 3, "total_pages": 1 }
 }

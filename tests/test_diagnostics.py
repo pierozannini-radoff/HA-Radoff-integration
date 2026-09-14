@@ -35,6 +35,7 @@ from custom_components.radoff.coordinator import RadoffData  # noqa: E402
 SECRET_USERNAME = "someone@example.com"
 SECRET_PASSWORD = "super-secret-password"  # noqa: S105
 SECRET_DOMAIN_ID = "11111111-1111-1111-1111-111111111111"
+SECRET_DOMAIN_PREFIX = "acme4269"
 SECRET_SERIAL = "RADOFF-SERIAL-0042"
 SECRET_UNIQUE_ID = "radoff-account-unique-id"
 SECRET_TITLE = "someone@example.com (domain X)"
@@ -46,6 +47,7 @@ ALL_SECRETS = [
     SECRET_USERNAME,
     SECRET_PASSWORD,
     SECRET_DOMAIN_ID,
+    SECRET_DOMAIN_PREFIX,
     SECRET_SERIAL,
     SECRET_UNIQUE_ID,
     SECRET_TITLE,
@@ -72,6 +74,12 @@ def _build_entry() -> ConfigEntry:
         data={
             "username": SECRET_USERNAME,
             "password": SECRET_PASSWORD,
+            # Card M-07: the key a version-3 entry carries, and - right
+            # beside it - the one a dump taken from an entry written before
+            # the migration still has on disk. Both are the customer's
+            # tenant, and a diagnostics file is something users attach to
+            # public issues.
+            "domain_prefix": SECRET_DOMAIN_PREFIX,
             "domain_id": SECRET_DOMAIN_ID,
             # Tokens don't actually live in config_entry.data today, but
             # TO_REDACT covers them defensively - assert they'd be caught
@@ -89,7 +97,7 @@ def _build_entry() -> ConfigEntry:
         state=ConfigEntryState.LOADED,
         title=SECRET_TITLE,
         unique_id=SECRET_UNIQUE_ID,
-        version=2,
+        version=3,
     )
 
 

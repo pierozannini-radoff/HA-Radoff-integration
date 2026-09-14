@@ -300,12 +300,124 @@ def config_entry_v1_data() -> dict[str, Any]:
 
 @pytest.fixture
 def config_entry_v2_data() -> dict[str, Any]:
-    """Config entry `data` shaped as VERSION 2 (post-S-02) - no Cognito fields."""
+    """
+    Config entry `data` shaped as VERSION 2 (post-S-02) - no Cognito fields.
+
+    Still the arch 1.x shape, deliberately: the domain is a UUID under the
+    `domain_id` key. Card M-07 is what makes this a *legacy* fixture rather
+    than the current one - see `config_entry_v3_data` below - and the tests
+    that still use it are the migration tests, which need an entry in
+    exactly this state to migrate.
+    """
     return {
         "username": "user@example.com",
         "password": "hunter2",
         "domain_id": "aaaaaaaa-0000-0000-0000-000000000001",
     }
+
+
+@pytest.fixture
+def config_entry_v3_data() -> dict[str, Any]:
+    """
+    Config entry `data` shaped as VERSION 3 (card M-07) - a `domain_prefix`.
+
+    The current shape, and what every test that just needs a working entry
+    should ask for. The value is a prefix, not a UUID: that is the whole
+    difference the version-3 migration exists for, and `domain_prefix` is
+    what `api/client.py` puts on the query string of every domain-scoped
+    call.
+    """
+    return {
+        "username": "user@example.com",
+        "password": "hunter2",
+        "domain_prefix": "home1234",
+    }
+
+
+# The entity/device registry of a real installation running the released
+# version (30e0cde), as card RT-2827 measured it and `docs/T-06-evidenze.md`
+# recorded it entry by entry: two devices, sixteen entities each, 32
+# `unique_id`s of the form `radoff-{device_uuid}-{slug}`.
+#
+# The *shape* is the measured one - the exact slug set, the `-index` suffix
+# on the seven qualitative siblings, the Italian `entity_id`s the released
+# version's friendly names slugified to, and the fact that the AQI has no
+# `-index` sibling while eco2 does. The identifiers themselves are
+# synthetic, per this module's docstring: what the migration has to get
+# right is the structure, and a real account's device UUIDs are not
+# something to commit to a public repository.
+REGISTRY_RELEASED_BACKUP = FIXTURES_DIR / "registry_released_backup.json"
+
+
+def seed_released_registry(
+    hass: Any,
+    config_entry: Any,
+    *,
+    slugs: dict[str, list[str]] | None = None,
+    unit_overrides: dict[str, str] | None = None,
+) -> dict[str, str]:
+    """
+    Recreate a released installation's registries under `config_entry`.
+
+    Returns `{unique_id: entity_id}` for everything it created, which is what
+    a migration test asserts against: an `entity_id` that changed is a
+    dashboard and a set of automations that broke, and that is the failure
+    these tests exist to catch.
+
+    `slugs` narrows what is created, per device serial, for a test that only
+    cares about one entity (`{"AA11BB": ["tvoc"]}`); the default is the full
+    32. `unit_overrides` sets a user display-unit override on the named
+    entities (`{"tvoc": "mg/m³"}`), which is what card M-07 clears when the
+    measure behind the entity stops having that unit.
+
+    Devices are registered exactly as the integration registers them -
+    `identifiers={(DOMAIN, serial_number)}` - because that link is the whole
+    mechanism the offline re-keying runs on: entity -> device -> serial.
+    """
+    from homeassistant.helpers import device_registry as dr
+    from homeassistant.helpers import entity_registry as er
+
+    from custom_components.radoff.const import DOMAIN
+
+    device_registry = dr.async_get(hass)
+    entity_registry = er.async_get(hass)
+    payload = json.loads(REGISTRY_RELEASED_BACKUP.read_text(encoding="utf-8"))
+
+    created: dict[str, str] = {}
+
+    for device in payload["devices"]:
+        serial = device["serial_number"]
+        wanted = None if slugs is None else set(slugs.get(serial, []))
+
+        device_entry = device_registry.async_get_or_create(
+            config_entry_id=config_entry.entry_id,
+            identifiers={(DOMAIN, serial)},
+            name=device["name"],
+            manufacturer="Radoff",
+            model=device["device_type"],
+        )
+
+        for entity in device["entities"]:
+            if wanted is not None and entity["slug"] not in wanted:
+                continue
+
+            entry = entity_registry.async_get_or_create(
+                "sensor",
+                DOMAIN,
+                entity["unique_id"],
+                suggested_object_id=entity["entity_id"].removeprefix("sensor."),
+                config_entry=config_entry,
+                device_id=device_entry.id,
+            )
+            created[entity["unique_id"]] = entry.entity_id
+
+            override = (unit_overrides or {}).get(entity["slug"])
+            if override:
+                entity_registry.async_update_entity_options(
+                    entry.entity_id, "sensor", {"unit_of_measurement": override}
+                )
+
+    return created
 
 
 @pytest.fixture(autouse=True)

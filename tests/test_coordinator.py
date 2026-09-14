@@ -33,7 +33,7 @@ from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.radoff.const import (
     CONF_BASE_URL,
-    CONF_DOMAIN_ID,
+    CONF_DOMAIN_PREFIX,
     DEFAULT_SCAN_INTERVAL,
     DOMAIN,
     ERROR_DOMAIN_ACCESS_DENIED,
@@ -62,7 +62,7 @@ RATE_LIMIT_BODY = {"message": "Too Many Requests"}
 async def _setup_entry(
     hass: HomeAssistant,
     monkeypatch: pytest.MonkeyPatch,
-    config_entry_v2_data: dict[str, Any],
+    config_entry_v3_data: dict[str, Any],
 ) -> MockConfigEntry:
     patch_authenticate_user(
         monkeypatch,
@@ -70,9 +70,9 @@ async def _setup_entry(
     )
     entry = MockConfigEntry(
         domain=DOMAIN,
-        data=config_entry_v2_data,
+        data=config_entry_v3_data,
         options={"generate_index": True},
-        version=2,
+        version=3,
     )
     entry.add_to_hass(hass)
     assert await hass.config_entries.async_setup(entry.entry_id)
@@ -87,33 +87,33 @@ async def _repoll(hass: HomeAssistant) -> None:
     await hass.async_block_till_done()
 
 
-async def test_coordinator_without_domain_id_raises_config_entry_error(
+async def test_coordinator_without_a_domain_prefix_raises_config_entry_error(
     hass: HomeAssistant,
-    config_entry_v2_data: dict[str, Any],
+    config_entry_v3_data: dict[str, Any],
 ) -> None:
     """
-    Constructing the coordinator without a `domain_id` never raises `KeyError`.
+    Constructing the coordinator without a `domain_prefix` never raises `KeyError`.
 
     Card RT-2926 / finding T-06/F1. `__init__.py::async_setup_entry` stops
     before getting here, but this class must not be the thing that decides
     whether the integration crashes: any caller reaching it without a
     domain gets the same explicit, translated `ConfigEntryError`.
     """
-    data = {k: v for k, v in config_entry_v2_data.items() if k != CONF_DOMAIN_ID}
-    entry = MockConfigEntry(domain=DOMAIN, data=data, version=2)
+    data = {k: v for k, v in config_entry_v3_data.items() if k != CONF_DOMAIN_PREFIX}
+    entry = MockConfigEntry(domain=DOMAIN, data=data, version=3)
     entry.add_to_hass(hass)
 
     with pytest.raises(ConfigEntryError) as err:
         RadoffCoordinator(hass, entry)
 
-    assert err.value.translation_key == "missing_domain_id"
+    assert err.value.translation_key == "missing_domain_prefix"
 
 
 async def test_poll_nominal_produces_expected_entities(
     hass: HomeAssistant,
     monkeypatch: pytest.MonkeyPatch,
     requests_mock: Any,
-    config_entry_v2_data: dict[str, Any],
+    config_entry_v3_data: dict[str, Any],
 ) -> None:
     """
     A nominal payload produces the expected entities, with specific values.
@@ -125,7 +125,7 @@ async def test_poll_nominal_produces_expected_entities(
     """
     register_devices(requests_mock, load_devices_fixture("devices_one_device.json"))
 
-    await _setup_entry(hass, monkeypatch, config_entry_v2_data)
+    await _setup_entry(hass, monkeypatch, config_entry_v3_data)
 
     temperature = hass.states.get("sensor.living_room_temperature")
     assert temperature is not None
@@ -153,7 +153,7 @@ async def test_the_device_registry_entry_carries_the_firmware_version(
     hass: HomeAssistant,
     monkeypatch: pytest.MonkeyPatch,
     requests_mock: Any,
-    config_entry_v2_data: dict[str, Any],
+    config_entry_v3_data: dict[str, Any],
 ) -> None:
     """
     Card M-03: `firmware_version` reaches `device_info.sw_version`.
@@ -165,7 +165,7 @@ async def test_the_device_registry_entry_carries_the_firmware_version(
     from homeassistant.helpers import device_registry as dr
 
     register_devices(requests_mock, load_devices_fixture("devices_one_device.json"))
-    await _setup_entry(hass, monkeypatch, config_entry_v2_data)
+    await _setup_entry(hass, monkeypatch, config_entry_v3_data)
 
     registry = dr.async_get(hass)
     device = registry.async_get_device(identifiers={(DOMAIN, "SER-0000-0001")})
@@ -178,11 +178,11 @@ async def test_poll_degraded_device_missing_from_the_list(
     hass: HomeAssistant,
     monkeypatch: pytest.MonkeyPatch,
     requests_mock: Any,
-    config_entry_v2_data: dict[str, Any],
+    config_entry_v3_data: dict[str, Any],
 ) -> None:
     """A device present on setup but absent from a later poll goes unavailable."""
     register_devices(requests_mock, load_devices_fixture("devices_one_device.json"))
-    await _setup_entry(hass, monkeypatch, config_entry_v2_data)
+    await _setup_entry(hass, monkeypatch, config_entry_v3_data)
     assert hass.states.get("sensor.living_room_temperature").state != "unavailable"
 
     register_devices(requests_mock, load_fixture("devices_empty.json"))
@@ -195,7 +195,7 @@ async def test_poll_degraded_missing_field_only_affects_that_reading(
     hass: HomeAssistant,
     monkeypatch: pytest.MonkeyPatch,
     requests_mock: Any,
-    config_entry_v2_data: dict[str, Any],
+    config_entry_v3_data: dict[str, Any],
 ) -> None:
     """
     A field missing from the telemetry block only affects that one entity.
@@ -213,7 +213,7 @@ async def test_poll_degraded_missing_field_only_affects_that_reading(
     """
     register_devices(requests_mock, load_devices_fixture("devices_missing_field.json"))
 
-    await _setup_entry(hass, monkeypatch, config_entry_v2_data)
+    await _setup_entry(hass, monkeypatch, config_entry_v3_data)
 
     temperature = hass.states.get("sensor.living_room_temperature")
     assert temperature is not None
@@ -228,7 +228,7 @@ async def test_a_connected_device_without_telemetry_keeps_its_entities_available
     hass: HomeAssistant,
     monkeypatch: pytest.MonkeyPatch,
     requests_mock: Any,
-    config_entry_v2_data: dict[str, Any],
+    config_entry_v3_data: dict[str, Any],
 ) -> None:
     """
     M-06 AC1: `connected` plus `telemetry: null` is not unavailable.
@@ -253,7 +253,7 @@ async def test_a_connected_device_without_telemetry_keeps_its_entities_available
     """
     register_devices(requests_mock, load_devices_fixture("devices_no_telemetry.json"))
 
-    entry = await _setup_entry(hass, monkeypatch, config_entry_v2_data)
+    entry = await _setup_entry(hass, monkeypatch, config_entry_v3_data)
 
     assert entry.state is ConfigEntryState.LOADED
     temperature = hass.states.get("sensor.living_room_temperature")
@@ -270,7 +270,7 @@ async def test_a_device_falling_silent_only_affects_its_own_entities(
     hass: HomeAssistant,
     monkeypatch: pytest.MonkeyPatch,
     requests_mock: Any,
-    config_entry_v2_data: dict[str, Any],
+    config_entry_v3_data: dict[str, Any],
 ) -> None:
     """
     A device that falls silent keeps its last value; the other one updates.
@@ -289,7 +289,7 @@ async def test_a_device_falling_silent_only_affects_its_own_entities(
     """
     two_devices = load_devices_fixture("devices_two_devices.json")
     register_devices(requests_mock, two_devices)
-    await _setup_entry(hass, monkeypatch, config_entry_v2_data)
+    await _setup_entry(hass, monkeypatch, config_entry_v3_data)
 
     bedroom_before = hass.states.get("sensor.bedroom_temperature")
     assert bedroom_before.state != "unavailable"
@@ -317,7 +317,7 @@ async def test_a_500_costs_the_whole_cycle(
     hass: HomeAssistant,
     monkeypatch: pytest.MonkeyPatch,
     requests_mock: Any,
-    config_entry_v2_data: dict[str, Any],
+    config_entry_v3_data: dict[str, Any],
 ) -> None:
     """
     Card M-03: with one call per cycle, a 5xx makes every entity unavailable.
@@ -329,7 +329,7 @@ async def test_a_500_costs_the_whole_cycle(
     brought every device's telemetry, so there is nothing to keep.
     """
     register_devices(requests_mock, load_devices_fixture("devices_two_devices.json"))
-    await _setup_entry(hass, monkeypatch, config_entry_v2_data)
+    await _setup_entry(hass, monkeypatch, config_entry_v3_data)
     assert hass.states.get("sensor.bedroom_temperature").state != "unavailable"
 
     register_devices(
@@ -345,7 +345,7 @@ async def test_a_403_stops_the_entry_instead_of_retrying_forever(
     hass: HomeAssistant,
     monkeypatch: pytest.MonkeyPatch,
     requests_mock: Any,
-    config_entry_v2_data: dict[str, Any],
+    config_entry_v3_data: dict[str, Any],
 ) -> None:
     """
     Card M-02: a 403 on the poll is a reconfiguration, not a lost cycle.
@@ -370,9 +370,9 @@ async def test_a_403_stops_the_entry_instead_of_retrying_forever(
     )
     entry = MockConfigEntry(
         domain=DOMAIN,
-        data=config_entry_v2_data,
+        data=config_entry_v3_data,
         options={"generate_index": True},
-        version=2,
+        version=3,
     )
     entry.add_to_hass(hass)
 
@@ -388,7 +388,7 @@ async def test_the_base_url_option_is_what_the_poll_talks_to(
     hass: HomeAssistant,
     monkeypatch: pytest.MonkeyPatch,
     requests_mock: Any,
-    config_entry_v2_data: dict[str, Any],
+    config_entry_v3_data: dict[str, Any],
 ) -> None:
     """
     Card M-02: an entry with `base_url` in its options polls that host.
@@ -411,9 +411,9 @@ async def test_the_base_url_option_is_what_the_poll_talks_to(
     )
     entry = MockConfigEntry(
         domain=DOMAIN,
-        data=config_entry_v2_data,
+        data=config_entry_v3_data,
         options={"generate_index": True, CONF_BASE_URL: other_host},
-        version=2,
+        version=3,
     )
     entry.add_to_hass(hass)
 
@@ -428,7 +428,7 @@ async def test_the_base_url_option_is_what_the_poll_talks_to(
 
 def _make_coordinator(
     hass: HomeAssistant,
-    config_entry_v2_data: dict[str, Any],
+    config_entry_v3_data: dict[str, Any],
     *,
     entry_id: str,
     options: dict[str, Any] | None = None,
@@ -436,9 +436,9 @@ def _make_coordinator(
     """Build a coordinator on a real entry, without ever polling with it."""
     entry = MockConfigEntry(
         domain=DOMAIN,
-        data=config_entry_v2_data,
+        data=config_entry_v3_data,
         options=options or {"generate_index": True},
-        version=2,
+        version=3,
         entry_id=entry_id,
     )
     entry.add_to_hass(hass)
@@ -469,7 +469,7 @@ def _next_delay(
 async def test_two_coordinators_created_together_do_not_poll_together(
     hass: HomeAssistant,
     monkeypatch: pytest.MonkeyPatch,
-    config_entry_v2_data: dict[str, Any],
+    config_entry_v3_data: dict[str, Any],
 ) -> None:
     """
     Card M-05 AC: two coordinators created in the same instant are offset.
@@ -479,8 +479,8 @@ async def test_two_coordinators_created_together_do_not_poll_together(
     here waits for a timer: what is pinned is the delay each one asks for,
     which is what a timer would use.
     """
-    first = _make_coordinator(hass, config_entry_v2_data, entry_id="entry-one")
-    second = _make_coordinator(hass, config_entry_v2_data, entry_id="entry-two")
+    first = _make_coordinator(hass, config_entry_v3_data, entry_id="entry-one")
+    second = _make_coordinator(hass, config_entry_v3_data, entry_id="entry-two")
 
     assert first.poll_jitter != second.poll_jitter
     assert _next_delay(first, monkeypatch) != _next_delay(second, monkeypatch)
@@ -489,7 +489,7 @@ async def test_two_coordinators_created_together_do_not_poll_together(
 async def test_the_offset_never_shortens_the_interval_below_what_was_asked(
     hass: HomeAssistant,
     monkeypatch: pytest.MonkeyPatch,
-    config_entry_v2_data: dict[str, Any],
+    config_entry_v3_data: dict[str, Any],
 ) -> None:
     """
     The offset is added, never subtracted (card M-05).
@@ -498,7 +498,7 @@ async def test_the_offset_never_shortens_the_interval_below_what_was_asked(
     54s, under the device cadence that floor exists to respect - so the
     delay stays within [interval, interval + 10%).
     """
-    coordinator = _make_coordinator(hass, config_entry_v2_data, entry_id="entry-one")
+    coordinator = _make_coordinator(hass, config_entry_v3_data, entry_id="entry-one")
 
     delay = _next_delay(coordinator, monkeypatch)
 
@@ -508,7 +508,7 @@ async def test_the_offset_never_shortens_the_interval_below_what_was_asked(
 
 async def test_the_offset_of_an_entry_survives_a_restart(
     hass: HomeAssistant,
-    config_entry_v2_data: dict[str, Any],
+    config_entry_v3_data: dict[str, Any],
 ) -> None:
     """
     The same entry gets the same offset every time it is set up (M-05).
@@ -520,8 +520,8 @@ async def test_the_offset_of_an_entry_survives_a_restart(
     derived from the entry_id instead, so rebuilding the coordinator is
     indistinguishable from never having stopped.
     """
-    before = _make_coordinator(hass, config_entry_v2_data, entry_id="entry-one")
-    after = _make_coordinator(hass, config_entry_v2_data, entry_id="entry-one")
+    before = _make_coordinator(hass, config_entry_v3_data, entry_id="entry-one")
+    after = _make_coordinator(hass, config_entry_v3_data, entry_id="entry-one")
 
     assert before.poll_jitter == after.poll_jitter
 
@@ -529,7 +529,7 @@ async def test_the_offset_of_an_entry_survives_a_restart(
 async def test_a_long_backoff_pushes_only_the_next_cycle_out(
     hass: HomeAssistant,
     monkeypatch: pytest.MonkeyPatch,
-    config_entry_v2_data: dict[str, Any],
+    config_entry_v3_data: dict[str, Any],
 ) -> None:
     """
     A backoff longer than the interval delays one cycle, and only one.
@@ -541,7 +541,7 @@ async def test_a_long_backoff_pushes_only_the_next_cycle_out(
     (S-07's freshness threshold hung off it too, and was asserted here
     until card M-06 removed the threshold itself.)
     """
-    coordinator = _make_coordinator(hass, config_entry_v2_data, entry_id="entry-one")
+    coordinator = _make_coordinator(hass, config_entry_v3_data, entry_id="entry-one")
     nominal = coordinator.update_interval
 
     coordinator._rate_limit_delay = DEFAULT_SCAN_INTERVAL * 3.0  # noqa: SLF001
@@ -555,7 +555,7 @@ async def test_a_long_backoff_pushes_only_the_next_cycle_out(
 async def test_a_short_backoff_does_not_pull_the_next_cycle_forward(
     hass: HomeAssistant,
     monkeypatch: pytest.MonkeyPatch,
-    config_entry_v2_data: dict[str, Any],
+    config_entry_v3_data: dict[str, Any],
 ) -> None:
     """
     The 429 backoff is a floor on the wait, never a replacement for it.
@@ -566,7 +566,7 @@ async def test_a_short_backoff_does_not_pull_the_next_cycle_forward(
     one - which is the failure this assertion exists to prevent someone
     reintroducing.
     """
-    coordinator = _make_coordinator(hass, config_entry_v2_data, entry_id="entry-one")
+    coordinator = _make_coordinator(hass, config_entry_v3_data, entry_id="entry-one")
 
     coordinator._rate_limit_delay = 5.0  # noqa: SLF001
 
@@ -577,7 +577,7 @@ async def test_a_429_skips_the_cycle_without_making_entities_unavailable(
     hass: HomeAssistant,
     monkeypatch: pytest.MonkeyPatch,
     requests_mock: Any,
-    config_entry_v2_data: dict[str, Any],
+    config_entry_v3_data: dict[str, Any],
 ) -> None:
     """
     Card M-05 AC: a 429 skips the cycle and the next one runs normally.
@@ -601,7 +601,7 @@ async def test_a_429_skips_the_cycle_without_making_entities_unavailable(
     gone away.
     """
     register_devices(requests_mock, load_devices_fixture("devices_two_devices.json"))
-    await _setup_entry(hass, monkeypatch, config_entry_v2_data)
+    await _setup_entry(hass, monkeypatch, config_entry_v3_data)
     before_state = hass.states.get("sensor.bedroom_temperature")
     before = before_state.state
     measured_at_before = before_state.attributes["last_measured_at"]
@@ -631,7 +631,7 @@ async def test_a_429_on_the_very_first_poll_retries_the_setup(
     hass: HomeAssistant,
     monkeypatch: pytest.MonkeyPatch,
     requests_mock: Any,
-    config_entry_v2_data: dict[str, Any],
+    config_entry_v3_data: dict[str, Any],
 ) -> None:
     """
     The one case where a 429 still fails a cycle (card M-05).
@@ -648,9 +648,9 @@ async def test_a_429_on_the_very_first_poll_retries_the_setup(
     )
     entry = MockConfigEntry(
         domain=DOMAIN,
-        data=config_entry_v2_data,
+        data=config_entry_v3_data,
         options={"generate_index": True},
-        version=2,
+        version=3,
     )
     entry.add_to_hass(hass)
 

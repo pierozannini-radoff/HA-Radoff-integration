@@ -28,7 +28,7 @@ from custom_components.radoff.api.auth import (
 from custom_components.radoff.api.client import API
 from custom_components.radoff.const import (
     CONF_BASE_URL,
-    CONF_DOMAIN_ID,
+    CONF_DOMAIN_PREFIX,
     DEFAULT_BASE_URL,
     DEFAULT_SCAN_INTERVAL,
     DOMAIN,
@@ -37,6 +37,7 @@ from custom_components.radoff.const import (
 
 from .conftest import (
     auth_result,
+    load_devices_fixture,
     load_fixture,
     make_id_token,
     patch_authenticate_user,
@@ -60,7 +61,7 @@ async def test_auth_happy_path_single_domain(
     id_token = make_id_token(["11111111-1111-1111-1111-111111111111"])
     patch_authenticate_user(monkeypatch, result=auth_result(id_token))
     register_domains(requests_mock, load_fixture("domains_single.json"))
-    register_devices(requests_mock, load_fixture("devices_empty.json"))
+    register_devices(requests_mock, load_devices_fixture("devices_one_device.json"))
 
     result = await hass.config_entries.flow.async_init(
         DOMAIN, context={"source": config_entries.SOURCE_USER}
@@ -71,10 +72,10 @@ async def test_auth_happy_path_single_domain(
     await hass.async_block_till_done()
 
     assert result["type"] is FlowResultType.CREATE_ENTRY
-    # The created entry's domain_id comes from the discovery response body
-    # (domains_single.json), not from the IdToken's own "d_*" claim - that
-    # claim is only used to bootstrap the discovery call's x-domain header.
-    assert result["data"][CONF_DOMAIN_ID] == "aaaaaaaa-0000-0000-0000-000000000001"
+    # The entry's domain comes from the discovery response body
+    # (domains_single.json) and is the human-readable `prefix` of arch 2.0,
+    # not the UUID arch 1.x used (card M-07).
+    assert result["data"][CONF_DOMAIN_PREFIX] == "home1234"
 
 
 async def test_auth_invalid_credentials(
@@ -225,7 +226,7 @@ async def test_config_flow_multiple_domains(
     )
     patch_authenticate_user(monkeypatch, result=auth_result(id_token))
     register_domains(requests_mock, load_fixture("domains_multi.json"))
-    register_devices(requests_mock, load_fixture("devices_empty.json"))
+    register_devices(requests_mock, load_devices_fixture("devices_one_device.json"))
 
     result = await hass.config_entries.flow.async_init(
         DOMAIN, context={"source": config_entries.SOURCE_USER}
@@ -238,13 +239,13 @@ async def test_config_flow_multiple_domains(
 
     result = await hass.config_entries.flow.async_configure(
         result["flow_id"],
-        {CONF_DOMAIN_ID: "bbbbbbbb-0000-0000-0000-000000000002"},
+        {CONF_DOMAIN_PREFIX: "office56"},
     )
     await hass.async_block_till_done()
 
     assert result["type"] is FlowResultType.CREATE_ENTRY
     entry = result["result"]
-    assert entry.data[CONF_DOMAIN_ID] == "bbbbbbbb-0000-0000-0000-000000000002"
+    assert entry.data[CONF_DOMAIN_PREFIX] == "office56"
 
     await hass.config_entries.async_reload(entry.entry_id)
     await hass.async_block_till_done()
@@ -252,9 +253,7 @@ async def test_config_flow_multiple_domains(
     devices_request = next(
         req for req in requests_mock.request_history if req.path == "/data/devices"
     )
-    assert devices_request.qs["domain_prefix"] == [
-        "bbbbbbbb-0000-0000-0000-000000000002"
-    ]
+    assert devices_request.qs["domain_prefix"] == ["office56"]
     assert "x-domain" not in devices_request.headers
 
 
@@ -278,7 +277,7 @@ async def test_discovery_no_longer_needs_a_domain_claim(
     """
     patch_authenticate_user(monkeypatch, result=auth_result(make_id_token([])))
     register_domains(requests_mock, load_fixture("domains_single.json"))
-    register_devices(requests_mock, load_fixture("devices_empty.json"))
+    register_devices(requests_mock, load_devices_fixture("devices_one_device.json"))
 
     result = await hass.config_entries.flow.async_init(
         DOMAIN, context={"source": config_entries.SOURCE_USER}
@@ -289,10 +288,158 @@ async def test_discovery_no_longer_needs_a_domain_claim(
     await hass.async_block_till_done()
 
     assert result["type"] is FlowResultType.CREATE_ENTRY
-    assert result["data"][CONF_DOMAIN_ID] == "aaaaaaaa-0000-0000-0000-000000000001"
+    assert result["data"][CONF_DOMAIN_PREFIX] == "home1234"
     assert any(
         req.path == "/data/user/me/domains" for req in requests_mock.request_history
     )
+
+
+# ---------------------------------------------------------------------------
+# Card M-07: the arch 2.0 discovery response, and what the flow does with it
+# ---------------------------------------------------------------------------
+
+
+async def test_a_single_domain_is_never_put_to_the_user(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch, requests_mock: Any
+) -> None:
+    """
+    AC 1: with one domain the setup completes without the domain step existing.
+
+    The distinction that matters is between "the form was shown with one
+    option preselected" and "there was no form": only the second is a setup
+    the user finishes in one screen, which is what the card asks for.
+    """
+    patch_authenticate_user(monkeypatch, result=auth_result(make_id_token([])))
+    register_domains(requests_mock, load_fixture("domains_single.json"))
+    register_devices(requests_mock, load_devices_fixture("devices_one_device.json"))
+
+    result = await hass.config_entries.flow.async_init(
+        DOMAIN, context={"source": config_entries.SOURCE_USER}
+    )
+    assert result["step_id"] == "user"
+
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], USER_INPUT
+    )
+    await hass.async_block_till_done()
+
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert result["data"][CONF_DOMAIN_PREFIX] == "home1234"
+
+
+async def test_the_domain_choice_is_labelled_with_the_readable_name(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch, requests_mock: Any
+) -> None:
+    """
+    T-08 D-03: the label is `name`, with the prefix only as a fallback.
+
+    On dev, 14 prefixes out of 15 are UUID fragments while the name is a
+    readable string (M-01, reserve 20), so a form that offered the prefixes
+    would be asking the user to pick between `875fe89b` and `fdffb4d9`. The
+    third domain of the fixture has no name at all, which is the case the
+    fallback exists for.
+    """
+    patch_authenticate_user(monkeypatch, result=auth_result(make_id_token([])))
+    register_domains(requests_mock, load_fixture("domains_multi.json"))
+    register_devices(requests_mock, load_devices_fixture("devices_one_device.json"))
+
+    result = await hass.config_entries.flow.async_init(
+        DOMAIN, context={"source": config_entries.SOURCE_USER}
+    )
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], USER_INPUT
+    )
+
+    assert result["step_id"] == "domain"
+    choices = result["data_schema"].schema[CONF_DOMAIN_PREFIX].container
+    assert choices == {
+        "home1234": "Home",
+        "office56": "Office",
+        "nameless": "nameless",
+    }
+
+
+async def test_a_domain_with_no_device_aborts_with_its_own_reason(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch, requests_mock: Any
+) -> None:
+    """
+    T-08 D-32: an empty domain says so, instead of setting up and showing nothing.
+
+    Without this the setup succeeds, the integration card reads "0 devices"
+    and there is nothing anywhere saying why - the "errore generico" the
+    card asks to replace.
+    """
+    patch_authenticate_user(monkeypatch, result=auth_result(make_id_token([])))
+    register_domains(requests_mock, load_fixture("domains_single.json"))
+    register_devices(requests_mock, load_fixture("devices_empty.json"))
+
+    result = await hass.config_entries.flow.async_init(
+        DOMAIN, context={"source": config_entries.SOURCE_USER}
+    )
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], USER_INPUT
+    )
+
+    assert result["type"] is FlowResultType.ABORT
+    assert result["reason"] == "no_devices"
+    assert hass.config_entries.async_entries(DOMAIN) == []
+
+
+async def test_a_failing_device_check_does_not_block_the_setup(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch, requests_mock: Any
+) -> None:
+    """
+    The device check has no opinion when it cannot run, and must not veto.
+
+    A 500 on `/data/devices` says nothing about whether the domain has
+    devices. Refusing to create the entry over it would turn a transient
+    backend problem into a setup the user cannot complete, where the
+    coordinator's own first refresh handles the same failure with a retry
+    and an explanation.
+    """
+    patch_authenticate_user(monkeypatch, result=auth_result(make_id_token([])))
+    register_domains(requests_mock, load_fixture("domains_single.json"))
+    register_devices(requests_mock, {"message": "boom"}, status_code=500)
+
+    result = await hass.config_entries.flow.async_init(
+        DOMAIN, context={"source": config_entries.SOURCE_USER}
+    )
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], USER_INPUT
+    )
+    await hass.async_block_till_done()
+
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert result["data"][CONF_DOMAIN_PREFIX] == "home1234"
+
+
+async def test_a_domain_without_a_prefix_is_skipped(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch, requests_mock: Any
+) -> None:
+    """
+    A malformed element costs itself, not the other fourteen.
+
+    The prefix is the one field this integration cannot work without. An
+    element missing it is dropped, so an account whose list holds one
+    still sets up on the domains that are intact - and with exactly one
+    intact domain left, that means no form at all.
+    """
+    patch_authenticate_user(monkeypatch, result=auth_result(make_id_token([])))
+    payload = load_fixture("domains_single.json")
+    payload["domains"].append({"domain": {"name": "Broken"}, "role": {}})
+    register_domains(requests_mock, payload)
+    register_devices(requests_mock, load_devices_fixture("devices_one_device.json"))
+
+    result = await hass.config_entries.flow.async_init(
+        DOMAIN, context={"source": config_entries.SOURCE_USER}
+    )
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], USER_INPUT
+    )
+    await hass.async_block_till_done()
+
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert result["data"][CONF_DOMAIN_PREFIX] == "home1234"
 
 
 async def test_config_flow_no_domains_empty_discovery(
@@ -319,9 +466,9 @@ async def test_no_discovery_on_reload(
     hass: HomeAssistant,
     monkeypatch: pytest.MonkeyPatch,
     requests_mock: Any,
-    config_entry_v2_data: dict[str, Any],
+    config_entry_v3_data: dict[str, Any],
 ) -> None:
-    """An entry with domain_id already set never calls /data/user/me/domains."""
+    """An entry with a domain_prefix already set never calls /data/user/me/domains."""
     patch_authenticate_user(
         monkeypatch, result=auth_result(make_id_token(["should-not-be-used"]))
     )
@@ -329,9 +476,9 @@ async def test_no_discovery_on_reload(
 
     entry = MockConfigEntry(
         domain=DOMAIN,
-        data=config_entry_v2_data,
+        data=config_entry_v3_data,
         options={"generate_index": True},
-        version=2,
+        version=3,
     )
     entry.add_to_hass(hass)
 
@@ -343,7 +490,7 @@ async def test_no_discovery_on_reload(
     )
 
 
-def test_domain_id_survives_session_invalidate() -> None:
+def test_the_domain_prefix_survives_session_invalidate() -> None:
     """
     Regression: `CognitoSession.invalidate()` must never clear the domain.
 
@@ -355,13 +502,13 @@ def test_domain_id_survives_session_invalidate() -> None:
     api = API(
         username="user@example.com",
         password="hunter2",
-        domain_prefix="aaaaaaaa-0000-0000-0000-000000000001",
+        domain_prefix="home1234",
     )
     api._session.tokens = {"IdToken": "some-token"}  # noqa: SLF001
 
     api._session.invalidate()  # noqa: SLF001
 
-    assert api.domain_prefix == "aaaaaaaa-0000-0000-0000-000000000001"
+    assert api.domain_prefix == "home1234"
 
 
 # ---------------------------------------------------------------------------
@@ -373,7 +520,7 @@ async def _loaded_entry(
     hass: HomeAssistant,
     monkeypatch: pytest.MonkeyPatch,
     requests_mock: Any,
-    config_entry_v2_data: dict[str, Any],
+    config_entry_v3_data: dict[str, Any],
     options: dict[str, Any],
 ) -> MockConfigEntry:
     """Set up a real, loaded entry with `options`, so its options flow can run."""
@@ -390,7 +537,7 @@ async def _loaded_entry(
     )
 
     entry = MockConfigEntry(
-        domain=DOMAIN, data=config_entry_v2_data, options=options, version=2
+        domain=DOMAIN, data=config_entry_v3_data, options=options, version=3
     )
     entry.add_to_hass(hass)
     assert await hass.config_entries.async_setup(entry.entry_id)
@@ -410,11 +557,11 @@ async def test_options_flow_shows_the_base_url_only_in_advanced_mode(
     hass: HomeAssistant,
     monkeypatch: pytest.MonkeyPatch,
     requests_mock: Any,
-    config_entry_v2_data: dict[str, Any],
+    config_entry_v3_data: dict[str, Any],
 ) -> None:
     """With advanced mode off the field is not in the schema at all."""
     entry = await _loaded_entry(
-        hass, monkeypatch, requests_mock, config_entry_v2_data, {"generate_index": True}
+        hass, monkeypatch, requests_mock, config_entry_v3_data, {"generate_index": True}
     )
 
     normal = await _open_options(hass, entry, advanced=False)
@@ -428,7 +575,7 @@ async def test_saving_options_without_the_field_keeps_the_base_url(
     hass: HomeAssistant,
     monkeypatch: pytest.MonkeyPatch,
     requests_mock: Any,
-    config_entry_v2_data: dict[str, Any],
+    config_entry_v3_data: dict[str, Any],
 ) -> None:
     """
     A normal user changing the interval must not wipe an advanced base URL.
@@ -442,7 +589,7 @@ async def test_saving_options_without_the_field_keeps_the_base_url(
         hass,
         monkeypatch,
         requests_mock,
-        config_entry_v2_data,
+        config_entry_v3_data,
         {"generate_index": True, CONF_BASE_URL: other_host},
     )
 
@@ -461,7 +608,7 @@ async def test_a_base_url_equal_to_the_default_is_not_stored(
     hass: HomeAssistant,
     monkeypatch: pytest.MonkeyPatch,
     requests_mock: Any,
-    config_entry_v2_data: dict[str, Any],
+    config_entry_v3_data: dict[str, Any],
 ) -> None:
     """
     Submitting the default (or a blank field) removes the override.
@@ -474,7 +621,7 @@ async def test_a_base_url_equal_to_the_default_is_not_stored(
         hass,
         monkeypatch,
         requests_mock,
-        config_entry_v2_data,
+        config_entry_v3_data,
         {"generate_index": True, CONF_BASE_URL: "https://api.int.iot.radoff.life"},
     )
 
@@ -497,7 +644,7 @@ async def test_the_form_refuses_an_interval_below_the_floor(
     hass: HomeAssistant,
     monkeypatch: pytest.MonkeyPatch,
     requests_mock: Any,
-    config_entry_v2_data: dict[str, Any],
+    config_entry_v3_data: dict[str, Any],
 ) -> None:
     """
     Card M-05 AC: the options flow does not accept anything under 60s.
@@ -509,7 +656,7 @@ async def test_the_form_refuses_an_interval_below_the_floor(
     server-side, so the value is refused whatever the frontend sent.
     """
     entry = await _loaded_entry(
-        hass, monkeypatch, requests_mock, config_entry_v2_data, {"generate_index": True}
+        hass, monkeypatch, requests_mock, config_entry_v3_data, {"generate_index": True}
     )
 
     result = await _open_options(hass, entry, advanced=False)
@@ -526,7 +673,7 @@ async def test_an_entry_that_never_set_an_interval_polls_at_the_default(
     hass: HomeAssistant,
     monkeypatch: pytest.MonkeyPatch,
     requests_mock: Any,
-    config_entry_v2_data: dict[str, Any],
+    config_entry_v3_data: dict[str, Any],
 ) -> None:
     """
     Card M-05 AC: a new entry defaults to 300s, in the form and in the poll.
@@ -537,7 +684,7 @@ async def test_an_entry_that_never_set_an_interval_polls_at_the_default(
     interval.
     """
     entry = await _loaded_entry(
-        hass, monkeypatch, requests_mock, config_entry_v2_data, {"generate_index": True}
+        hass, monkeypatch, requests_mock, config_entry_v3_data, {"generate_index": True}
     )
 
     assert DEFAULT_SCAN_INTERVAL == 300
