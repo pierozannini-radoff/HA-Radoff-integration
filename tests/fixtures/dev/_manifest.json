@@ -6,8 +6,8 @@
   "pools": [
     {
       "label": "pool_current",
-      "pool_id": "eu-west-1_zD4CSIZ6i",
-      "client_id": "61ckd0c4qoq0ov7mmphrj7kstj",
+      "pool_id": "**REDACTED**",
+      "client_id": "**REDACTED**",
       "region": "eu-west-1",
       "login_ok": false,
       "login_error": "InvalidParameterException: An error occurred (InvalidParameterException) when calling the InitiateAuth operation: USER_PASSWORD_AUTH flow not enabled for this client",
@@ -19,8 +19,8 @@
     },
     {
       "label": "pool_dev",
-      "pool_id": "eu-west-1_5SsvW9t6S",
-      "client_id": "2i63gbc9sim3b8paasaga7jb6g",
+      "pool_id": "**REDACTED**",
+      "client_id": "**REDACTED**",
       "region": "eu-west-1",
       "login_ok": true,
       "login_error": null,
@@ -34,7 +34,7 @@
   "auth_flows": [
     {
       "pool": "pool_current",
-      "client_id": "61ckd0c4qoq0ov7mmphrj7kstj",
+      "client_id": "**REDACTED**",
       "flussi": {
         "USER_SRP_AUTH": "abilitato (risposta: NotAuthorizedException)",
         "USER_PASSWORD_AUTH": "NON abilitato",
@@ -43,7 +43,7 @@
     },
     {
       "pool": "pool_dev",
-      "client_id": "2i63gbc9sim3b8paasaga7jb6g",
+      "client_id": "**REDACTED**",
       "flussi": {
         "USER_SRP_AUTH": "NON abilitato",
         "USER_PASSWORD_AUTH": "abilitato (risposta: NotAuthorizedException)",

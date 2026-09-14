@@ -29,6 +29,12 @@ _COORD_MAX_DECIMALS = 1
 
 _SECRET_KEY_HINTS = ("password", "token", "secret", "apikey", "authorization")
 
+# Identificativi Cognito: un pool (`<regione>_<suffisso>`) e un app client
+# (26 caratteri alfanumerici minuscoli). Non sono credenziali, ma sono
+# infrastruttura, e questa cartella finisce in un repo pubblico.
+_POOL_ID_RE = re.compile(r"\b[a-z]{2}-[a-z]+-\d_[A-Za-z0-9]{8,}\b")
+_CLIENT_ID_RE = re.compile(r"\b[0-9a-z]{26}\b")
+
 
 def _fixture_files() -> list[Path]:
     if not DEV_FIXTURES_DIR.is_dir():
@@ -124,6 +130,14 @@ def test_dev_fixtures_have_a_manifest() -> None:
         assert (
             DEV_FIXTURES_DIR / name
         ).is_file(), f"{name} manca: rigenera con `python3 scripts/probe_arch2.py`"
+
+
+def test_no_cognito_identifier_reaches_the_fixtures() -> None:
+    """Nessun pool id o app client id Cognito, nemmeno nei file di metadati."""
+    for path in sorted(DEV_FIXTURES_DIR.glob("*.json")):
+        text = path.read_text(encoding="utf-8")
+        assert not _POOL_ID_RE.search(text), f"{path.name}: pool id Cognito in chiaro"
+        assert not _CLIENT_ID_RE.search(text), f"{path.name}: app client id in chiaro"
 
 
 def test_dev_manifest_records_response_headers() -> None:

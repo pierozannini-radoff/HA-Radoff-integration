@@ -1006,11 +1006,11 @@ class PoolAttempt:
     token: str | None = field(default=None, repr=False)
 
     def to_dict(self) -> dict[str, Any]:
-        """La forma serializzabile, senza il token."""
+        """La forma serializzabile: senza il token e senza gli id del pool."""
         return {
             "label": self.label,
-            "pool_id": self.pool_id,
-            "client_id": self.client_id,
+            "pool_id": REDACTED,
+            "client_id": REDACTED,
             "region": self.region,
             "login_ok": self.login_ok,
             "login_error": self.login_error,
@@ -1272,9 +1272,7 @@ def probe_auth_flows(config: Config) -> list[dict[str, Any]]:
                 )
             else:  # pragma: no cover - un login fittizio non puo' riuscire
                 flows[flow] = "abilitato"
-        results.append(
-            {"pool": pool.label, "client_id": pool.client_id, "flussi": flows}
-        )
+        results.append({"pool": pool.label, "client_id": REDACTED, "flussi": flows})
         for flow, verdict in flows.items():
             print(f"  {pool.label:<14} {flow:<22} {verdict}")
     return results

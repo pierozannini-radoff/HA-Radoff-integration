@@ -64,10 +64,16 @@ Quattro regole, tutte deliberate:
 4. **Le coordinate sono arrotondate a un decimale** (~11 km), non cancellate.
    Le chiavi di indirizzo (`address`, `street`, `zip`, …) sono invece
    sostituite per intero.
+5. **Gli identificativi Cognito non entrano.** `pool_id` e `client_id` sono
+   sostituiti anche in `_manifest.json` e `_findings.json`: a dire quale pool
+   ha risposto basta la sua etichetta (`pool_dev`, `pool_current`). Non sono
+   credenziali, ma sono infrastruttura, e questa cartella sta in un repo
+   pubblico.
 
 Il `domain_prefix` resta in chiaro di default: il client lo mostra all'utente
 nel menu di scelta del dominio, e le fixture servono a testare quel percorso.
 Chi non lo vuole nel repo esegue lo script con `--redact-domain-prefix`.
 
 `tests/test_dev_fixtures.py` verifica in CI che qui dentro non sia rimasto un
-JWT, una mail, un UUID o una coordinata a piena precisione.
+JWT, una mail, un UUID, una coordinata a piena precisione o un identificativo
+Cognito.

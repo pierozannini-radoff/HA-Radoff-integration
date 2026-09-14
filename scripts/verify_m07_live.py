@@ -100,10 +100,14 @@ UUID_FRAGMENT = re.compile(r"^[0-9a-f]{8}$")
 # esistesse, il controllo lo direbbe invece di passare per sbaglio.
 FOREIGN_DOMAIN_PREFIX = "zzzzzzzz"
 
-POOL_LABELS = {
-    "eu-west-1_5SsvW9t6S": "dev",
-    "eu-west-1_zD4CSIZ6i": "prod (il default di const.py)",
-}
+
+def pool_label(pool_id: str) -> str:
+    """L'ambiente a cui appartiene un pool, per spiegare un errore di auth."""
+    if pool_id == DEFAULT_POOL_ID:
+        return "prod (il default di const.py)"
+    if pool_id:
+        return "non quello di const.py, quindi un altro ambiente"
+    return "sconosciuto"
 
 
 def auth_hint(err: Exception, pool_id: str) -> str:
@@ -115,7 +119,7 @@ def auth_hint(err: Exception, pool_id: str) -> str:
     e portano a conclusioni opposte (vedi
     `memory/srp-non-abilitato-pool-dev-blocca-e2e`).
     """
-    label = POOL_LABELS.get(pool_id, "sconosciuto")
+    label = pool_label(pool_id)
     if isinstance(err, AuthInvalidError):
         return (
             f"Cognito ha rifiutato le credenziali sul pool {pool_id} "

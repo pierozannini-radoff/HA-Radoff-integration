@@ -8,17 +8,33 @@
 # Le credenziali si leggono da .env (gitignored), come RADOFF_USERNAME /
 # RADOFF_PASSWORD: questo script non le contiene e non le stampa.
 #
-# I due override di pool servono finche' const.py punta a un pool diverso
-# dall'ambiente di DEFAULT_BASE_URL. Sovrascrivibili
-# dall'ambiente:  M06_POOL_ID=... M06_DOMAIN_PREFIX=... ./scripts/verify_m06
+# Anche il pool Cognito di dev viene da .env, come RADOFF_DEV_POOL_ID /
+# RADOFF_DEV_CLIENT_ID: serve finche' const.py punta a un pool diverso
+# dall'ambiente di DEFAULT_BASE_URL. Sovrascrivibili dall'ambiente:
+#   M06_POOL_ID=... M06_DOMAIN_PREFIX=... ./scripts/verify_m06
 
 set -uo pipefail
 
 cd "$(dirname "$0")/.."
 
-POOL_ID="${M06_POOL_ID:-eu-west-1_5SsvW9t6S}"
-CLIENT_ID="${M06_CLIENT_ID:-2i63gbc9sim3b8paasaga7jb6g}"
+# Il pool Cognito di dev non sta nel repo: si legge da .env (gitignored),
+# come le credenziali. `env_value` lo estrae senza eseguire il file.
+env_value() {
+    [[ -f .env ]] || return 0
+    sed -n "s/^[[:space:]]*$1[[:space:]]*=[[:space:]]*//p" .env | tail -1 | tr -d "\"'"
+}
+
+POOL_ID="${M06_POOL_ID:-$(env_value RADOFF_DEV_POOL_ID)}"
+CLIENT_ID="${M06_CLIENT_ID:-$(env_value RADOFF_DEV_CLIENT_ID)}"
 DOMAIN_PREFIX="${M06_DOMAIN_PREFIX:-875fe89b}"
+
+if [[ -z "${POOL_ID}" || -z "${CLIENT_ID}" ]]; then
+    echo
+    echo "  Mancano RADOFF_DEV_POOL_ID e RADOFF_DEV_CLIENT_ID."
+    echo "  Mettili in .env (gitignored) o esportali: il pool Cognito di dev"
+    echo "  non e' nel repo."
+    exit 2
+fi
 
 OFFLINE=0
 [[ "${1:-}" == "--offline" ]] && OFFLINE=1
