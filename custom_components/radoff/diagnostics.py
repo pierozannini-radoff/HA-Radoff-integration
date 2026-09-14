@@ -66,9 +66,22 @@ if TYPE_CHECKING:
 # `entry.as_dict()`, whose contents come from whatever a config entry
 # happened to be written with - including entries created before this
 # migration.
+#
+# Card M-07 adds `domain_prefix` for the same reason `domain_id` was here:
+# it identifies the customer's tenant, which is not this integration's to
+# put in a file a user attaches to a public issue. `domain_id` stays next to
+# it under the rule above - an entry written before the version-3 migration
+# still has one on disk, and a diagnostics dump is taken from whatever is
+# actually there.
+#
+# The third field S-17's successor list named - coordinates - has nothing to
+# redact: the arch 2.0 device model carries none (see `api/models.py`), and
+# `_dump_device` emits no location of any kind. Noted rather than guessed
+# at, so the next reader does not go looking for the omission.
 TO_REDACT = {
     "password",
     "username",
+    "domain_prefix",
     "domain_id",
     "device_id",
     "serial",

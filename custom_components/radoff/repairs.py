@@ -1,13 +1,29 @@
 """
-Repairs fix flow for config entries created before `domain_id` existed.
+Repairs fix flow for a config entry that cannot say which domain to poll.
 
-Card RT-2926, finding T-06/F1. `domain_id` was introduced by the
-multi-domain discovery of S-01/RT-2803, in the same milestone that bumped
-the config entry to VERSION 2: an entry created by the released version
-(30e0cde) cannot contain it, so after the update every existing
-installation would fail setup - originally with a bare `KeyError`, now with
-an explicit `ConfigEntryError` (see `__init__.py::async_setup_entry`) and
-the fixable issue this module resolves.
+Card RT-2926, finding T-06/F1, widened by card M-07. A domain on the entry
+was introduced by the multi-domain discovery of S-01/RT-2803, in the same
+milestone that bumped the config entry to VERSION 2: an entry created by the
+released version (30e0cde) cannot contain one, so after the update every
+existing installation would fail setup - originally with a bare `KeyError`,
+now with an explicit `ConfigEntryError` (see `__init__.py::async_setup_entry`)
+and the fixable issue this module resolves.
+
+M-07 brings two more ways to arrive here, and they are the reason this flow
+matters more than it did:
+
+- an entry created in QA against arch 1.x carries a `domain_id` UUID, which
+  arch 2.0 neither accepts nor can translate offline. The version-3
+  migration drops it, and the entry lands in exactly the state above;
+- an entry that *has* a `domain_prefix` the account has lost access to: the
+  API answers 403, the coordinator stops the entry and raises
+  `ISSUE_DOMAIN_ACCESS_DENIED` (see `issues.py`). Before this card the only
+  remedy was to remove the integration and add it again - which throws away
+  every entity's history, the very thing this milestone spent a card
+  preserving. Here it is a domain re-selection with nothing lost.
+
+Both issues carry the entry id in their `data` and open this same flow: the
+question they ask the user is the same one.
 
 Why a repair rather than doing it inside `async_migrate_entry`: a migration
 runs during Home Assistant startup, must not block it on network I/O, and -
@@ -26,7 +42,7 @@ already persisted on the entry - the user is never asked to retype them.
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 import voluptuous as vol
 from homeassistant.components.repairs import RepairsFlow
@@ -36,9 +52,10 @@ from .config_flow import (
     CannotConnectError,
     InvalidAuthError,
     UnsupportedChallengeError,
+    domain_choices,
     validate_input,
 )
-from .const import CONF_BASE_URL, CONF_DOMAIN_ID, DEFAULT_BASE_URL
+from .const import CONF_BASE_URL, CONF_DOMAIN_PREFIX, DEFAULT_BASE_URL
 
 if TYPE_CHECKING:
     from homeassistant.config_entries import ConfigEntry
@@ -64,11 +81,14 @@ async def async_create_fix_flow(
     data: dict[str, str | int | float | None] | None,
 ) -> RepairsFlow:
     """
-    Build the fix flow for one `missing_domain_id` issue.
+    Build the fix flow for either of this integration's two domain issues.
 
-    The entry id travels in the issue's own `data` (see
-    `__init__.py::_async_create_missing_domain_issue`) rather than being
-    parsed back out of `issue_id`, so the issue id stays an opaque string.
+    The entry id travels in the issue's own `data` (see `issues.py`) rather
+    than being parsed back out of `issue_id`, so the issue id stays an opaque
+    string - and so one flow serves both issues without having to tell them
+    apart. It does not need to: "this entry never had a domain" and "this
+    entry lost access to the one it had" differ in the card the user read,
+    not in what has to happen next.
     The entry may legitimately be gone by the time the user clicks the
     repair (they removed and re-added the integration instead); that case
     aborts with its own reason instead of raising.
@@ -79,16 +99,16 @@ async def async_create_fix_flow(
         if entry_id is not None
         else None
     )
-    return MissingDomainIdRepairFlow(entry)
+    return DomainRepairFlow(entry)
 
 
-class MissingDomainIdRepairFlow(RepairsFlow):
-    """Discover - and if ambiguous, ask for - the `domain_id` of one entry."""
+class DomainRepairFlow(RepairsFlow):
+    """Discover - and if ambiguous, ask for - the `domain_prefix` of one entry."""
 
     def __init__(self, config_entry: ConfigEntry | None) -> None:
         """Store the entry to repair (`None` if it no longer exists)."""
         self._config_entry = config_entry
-        self._domains: list[dict[str, Any]] = []
+        self._domain_choices: dict[str, str] = {}
 
     async def async_step_init(
         self,
@@ -152,15 +172,15 @@ class MissingDomainIdRepairFlow(RepairsFlow):
             _LOGGER.exception("Unexpected exception while repairing the domain")
             return self.async_abort(reason="unknown")
 
-        domains: list[dict[str, Any]] = info["domains"]
+        choices = domain_choices(info["domains"])
 
-        if not domains:
+        if not choices:
             return self.async_abort(reason="no_domains")
 
-        if len(domains) == 1:
-            return self._apply(domains[0]["id"])
+        if len(choices) == 1:
+            return self._apply(next(iter(choices)))
 
-        self._domains = domains
+        self._domain_choices = choices
         return await self.async_step_domain()
 
     async def async_step_domain(
@@ -168,22 +188,18 @@ class MissingDomainIdRepairFlow(RepairsFlow):
     ) -> FlowResult:
         """Ask which domain to use, for accounts that can reach more than one."""
         if user_input is not None:
-            return self._apply(user_input[CONF_DOMAIN_ID])
-
-        domain_options = {
-            domain["id"]: domain.get("name") or domain["id"] for domain in self._domains
-        }
+            return self._apply(user_input[CONF_DOMAIN_PREFIX])
 
         return self.async_show_form(
             step_id="domain",
             data_schema=vol.Schema(
-                {vol.Required(CONF_DOMAIN_ID): vol.In(domain_options)}
+                {vol.Required(CONF_DOMAIN_PREFIX): vol.In(self._domain_choices)}
             ),
         )
 
-    def _apply(self, domain_id: str) -> FlowResult:
+    def _apply(self, domain_prefix: str) -> FlowResult:
         """
-        Write the resolved `domain_id` onto the entry and reload it.
+        Write the resolved `domain_prefix` onto the entry and reload it.
 
         The reload is scheduled explicitly rather than left to the update
         listener `__init__.py` registers on every entry: that listener is
@@ -199,15 +215,15 @@ class MissingDomainIdRepairFlow(RepairsFlow):
         """
         self.hass.config_entries.async_update_entry(
             self._config_entry,
-            data={**self._config_entry.data, CONF_DOMAIN_ID: domain_id},
+            data={**self._config_entry.data, CONF_DOMAIN_PREFIX: domain_prefix},
         )
         self.hass.config_entries.async_schedule_reload(self._config_entry.entry_id)
 
         _LOGGER.debug(
             "Repaired config entry %s with %s=%s",
             self._config_entry.entry_id,
-            CONF_DOMAIN_ID,
-            domain_id,
+            CONF_DOMAIN_PREFIX,
+            domain_prefix,
         )
 
         return self.async_create_entry(data={})

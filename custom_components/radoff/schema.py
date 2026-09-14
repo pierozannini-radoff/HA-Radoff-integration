@@ -68,31 +68,37 @@ _LOGGER = logging.getLogger(__name__)
 # Home Assistant's units are a closed enumeration and the API's are another
 # one; this is the whole of the translation between them, and M-01 captured
 # every value the second one currently holds (`measures_ranges__all.json`,
-# eight distinct strings). Two of them have no Home Assistant counterpart on
-# purpose and map to `None`:
+# eight distinct strings). One of them has no Home Assistant counterpart on
+# purpose and maps to `None`:
 #
 # - `""` (the AQI): a dimensionless index. Home Assistant renders a sensor
 #   with no unit exactly right, and inventing one would be worse than none.
-# - `V - Ix` (tvoc): not a unit at all - see `T-02 D-07`. The source is
-#   incoherent here (values around 0.13 against thresholds of 100-400) and
-#   this card's decision is to serve what the API serves and flag it, not to
-#   invent a scale. This is also why `tvoc` gets no device class below:
-#   `SensorDeviceClass.VOLATILE_ORGANIC_COMPOUNDS` would force a µg/m³ that
-#   the reading is not in.
 #
-#   One consequence lands on someone else's plate, and is written here so
-#   that card does not have to rediscover it. On an installation upgrading
-#   from the released version, the tvoc entity had unit µg/m³ and device
-#   class `volatile_organic_compounds`; after this card it has neither.
-#   Home Assistant treats a unit change on an existing entity as a break in
-#   its long-term statistics - the recorder keeps the old series and starts
-#   a new one, and the user sees a gap plus a repair issue about it. That
-#   only bites where the entity survives the upgrade, which is precisely
-#   what **M-07** (re-keying the `unique_id`s of existing entities) decides:
-#   if M-07 can re-key tvoc, it inherits this case and should handle the
-#   statistics reset deliberately (`async_update_entity` clearing the old
-#   unit, or a documented one-off gap) rather than let it surprise anyone.
-#   The README says the same thing in the user's own words.
+# `V - Ix` (tvoc) used to be the second one, and card M-07 moves it to the
+# pass-through group below. It is not a unit in any standard sense - see
+# `T-02 D-07`, the source is incoherent here, values around 0.13 against
+# thresholds of 100-400 - and M-04 dropped it on the grounds that showing
+# nothing beats showing a scale nobody can interpret. The decision was taken
+# again, with Piero, once M-07 had to deal with the same entity for the
+# statistics reason below, and it went the other way: publishing the string
+# the API declares is what lets a user see *that* the number is not µg/m³,
+# where a bare number looks exactly like a concentration whose unit went
+# missing. `tvoc` still gets no device class -
+# `SensorDeviceClass.VOLATILE_ORGANIC_COMPOUNDS` would force a µg/m³ the
+# reading is not in - which is what makes an arbitrary unit string legal
+# here (the same latitude `Bq/m³` uses).
+#
+# Either way the unit *changes* for an installation upgrading from the
+# released version, where tvoc was µg/m³ with device class
+# `volatile_organic_compounds`. Home Assistant treats a unit change on an
+# existing entity as a break in its long-term statistics: the recorder keeps
+# the old series and starts a new one, and the user sees a gap. That only
+# bites where the entity survives the upgrade, which is what M-07's
+# re-keying arranges, so M-07 owns the consequence -
+# `_async_clear_stale_unit_option` (__init__.py) drops a now-meaningless
+# display-unit override at re-key time, and the gap itself is announced in
+# the README next to the ~4 °C temperature step rather than left to be
+# discovered.
 #
 # `Bq/m³` passes through as the literal string: Home Assistant has no
 # constant for it and no radon device class, and an arbitrary unit string on
@@ -109,8 +115,8 @@ HA_UNITS: dict[str, str | None] = {
     "µg/m³": CONCENTRATION_MICROGRAMS_PER_CUBIC_METER,
     "°C": UnitOfTemperature.CELSIUS,
     "Bq/m³": "Bq/m³",
+    "V - Ix": "V - Ix",
     "": None,
-    "V - Ix": None,
 }
 
 # Measure name -> Home Assistant device class, where one actually fits.

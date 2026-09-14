@@ -28,16 +28,17 @@ from .api import (
 )
 from .const import (
     CONF_BASE_URL,
-    CONF_DOMAIN_ID,
+    CONF_DOMAIN_PREFIX,
     CONF_INDEX,
     DEFAULT_BASE_URL,
     DEFAULT_SCAN_INTERVAL,
     DOMAIN,
     ERROR_DOMAIN_ACCESS_DENIED,
-    ISSUE_MISSING_DOMAIN_ID,
+    ISSUE_MISSING_DOMAIN_PREFIX,
     POLL_JITTER_FRACTION,
     UPDATE_TIMEOUT_FACTOR,
 )
+from .issues import async_create_domain_access_denied_issue
 from .schema import MeasureSpec, build_specs
 
 _LOGGER = logging.getLogger(__name__)
@@ -83,8 +84,8 @@ class RadoffCoordinator(DataUpdateCoordinator[RadoffData]):
         self.password = config_entry.data[CONF_PASSWORD]
 
         # Card RT-2926 / finding T-06/F1: this was
-        # `config_entry.data[CONF_DOMAIN_ID]`, and every entry created by
-        # the released version reaches it without that key - a bare
+        # an unguarded read of the entry's domain key, and every entry
+        # created by the released version reaches it without one - a bare
         # `KeyError` that Home Assistant, unlike `ConfigEntryNotReady`,
         # never retries and cannot report as anything but an unexpected
         # crash. `__init__.py::async_setup_entry` now stops before ever
@@ -92,15 +93,21 @@ class RadoffCoordinator(DataUpdateCoordinator[RadoffData]):
         # a Repairs issue attached; the check is repeated here so that no
         # other caller (a test, a future service, a reload path that skips
         # the setup guard) can resurrect the `KeyError`.
-        domain_id = config_entry.data.get(CONF_DOMAIN_ID)
-        if not domain_id:
-            msg = f"Config entry {config_entry.entry_id} has no {CONF_DOMAIN_ID}"
+        #
+        # Card M-07 renames the key it reads (`domain_prefix`, holding the
+        # human-readable prefix arch 2.0 scopes every call by) and changes
+        # nothing about the guard: an entry that arrives here with the old
+        # `domain_id` UUID still has no `domain_prefix`, which is exactly
+        # the state this stops on.
+        domain_prefix = config_entry.data.get(CONF_DOMAIN_PREFIX)
+        if not domain_prefix:
+            msg = f"Config entry {config_entry.entry_id} has no {CONF_DOMAIN_PREFIX}"
             raise ConfigEntryError(
                 msg,
                 translation_domain=DOMAIN,
-                translation_key=ISSUE_MISSING_DOMAIN_ID,
+                translation_key=ISSUE_MISSING_DOMAIN_PREFIX,
             )
-        self.domain_id = domain_id
+        self.domain_prefix = domain_prefix
 
         # generate_index and scan_interval both live in options, not data,
         # since config entry VERSION 2 (S-02): they are user preferences, not
@@ -162,7 +169,7 @@ class RadoffCoordinator(DataUpdateCoordinator[RadoffData]):
         self.api = API(
             username=self.username,
             password=self.password,
-            domain_prefix=self.domain_id,
+            domain_prefix=self.domain_prefix,
             scan_interval=self.poll_interval,
             base_url=self.base_url,
         )
@@ -388,6 +395,20 @@ class RadoffCoordinator(DataUpdateCoordinator[RadoffData]):
         )
         return self.data
 
+    def _async_raise_domain_access_issue(self) -> None:
+        """
+        Raise the 403 repair for this entry (card M-07).
+
+        A method rather than a call at the raise site for one reason worth
+        stating: `self.config_entry` is typed optional by
+        `DataUpdateCoordinator`, this coordinator is only ever built with
+        one (see `__init__`, which reads the entry's own data), and the
+        guard that says so belongs somewhere other than inside the already
+        dense exception chain of `_async_update_data`.
+        """
+        if self.config_entry is not None:
+            async_create_domain_access_denied_issue(self.hass, self.config_entry)
+
     async def _async_update_data(self) -> RadoffData:
         """
         Fetch data from API endpoint.
@@ -569,11 +590,20 @@ class RadoffCoordinator(DataUpdateCoordinator[RadoffData]):
             # emitted where the status is classified, with the domain and
             # the backend's own detail (`api/client.py`); repeating it at
             # ERROR here would only double the noise.
+            #
+            # Card M-07 adds the Repairs issue next to the error. The
+            # error alone said "riconfigurazione necessaria" and left the
+            # user with one way to act on it: remove the integration and
+            # add it again, losing every entity's history - the opposite of
+            # what this whole migration is for. The issue opens the same
+            # domain re-selection flow the entry-without-a-domain repair
+            # uses, and the entry keeps its entities.
             _LOGGER.warning(
                 "Radoff denied access to the configured domain, "
                 "reconfiguration needed: %s",
                 err,
             )
+            self._async_raise_domain_access_issue()
             raise ConfigEntryError(
                 str(err),
                 translation_domain=DOMAIN,

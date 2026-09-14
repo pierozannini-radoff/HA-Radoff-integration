@@ -301,14 +301,15 @@ class API:
         discovery/selection step). It is used as-is for every subsequent
         call; no domain discovery happens here.
 
-        Card M-02 renames it from `domain_id`: in arch 2.0 the domain is no
-        longer a UUID sent in the domain header of arch 1.x (that header does
-        not exist any more) but a human-readable prefix sent as the
-        `domain_prefix` query parameter, always explicitly. Only this
-        client's parameter and attribute are renamed - the config entry key
-        stays `domain_id` (`CONF_DOMAIN_ID`, const.py), so no entry
-        migration is needed; rewriting what the config flow discovers and
-        persists belongs to the config-flow card of this migration.
+        Card M-02 renamed it: in arch 2.0 the domain is no longer a UUID
+        sent in the domain header of arch 1.x (that header does not exist
+        any more) but a human-readable prefix sent as the `domain_prefix`
+        query parameter, always explicitly. That card renamed this client's
+        parameter and attribute only, and kept handing them the old UUID
+        from the config entry; card M-07 finished the job on the other side
+        - the config flow now discovers and persists a prefix
+        (`CONF_DOMAIN_PREFIX`, const.py), so what arrives here is at last
+        what the name says.
 
         `base_url` is the environment to talk to, defaulting to
         `DEFAULT_BASE_URL` (const.py - dev, for the duration of the

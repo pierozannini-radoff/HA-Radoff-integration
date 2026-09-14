@@ -47,7 +47,34 @@ MIN_SCAN_INTERVAL = 60
 MAX_SCAN_INTERVAL = 3600
 
 CONF_INDEX = "generate_index"
-CONF_DOMAIN_ID = "domain_id"
+
+# Current config entry version, and the single place it is written down
+# (card M-07). `config_flow.py` stamps new entries with it and
+# `__init__.py::async_migrate_entry` migrates old ones up to it, and those
+# two disagreeing is a defect that shows up only on someone else's
+# installation - a fresh entry sent through a migration it does not need, or
+# an old one never migrated at all.
+#
+# 3 is the arch 2.0 shape: `domain_prefix` instead of the `domain_id` UUID
+# in `data`, and every entity keyed on `radoff-{serial}-{measure}`. The
+# minor version goes back to 1 with it: the 2.2 it counted was RT-2927's AQI
+# re-keying step, which the version-3 migration absorbs.
+CONFIG_ENTRY_VERSION = 3
+CONFIG_ENTRY_MINOR_VERSION = 1
+
+# The tenant domain persisted on a config entry (card M-07).
+#
+# It replaces `CONF_DOMAIN_ID` ("domain_id"), which held the arch 1.x
+# domain UUID. In arch 2.0 the domain is a human-readable `domain_prefix`
+# travelling as a query parameter on every domain-scoped call (T-02 D-03,
+# and `api/client.py::_domain_params`, which has been calling its argument
+# `domain_prefix` since card M-02 while still being handed a UUID from
+# here). The UUID is not convertible into a prefix - there is no offline
+# mapping between the two and arch 2.0 does not know the UUID at all - so
+# the rename is also a migration: see `async_migrate_entry` (__init__.py),
+# where an entry carrying the old key is sent to the Repairs flow rather
+# than translated in place.
+CONF_DOMAIN_PREFIX = "domain_prefix"
 
 # Base URL of the arch 2.0 API (card M-02). This is the single place the
 # integration knows a host: in arch 2.0 the version lives in the *hostname*,
@@ -116,26 +143,50 @@ RATE_LIMIT_BACKOFF_JITTER = 0.25
 # from the entry_id rather than from `random`.
 POLL_JITTER_FRACTION = 0.10
 
-# Repairs issue raised when a config entry carries no `domain_id` at all
-# (card RT-2926, finding T-06/F1). `domain_id` was born with the
-# multi-domain discovery of S-01/RT-2803, in the same milestone that
-# introduced config entry VERSION 2: no entry created by the released
-# version (30e0cde) can possibly contain it, and `async_migrate_entry`
-# (__init__.py) deliberately does not go online to invent one. The entry is
-# therefore left in an explicit setup error and this issue is what carries
-# the user to the fix flow in `repairs.py`, where the domain is discovered
-# (and, when ambiguous, chosen) interactively.
-ISSUE_MISSING_DOMAIN_ID = "missing_domain_id"
+# Repairs issue raised when a config entry carries no `domain_prefix` at
+# all (card RT-2926, finding T-06/F1; renamed by card M-07). `domain_id`
+# was born with the multi-domain discovery of S-01/RT-2803, in the same
+# milestone that introduced config entry VERSION 2: no entry created by the
+# released version (30e0cde) can possibly contain it, and
+# `async_migrate_entry` (__init__.py) deliberately does not go online to
+# invent one. The entry is therefore left in an explicit setup error and
+# this issue is what carries the user to the fix flow in `repairs.py`,
+# where the domain is discovered (and, when ambiguous, chosen)
+# interactively.
+#
+# Card M-07 widens who reaches it. It is no longer only the entry that
+# never had a domain: an entry created in QA against arch 1.x carries a
+# `domain_id` UUID, which arch 2.0 cannot use and cannot translate, so it
+# arrives here too. What all of them have in common is the only thing the
+# issue says out loud - this entry does not know which domain to poll, and
+# only the user can settle it.
+ISSUE_MISSING_DOMAIN_PREFIX = "missing_domain_prefix"
+
+# Repairs issue raised when the API answers 403 on the domain persisted in
+# the entry (card M-07, completing the note M-02 left on
+# `ERROR_DOMAIN_ACCESS_DENIED` below).
+#
+# Same fix flow as the issue above and deliberately a *different* issue id:
+# the two are the same repair but not the same sentence. "This entry never
+# had a domain" and "the account lost access to the domain it had" send the
+# user to the same form, and telling them apart is what makes the card
+# readable to someone who had a working installation yesterday.
+ISSUE_DOMAIN_ACCESS_DENIED = "domain_access_denied"
 
 # Translation key of the setup error raised when the API answers 403 on the
 # domain persisted in the config entry (card M-02): the account does not
 # belong to that domain any more. Not a Repairs issue like the one above,
 # and deliberately not `ConfigEntryAuthFailed`: the credentials are valid,
 # so re-asking for the password would be a dead end. The entry stops with a
-# translated error that says what to do instead. Wiring this to an
-# interactive domain re-selection (the Repairs flow of `repairs.py` already
-# knows how to discover and choose one) belongs to the config-flow card of
-# this migration - decided with Piero.
+# translated error that says what to do instead.
+#
+# Card M-07 does the wiring M-02 left pending here: the error still stops
+# the entry exactly as before, but `async_setup_entry` (__init__.py) now
+# raises `ISSUE_DOMAIN_ACCESS_DENIED` alongside it, so the user is carried
+# into the same domain re-selection flow (`repairs.py`) instead of being
+# told to remove and re-add the integration. The translated setup error is
+# kept as well - it is what shows on the entry itself, where a Repairs
+# issue is not visible.
 ERROR_DOMAIN_ACCESS_DENIED = "domain_access_denied"
 
 # Fraction of `update_interval` used as the overall wall-clock budget for one

@@ -34,8 +34,10 @@ from .api import (
 )
 from .const import (
     CONF_BASE_URL,
-    CONF_DOMAIN_ID,
+    CONF_DOMAIN_PREFIX,
     CONF_INDEX,
+    CONFIG_ENTRY_MINOR_VERSION,
+    CONFIG_ENTRY_VERSION,
     DEFAULT_BASE_URL,
     DEFAULT_SCAN_INTERVAL,
     DOMAIN,
@@ -125,25 +127,75 @@ async def validate_input(
     except (AuthUnavailableError, APIConnectionError) as err:
         raise CannotConnectError from err
 
-    return {"title": "Radoff", "username": data[CONF_USERNAME], "domains": domains}
+    return {
+        "title": "Radoff",
+        "username": data[CONF_USERNAME],
+        "domains": domains,
+        # Card M-07: the already-authenticated client, so a caller that
+        # needs one more call (the "has this domain any device?" check in
+        # `async_step_user`) can reuse this session instead of logging in
+        # to Cognito a second time.
+        "api": api,
+    }
+
+
+def domain_choices(domains: list[dict[str, Any]]) -> dict[str, str]:
+    """
+    Return `{domain_prefix: label}` for the domains of a `list_domains()` response.
+
+    Card M-07, and the whole of what this card had to add to the discovery
+    M-02 already moved onto the right path. The arch 2.0 response is not a
+    list of flat domain objects the way arch 1.x's was: each element wraps
+    the domain next to the caller's role in it -
+    `{"domain": {"prefix", "name", "type", "parent_domain_prefix"}, "role":
+    {...}}` (M-01, V6; `tests/fixtures/dev/auth_domains__pool_dev.json`).
+
+    The value persisted on the entry is `prefix`, because that is what every
+    domain-scoped call takes as a query parameter (T-02 D-03). The *label*
+    is `name`, with the prefix as a fallback, because on dev 14 prefixes out
+    of 15 are UUID fragments while the name is a readable string (M-01,
+    reserve 20): a user choosing between `875fe89b` and `fdffb4d9` is not
+    choosing, they are guessing. A domain with no name at all falls back to
+    the prefix - unhelpful, but honest, and better than an empty line.
+
+    An element without a prefix is skipped rather than raising: the prefix
+    is the only part this integration cannot work without, and a single
+    malformed entry in a list of fifteen is not a reason to refuse the other
+    fourteen. Nothing else here is validated; the API is the authority on
+    what a domain looks like.
+    """
+    choices: dict[str, str] = {}
+
+    for element in domains:
+        domain = element.get("domain") or {}
+        prefix = domain.get("prefix")
+        if not prefix:
+            _LOGGER.debug("Skipping a domain with no prefix: %s", element)
+            continue
+        choices[prefix] = domain.get("name") or prefix
+
+    return choices
 
 
 class ConfigPatternFlow(ConfigFlow, domain=DOMAIN):
     """Handle a config flow for radoff."""
 
-    VERSION = 2
-    # Bumped by card T-06/F2 together with the entity-registry step in
-    # `__init__.py::async_migrate_entry`, so a newly created entry is not
-    # sent through a migration that has nothing to do (its entities are
-    # built with the current identifiers from the start). Minor, not major:
-    # the entry's own `data`/`options` shape is unchanged.
-    MINOR_VERSION = 2
+    # Card M-07. A major bump, and the last one of this migration: the
+    # entry's `data` changes shape (`domain_id` -> `domain_prefix`, holding
+    # a value of a different kind, not a renamed one) and every entity
+    # identifier under it is rewritten. `MINOR_VERSION` goes back to 1 with
+    # it - the T-06/F2 AQI step it counted has been folded into the
+    # version-3 migration, and a freshly created entry has nothing to
+    # migrate.
+    VERSION = CONFIG_ENTRY_VERSION
+    MINOR_VERSION = CONFIG_ENTRY_MINOR_VERSION
 
     def __init__(self) -> None:
         """Initialize the config flow."""
         self._user_input: dict[str, Any] = {}
         self._username: str = ""
-        self._domains: list[dict[str, Any]] = []
+        self._api: API | None = None
+        self._domain_choices: dict[str, str] = {}
 
     @staticmethod
     @callback
@@ -187,18 +239,22 @@ class ConfigPatternFlow(ConfigFlow, domain=DOMAIN):
                 _LOGGER.exception("Unexpected exception")
                 errors["base"] = "unknown"
             else:
-                domains: list[dict[str, Any]] = info["domains"]
+                choices = domain_choices(info["domains"])
 
-                if not domains:
+                if not choices:
                     return self.async_abort(reason="no_domains")
 
                 self._user_input = user_input
                 self._username = info["username"]
+                self._api = info["api"]
 
-                if len(domains) == 1:
-                    return await self._async_create_entry(domains[0]["id"])
+                if len(choices) == 1:
+                    # Card M-07 / T-08 D-32: one domain is not a question,
+                    # it is an answer. The step is skipped entirely rather
+                    # than shown with a single pre-selected option.
+                    return await self._async_create_entry(next(iter(choices)))
 
-                self._domains = domains
+                self._domain_choices = choices
                 return await self.async_step_domain()
 
         return self.async_show_form(
@@ -210,21 +266,57 @@ class ConfigPatternFlow(ConfigFlow, domain=DOMAIN):
     ) -> ConfigFlowResult:
         """Handle domain selection for accounts with access to more than one domain."""
         if user_input is not None:
-            return await self._async_create_entry(user_input[CONF_DOMAIN_ID])
-
-        domain_options = {
-            domain["id"]: domain.get("name") or domain["id"] for domain in self._domains
-        }
+            return await self._async_create_entry(user_input[CONF_DOMAIN_PREFIX])
 
         return self.async_show_form(
             step_id="domain",
             data_schema=vol.Schema(
-                {vol.Required(CONF_DOMAIN_ID): vol.In(domain_options)}
+                {vol.Required(CONF_DOMAIN_PREFIX): vol.In(self._domain_choices)}
             ),
         )
 
-    async def _async_create_entry(self, domain_id: str) -> ConfigFlowResult:
-        """Persist the config entry with the chosen domain_id."""
+    async def _async_has_devices(self, domain_prefix: str) -> bool:
+        """
+        Answer whether the chosen domain holds any device at all (T-08 D-32).
+
+        Card M-07. A domain with no device produces an integration that sets
+        up cleanly and then shows nothing, with no explanation anywhere -
+        the "errore generico" this card exists to replace. One call answers
+        it, on the session `validate_input` already opened.
+
+        Only an *empty* answer is treated as an answer. Any failure - the
+        call did not happen, was rate-limited, timed out - returns `True`,
+        i.e. "do not block this setup": at that point the check has no
+        opinion, and the coordinator's own first refresh handles a broken
+        backend far better than this form can (it retries, with a backoff,
+        and says what went wrong). Refusing to create the entry over a
+        transient 429 would be a worse failure than the one being prevented.
+        """
+        if self._api is None:
+            return True
+
+        self._api.domain_prefix = domain_prefix
+
+        try:
+            devices = await self.hass.async_add_executor_job(self._api.get_devices)
+        except Exception:  # noqa: BLE001 - see the docstring: no failure of
+            # this optional check may block a setup, so every one of them is
+            # caught and answered the same way.
+            _LOGGER.debug(
+                "Could not check whether domain %s has devices; "
+                "continuing with the setup",
+                domain_prefix,
+                exc_info=True,
+            )
+            return True
+
+        return bool(devices)
+
+    async def _async_create_entry(self, domain_prefix: str) -> ConfigFlowResult:
+        """Persist the config entry with the chosen domain_prefix."""
+        if not await self._async_has_devices(domain_prefix):
+            return self.async_abort(reason="no_devices")
+
         # Card S-09 / finding C16: normalize before using the username as the
         # entry's unique_id, so "Mario@x" and "mario@x" are recognised as the
         # same account (`already_configured`) instead of producing two
@@ -236,7 +328,7 @@ class ConfigPatternFlow(ConfigFlow, domain=DOMAIN):
         await self.async_set_unique_id(self._username.strip().lower())
         self._abort_if_unique_id_configured()
 
-        data = {**self._user_input, CONF_DOMAIN_ID: domain_id}
+        data = {**self._user_input, CONF_DOMAIN_PREFIX: domain_prefix}
         return self.async_create_entry(
             title="Radoff", data=data, options={CONF_INDEX: True}
         )
