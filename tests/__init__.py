@@ -1,1 +1,1 @@
-"""Test package for the radoff integration (S-18)."""
+"""Test package for the radoff integration."""

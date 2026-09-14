@@ -1,26 +1,8 @@
 """
-Migration and setup-guard tests (S-18, RT-2926, T-06/F2, M-07).
+Config entry migration to VERSION 3, and the guards that run after it.
 
-Every entry built here has the shape a real entry actually has. A version-1
-one carries NO domain at all: that key only came into existence with the
-multi-domain discovery of S-01/RT-2803, in the very milestone that
-introduced VERSION 2, so no entry created by the released version can
-contain it. S-18's original tests all pre-seeded it into `data` (finding
-T-06/F1) and therefore could not see that the migration left every real
-installation unable to load.
-
-Card M-07 brings VERSION 3, and with it the half of "what a real
-installation already has" that these tests care about most: its *entities*.
-The AQI step of T-06/F2 is gone as a separate stage - it is absorbed into
-the one that re-keys every entity onto `radoff-{serial}-{measure}` - and
-what replaces its tests is a migration run against the registry of a real
-released installation, the 32 entities card RT-2827 measured one by one
-(see `conftest.seed_released_registry`).
-
-That is the card's third acceptance criterion, and the reason it is worth
-the fixture: the identifiers change on both halves at once, and the only
-thing standing between a user and the loss of every graph they have is that
-the `entity_id` under each one does not move.
+Covers: the data migration, the offline re-keying of a released
+installation's 32 entities, the missing-domain repair, and schema fetching.
 """
 
 from __future__ import annotations
@@ -95,20 +77,14 @@ def _register_device(hass: HomeAssistant, entry: MockConfigEntry, serial: str) -
 
 
 # ---------------------------------------------------------------------------
-# The entry's own `data` (S-02, and M-07's domain rename)
+# The entry's own `data`
 # ---------------------------------------------------------------------------
 
 
 async def test_migrate_v1_to_v3_strips_cognito_fields_and_moves_index(
     hass: HomeAssistant, config_entry_v1_data: dict[str, Any]
 ) -> None:
-    """
-    VERSION 1 -> 3: Cognito fields dropped from data, generate_index moved to options.
-
-    The domain is *absent* from a real version-1 entry and stays absent: the
-    migration deliberately does not go online to invent one (see
-    `async_migrate_entry`'s docstring) - that is the repair flow's job.
-    """
+    """VERSION 1 -> 3 drops the Cognito fields and moves `generate_index` to options."""
     entry = MockConfigEntry(domain=DOMAIN, version=1, data=config_entry_v1_data)
     entry.add_to_hass(hass)
 
@@ -146,14 +122,7 @@ async def test_migrate_v2_to_v3_drops_the_arch_1x_domain_id(
     caplog: pytest.LogCaptureFixture,
     config_entry_v2_data: dict[str, Any],
 ) -> None:
-    """
-    A QA entry's `domain_id` UUID is dropped, not carried over or translated.
-
-    There is no offline mapping from a UUID to a `domain_prefix` - arch 2.0
-    does not know the UUID at all - so keeping it would only leave a later
-    reader something that looks like a domain and is not one. The entry
-    reaches version 3 without a domain and the repair flow asks for one.
-    """
+    """An arch 1.x `domain_id` UUID is dropped, not carried over or translated."""
     entry = MockConfigEntry(
         domain=DOMAIN, version=2, minor_version=2, data=config_entry_v2_data
     )
@@ -171,13 +140,7 @@ async def test_migrate_v2_to_v3_drops_the_arch_1x_domain_id(
 async def test_migrate_keeps_a_domain_prefix_already_present(
     hass: HomeAssistant, config_entry_v3_data: dict[str, Any]
 ) -> None:
-    """
-    A `domain_prefix` already in `data` is carried over untouched.
-
-    Not a shape any released version can produce, but a checkout run against
-    an intermediate build of this milestone can: the migration must not drop
-    it and send such an entry through a pointless repair.
-    """
+    """A `domain_prefix` already in `data` is carried over untouched."""
     entry = MockConfigEntry(domain=DOMAIN, version=2, data=config_entry_v3_data)
     entry.add_to_hass(hass)
 
@@ -187,7 +150,7 @@ async def test_migrate_keeps_a_domain_prefix_already_present(
 
 
 # ---------------------------------------------------------------------------
-# The entity registry of a real released installation (card M-07, AC 3-7)
+# The entity registry of a real released installation
 # ---------------------------------------------------------------------------
 
 # What the 32 identifiers of the released backup become. Written out rather
@@ -226,15 +189,7 @@ def _expected_unique_ids() -> set[str]:
 async def test_a_released_backup_keeps_every_entity_id_and_gains_serial_keys(
     hass: HomeAssistant, config_entry_v1_data: dict[str, Any]
 ) -> None:
-    """
-    AC 3, on the registry card RT-2827 measured: 32 entities, none lost, none added.
-
-    Three assertions and each one is a separate way the update could ruin
-    somebody's installation: an `entity_id` that moved takes its dashboard
-    cards and automations with it; an identifier still on the arch 1.x form
-    is an entity nothing will ever feed again; and an extra entity is the
-    duplicate-with-no-history this whole card exists to prevent.
-    """
+    """A released backup keeps every `entity_id` and gains serial-keyed identifiers."""
     entry = MockConfigEntry(domain=DOMAIN, version=1, data=config_entry_v1_data)
     entry.add_to_hass(hass)
     before = seed_released_registry(hass, entry)
@@ -256,7 +211,7 @@ async def test_a_released_backup_keeps_every_entity_id_and_gains_serial_keys(
 async def test_the_released_backup_migration_is_idempotent(
     hass: HomeAssistant, config_entry_v1_data: dict[str, Any]
 ) -> None:
-    """AC 7: running the migration twice changes nothing the second time."""
+    """Running the migration twice changes nothing the second time."""
     entry = MockConfigEntry(domain=DOMAIN, version=1, data=config_entry_v1_data)
     entry.add_to_hass(hass)
     seed_released_registry(hass, entry)
@@ -288,16 +243,7 @@ async def test_an_occupied_target_unique_id_is_not_overwritten(
     caplog: pytest.LogCaptureFixture,
     config_entry_v1_data: dict[str, Any],
 ) -> None:
-    """
-    AC 4: a destination identifier another entity holds is left alone.
-
-    `unique_id` is unique per (domain, platform) registry-wide, so the
-    collision cannot be looked up per entry: `async_update_entity` raises on
-    a duplicate, and an exception escaping a migration leaves the entry
-    unloadable - a worse outcome than the orphaning being fixed. Here the
-    holder belongs to a second Radoff account, which is not this entry's to
-    touch at all.
-    """
+    """A target `unique_id` another entity already holds is left alone."""
     entry = MockConfigEntry(domain=DOMAIN, version=1, data=config_entry_v1_data)
     entry.add_to_hass(hass)
     other = MockConfigEntry(domain=DOMAIN, version=3, data=config_entry_v1_data)
@@ -331,16 +277,7 @@ async def test_an_orphaned_average_entity_is_removed_not_left_unavailable(
     caplog: pytest.LogCaptureFixture,
     config_entry_v1_data: dict[str, Any],
 ) -> None:
-    """
-    AC 5: the `*_average` entity that loses the race for `aqi_value` is removed.
-
-    Only an instance that ran an intermediate build of this milestone holds
-    both AQI entities - the released one, rich in history, and a few days of
-    `airqualityindex_average` beside it. Both map to `aqi_value`; the
-    pre-existing one takes the identifier, and the loser would otherwise sit
-    in the registry reading `unavailable` for the rest of the
-    installation's life.
-    """
+    """The `*_average` entity that loses the race for `aqi_value` is removed, not orphaned."""
     entry = MockConfigEntry(domain=DOMAIN, version=1, data=config_entry_v1_data)
     entry.add_to_hass(hass)
 
@@ -375,12 +312,7 @@ async def test_an_orphaned_average_entity_is_removed_not_left_unavailable(
 async def test_a_lone_average_entity_is_migrated_not_removed(
     hass: HomeAssistant, config_entry_v1_data: dict[str, Any]
 ) -> None:
-    """
-    The normal AQI case: `airqualityindex_average` becomes `aqi_value`.
-
-    This is what every installation that has been through RT-2927 holds, and
-    it keeps its history: removal is the collision case only.
-    """
+    """A lone `airqualityindex_average` is migrated onto `aqi_value`, keeping its history."""
     entry = MockConfigEntry(domain=DOMAIN, version=1, data=config_entry_v1_data)
     entry.add_to_hass(hass)
 
@@ -407,14 +339,7 @@ async def test_an_entity_without_a_device_is_left_intact(
     caplog: pytest.LogCaptureFixture,
     config_entry_v1_data: dict[str, Any],
 ) -> None:
-    """
-    An entity with no device has no serial to be re-keyed onto, so it is not.
-
-    The serial is only knowable through the device registry, which is the
-    whole reason this migration can run offline. With no device there is
-    nothing to compute and guessing is not an option - so the entity stays
-    exactly as it is and says so in the log.
-    """
+    """An entity with no device has no serial to be re-keyed onto, and is left intact."""
     entry = MockConfigEntry(domain=DOMAIN, version=1, data=config_entry_v1_data)
     entry.add_to_hass(hass)
 
@@ -432,13 +357,7 @@ async def test_an_entity_without_a_device_is_left_intact(
 async def test_an_identifier_this_migration_does_not_know_is_left_alone(
     hass: HomeAssistant, config_entry_v1_data: dict[str, Any]
 ) -> None:
-    """
-    Anything that is not an arch 1.x Radoff identifier is not touched.
-
-    Two shapes matter here: an entity of some other integration that somehow
-    shares this config entry, and one this card has already migrated - the
-    second is what makes a repeated pass free rather than destructive.
-    """
+    """An identifier this migration does not recognise is left alone."""
     entry = MockConfigEntry(domain=DOMAIN, version=1, data=config_entry_v1_data)
     entry.add_to_hass(hass)
 
@@ -465,12 +384,7 @@ async def test_an_identifier_this_migration_does_not_know_is_left_alone(
 async def test_another_entrys_entities_are_not_migrated_by_this_ones_pass(
     hass: HomeAssistant, config_entry_v1_data: dict[str, Any]
 ) -> None:
-    """
-    A second Radoff account's entities are left to their own migration.
-
-    `manifest.json` declares `single_config_entry: false`; each entry
-    migrates when Home Assistant sets *it* up.
-    """
+    """Another entry's entities are left to that entry's own migration pass."""
     entry = MockConfigEntry(domain=DOMAIN, version=1, data=config_entry_v1_data)
     entry.add_to_hass(hass)
     other = MockConfigEntry(domain=DOMAIN, version=1, data=config_entry_v1_data)
@@ -496,19 +410,7 @@ async def test_another_entrys_entities_are_not_migrated_by_this_ones_pass(
 async def test_the_tvoc_display_unit_override_is_cleared(
     hass: HomeAssistant, config_entry_v1_data: dict[str, Any]
 ) -> None:
-    """
-    tvoc loses µg/m³, so a user's display-unit override of it is dropped.
-
-    The override converts a unit the entity no longer has (T-02 D-07: the
-    API declares `V - Ix`, which is not a concentration). Leaving it would
-    have Home Assistant refuse or ignore a setting the user can see, which
-    reads as a bug in the integration rather than as the deliberate change
-    it is.
-
-    What this does *not* claim to fix is the long-term statistics: those
-    live in the recorder, a unit change breaks the series by design, and the
-    README announces the gap next to the ~4 °C temperature step.
-    """
+    """A display-unit override on tvoc is cleared, because tvoc no longer has that unit."""
     entry = MockConfigEntry(domain=DOMAIN, version=1, data=config_entry_v1_data)
     entry.add_to_hass(hass)
     created = seed_released_registry(
@@ -532,7 +434,7 @@ async def test_the_tvoc_display_unit_override_is_cleared(
 
 
 # ---------------------------------------------------------------------------
-# The setup guard and its repair (RT-2926, widened by M-07)
+# The setup guard and its repair
 # ---------------------------------------------------------------------------
 
 
@@ -541,15 +443,7 @@ async def test_upgrade_of_a_real_v1_entry_raises_a_repair_not_a_keyerror(
     caplog: pytest.LogCaptureFixture,
     config_entry_v1_data: dict[str, Any],
 ) -> None:
-    """
-    The RT-2827/T-06 scenario end to end: update, restart, no domain.
-
-    This is what a real installation does on the first restart after the
-    update - migration succeeds, then setup runs. It used to die with
-    `KeyError: 'domain_id'` three frames deeper in `RadoffCoordinator`,
-    which Home Assistant never retries and cannot explain. It must now stop
-    with a translated `ConfigEntryError` and a fixable repair.
-    """
+    """A real v1 entry upgrading stops with a translated `ConfigEntryError` and a repair."""
     entry = MockConfigEntry(domain=DOMAIN, version=1, data=config_entry_v1_data)
     entry.add_to_hass(hass)
 
@@ -574,13 +468,7 @@ async def test_upgrade_of_a_real_v1_entry_raises_a_repair_not_a_keyerror(
 async def test_a_qa_entry_on_the_old_domain_id_also_gets_the_repair(
     hass: HomeAssistant, config_entry_v2_data: dict[str, Any]
 ) -> None:
-    """
-    Card M-07: an arch 1.x `domain_id` reaches the same repair, not a silent load.
-
-    Worth its own test because the entry *looks* configured - it has a
-    domain, it just has one no version of the API this integration now talks
-    to has ever heard of.
-    """
+    """An entry carrying an arch 1.x `domain_id` reaches the same repair."""
     entry = MockConfigEntry(
         domain=DOMAIN, version=2, minor_version=2, data=config_entry_v2_data
     )
@@ -632,7 +520,7 @@ async def test_setup_with_a_domain_prefix_clears_a_stale_repair(
 
 
 # ---------------------------------------------------------------------------
-# The schema call at setup (card M-04)
+# The schema call at setup
 # ---------------------------------------------------------------------------
 
 
@@ -642,15 +530,7 @@ async def test_the_schema_is_fetched_once_per_type_and_cached(
     requests_mock: Any,
     config_entry_v3_data: dict[str, Any],
 ) -> None:
-    """
-    M-04: one `measures-ranges` call per device *type*, kept in the runtime data.
-
-    Two devices on the page, both `nowplus`, and exactly one schema call:
-    the cache is keyed on the type, not on the device. On the 83-device
-    domain M-01 censused that is the difference between one request per
-    setup and eighty-three, against a quota shared with the Radoff apps
-    (T-02 D-21/D-22).
-    """
+    """The schema is fetched once per device type and cached, not once per device."""
     patch_authenticate_user(monkeypatch, result=auth_result(make_id_token([DOMAIN_ID])))
     register_devices(requests_mock, load_fixture("devices_two_devices.json"))
 
@@ -682,14 +562,7 @@ async def test_a_schema_endpoint_that_is_down_retries_instead_of_loading(
     requests_mock: Any,
     config_entry_v3_data: dict[str, Any],
 ) -> None:
-    """
-    M-04: no schema, no setup - `ConfigEntryNotReady`, which Home Assistant retries.
-
-    Deliberately not a fallback to a built-in table: that table is what the
-    card exists to delete, and an entry that loaded without a schema would
-    give the user a full set of nameless, unitless entities that only a
-    restart could fix.
-    """
+    """A schema endpoint that is down raises `ConfigEntryNotReady`, and is retried."""
     patch_authenticate_user(monkeypatch, result=auth_result(make_id_token([DOMAIN_ID])))
     register_devices(requests_mock, load_devices_fixture("devices_one_device.json"))
     register_measures_ranges(requests_mock, payloads={}, status_code=500)
@@ -711,17 +584,7 @@ async def test_a_429_on_the_schema_call_names_itself_and_retries(
     caplog: pytest.LogCaptureFixture,
     config_entry_v3_data: dict[str, Any],
 ) -> None:
-    """
-    Card M-05: a rate-limited setup is retried by Home Assistant, and says so.
-
-    The outcome is the same `ConfigEntryNotReady` as the test above, and
-    that is the decision, not an oversight: at setup there are no entities
-    yet to keep available, so there is nothing for the poll path's 429
-    handling to protect and no reason to run a retry loop of our own
-    alongside the framework's. What the dedicated clause adds is that the
-    log names the 429 and the backoff the client computed, instead of
-    reading like the schema endpoint is down.
-    """
+    """A 429 on the schema call retries the setup, and the log names the rate limit."""
     patch_authenticate_user(monkeypatch, result=auth_result(make_id_token([DOMAIN_ID])))
     register_devices(requests_mock, load_devices_fixture("devices_one_device.json"))
     register_measures_ranges(
@@ -740,29 +603,12 @@ async def test_a_429_on_the_schema_call_names_itself_and_retries(
 
 
 # ---------------------------------------------------------------------------
-# The names this card removes (M-07 AC 2)
+# The arch 1.x domain names, which no code may use
 # ---------------------------------------------------------------------------
 
 
 def test_the_arch_1x_domain_names_are_gone_from_the_code() -> None:
-    """
-    AC 2: no code reads `CONF_DOMAIN_ID`, `ISSUE_MISSING_DOMAIN_ID` or the d_ claims.
-
-    Deliberately an AST walk and not a text grep, which is what the AC's
-    wording suggests and what would be wrong here: several comments still
-    name `CONF_DOMAIN_ID`, and they should. A migration is the one place
-    that has to explain what it replaced, and `const.py` saying "this
-    replaces CONF_DOMAIN_ID" is the note that stops the next reader from
-    reintroducing it. What must not survive is a *use*: an import, a read,
-    an attribute access.
-
-    `_extract_domain_claims` is in the list for the third name the AC gives.
-    Card M-02 deleted the helper that decoded the IdToken's `d_<uuid>`
-    claims; `tests/conftest.py::make_id_token` still builds tokens carrying
-    them, because a real Radoff IdToken has them, and this test is what
-    says the difference between a fixture that is realistic and code that
-    depends on it.
-    """
+    """No code *uses* the arch 1.x domain names; an AST walk, so comments may keep them."""
     forbidden = {
         "CONF_DOMAIN_ID",
         "ISSUE_MISSING_DOMAIN_ID",
@@ -790,22 +636,7 @@ def test_the_arch_1x_domain_names_are_gone_from_the_code() -> None:
 async def test_a_lost_registry_save_is_repaired_on_the_next_start(
     hass: HomeAssistant, config_entry_v3_data: dict[str, Any]
 ) -> None:
-    """
-    An entry already at version 3 whose entities were never re-keyed is put right.
-
-    Found on the verification instance, not by reasoning: the version bump
-    and the registry rewrite are two different stores with two different
-    save delays (one second against ten), so a start interrupted between
-    them records "version 3" on disk over a registry that was never
-    rewritten. Home Assistant then never calls the migration handler again,
-    because the versions match - and sixteen entities stay on arch 1.x
-    identifiers permanently, holding their history, while a fresh set
-    appears beside them.
-
-    The entry here has a domain, so setup gets past the guard and fails
-    later for want of a mocked API; what matters is that the entities are
-    already re-keyed by then.
-    """
+    """An entry at version 3 whose entities were never re-keyed is put right on the next start."""
     entry = MockConfigEntry(
         domain=DOMAIN, version=3, minor_version=1, data=config_entry_v3_data
     )
@@ -829,16 +660,7 @@ async def test_a_lost_registry_save_is_repaired_on_the_next_start(
 async def test_an_entry_without_a_domain_still_gets_its_entities_re_keyed(
     hass: HomeAssistant, config_entry_v1_data: dict[str, Any]
 ) -> None:
-    """
-    The re-keying runs before the domain guard, not after it.
-
-    An entry that reaches version 3 without a domain sits unloadable until
-    somebody gets round to the repair - which can be days. Its entities are
-    not waiting on anything: their new identifiers are computable from the
-    device registry alone, and leaving them on the old ones for the
-    duration would leave the user's history hanging on a thread for no
-    reason.
-    """
+    """An entry without a domain still gets its entities re-keyed: that runs first."""
     entry = MockConfigEntry(domain=DOMAIN, version=1, data=config_entry_v1_data)
     entry.add_to_hass(hass)
 

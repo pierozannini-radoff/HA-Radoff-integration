@@ -1,17 +1,7 @@
 """
-Guardia sulle fixture reali catturate su dev (card M-01).
+Guardia sulle fixture reali di `tests/fixtures/dev/`.
 
-Non testa l'integrazione: testa le *fixture*. `scripts/probe_arch2.py` reda
-ogni response prima di scriverla, ma quella redazione gira una volta, sulla
-macchina di chi esegue la ricognizione, e il risultato finisce nel repo per
-sempre. Questi test sono il secondo paio d'occhi: girano in CI a ogni
-commit e falliscono se in `tests/fixtures/dev/` compare qualcosa che non
-doveva entrarci - un JWT, una mail, un UUID non sostituito, una coordinata
-a piena precisione.
-
-Se la cartella e' vuota (la ricognizione non e' ancora stata eseguita) i
-test si saltano invece di fallire: la card che la esegue e' M-01, non
-questa suite.
+Copre: redazione dei segreti, JSON valido, manifest con header di risposta.
 """
 
 from __future__ import annotations
@@ -68,8 +58,8 @@ _FIXTURE_FILES = _fixture_files()
 pytestmark = pytest.mark.skipif(
     not _FIXTURE_FILES,
     reason=(
-        "Nessuna fixture reale in tests/fixtures/dev/: la ricognizione M-01 "
-        "non e' ancora stata eseguita su dev."
+        "Nessuna fixture reale in tests/fixtures/dev/: la ricognizione su "
+        "dev non e' ancora stata eseguita."
     ),
 )
 
@@ -137,12 +127,7 @@ def test_dev_fixtures_have_a_manifest() -> None:
 
 
 def test_dev_manifest_records_response_headers() -> None:
-    """
-    Il manifest porta gli header di risposta, non solo i body.
-
-    E' un requisito esplicito della card: senza gli header non si ricava il
-    nome dell'header di request id (T-08 D-30).
-    """
+    """Il manifest registra gli header di risposta, non solo i body."""
     manifest = json.loads(
         (DEV_FIXTURES_DIR / "_manifest.json").read_text(encoding="utf-8")
     )

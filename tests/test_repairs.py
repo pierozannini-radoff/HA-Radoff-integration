@@ -1,18 +1,8 @@
 """
-Repairs fix flow tests (RT-2926, M-07): giving an entry a `domain_prefix`.
+The repair fix flow that gives an entry a `domain_prefix`.
 
-The flow is driven through the real repairs flow manager - the same object
-the frontend talks to - rather than by calling `DomainRepairFlow` directly,
-so issue registration, platform discovery (`repairs.py` being found at all)
-and the manager's own "delete the issue unless the flow aborts" rule are all
-part of what these tests cover. The Radoff API is mocked at the transport
-level exactly as everywhere else in this suite.
-
-Card M-07 adds the second way in. The tests above the divider drive the
-repair RT-2926 wrote it for - an entry that has no domain - and the ones
-below drive the 403 one: an entry that has a domain the account has lost
-access to, which used to leave "remove the integration and add it again" as
-the only remedy.
+Covers: the entry with no domain, the entry whose domain the API refuses
+with 403, and every way each of the two flows aborts.
 """
 
 from __future__ import annotations
@@ -100,13 +90,7 @@ async def test_repair_single_domain_loads_the_entry(
     requests_mock: Any,
     config_entry_v1_data: dict[str, Any],
 ) -> None:
-    """
-    The nominal upgrade path: one accessible domain, one confirmation, done.
-
-    This is the acceptance criterion of RT-2926 in one test - an entry
-    created by the released version, with no domain, ends up loaded without
-    the user ever retyping a credential.
-    """
+    """One accessible domain: the entry loads without the user retyping a credential."""
     patch_authenticate_user(monkeypatch, result=auth_result(make_id_token([DOMAIN_ID])))
     register_domains(requests_mock, load_fixture("domains_single.json"))
     register_devices(requests_mock, load_fixture("devices_empty.json"))
@@ -185,13 +169,7 @@ async def test_repair_aborts_and_keeps_the_issue_on_invalid_auth(
     monkeypatch: pytest.MonkeyPatch,
     config_entry_v1_data: dict[str, Any],
 ) -> None:
-    """
-    A rejected password aborts with its own reason and leaves the repair open.
-
-    The credentials come from the entry, so the user has to fix them
-    elsewhere (re-auth) and come back: the issue must survive the abort, or
-    the only pointer to a still-unusable entry would be gone.
-    """
+    """A rejected password aborts with its own reason and leaves the repair open."""
     patch_authenticate_user(
         monkeypatch,
         exception=ClientError(
@@ -256,7 +234,7 @@ async def test_repair_aborts_on_an_unsupported_cognito_challenge(
     monkeypatch: pytest.MonkeyPatch,
     config_entry_v1_data: dict[str, Any],
 ) -> None:
-    """A challenge this integration cannot complete (S-09/C8) aborts here too."""
+    """A Cognito challenge this integration cannot complete aborts the flow."""
     patch_authenticate_user(
         monkeypatch,
         result={"ChallengeName": "NEW_PASSWORD_REQUIRED", "ChallengeParameters": {}},
@@ -277,12 +255,7 @@ async def test_repair_aborts_when_the_entry_is_gone(
     monkeypatch: pytest.MonkeyPatch,
     config_entry_v1_data: dict[str, Any],
 ) -> None:
-    """
-    Removing the entry instead of repairing it is a legitimate way out.
-
-    Until RT-2926 it was the *only* one (see the card's "AGGRAVANTE"). The
-    stale issue must then abort cleanly rather than raise on a `None` entry.
-    """
+    """A repair whose entry has been removed aborts cleanly instead of raising."""
     patch_authenticate_user(monkeypatch, result=auth_result(make_id_token([DOMAIN_ID])))
 
     entry = await _setup_broken_entry(hass, config_entry_v1_data)
@@ -304,16 +277,7 @@ async def test_repair_discovers_on_the_environment_the_entry_points_at(
     requests_mock: Any,
     config_entry_v1_data: dict[str, Any],
 ) -> None:
-    """
-    Card M-02: the repair looks the domains up on this entry's own base URL.
-
-    An entry carrying the advanced `base_url` option polls that
-    environment, so discovering its domains against the default one would
-    be checking a different account universe - a domain that exists on dev
-    and not on the entry's environment would be written onto it and fail on
-    the very next poll. Nothing is registered on the default host here, so a
-    repair that ignored the option would abort instead of passing.
-    """
+    """The repair discovers domains on the entry's own base URL, not the default one."""
     other_host = "https://api.int.iot.radoff.life"
     patch_authenticate_user(monkeypatch, result=auth_result(make_id_token([DOMAIN_ID])))
     requests_mock.get(
@@ -340,7 +304,7 @@ async def test_repair_discovers_on_the_environment_the_entry_points_at(
 
 
 # ---------------------------------------------------------------------------
-# Card M-07: the 403 repair - an entry whose domain the account has lost
+# The 403 repair: an entry whose domain the account has lost access to
 # ---------------------------------------------------------------------------
 
 
@@ -355,13 +319,7 @@ async def _setup_entry_refused_with_403(
     requests_mock: Any,
     config_entry_v3_data: dict[str, Any],
 ) -> tuple[MockConfigEntry, dict[str, bool]]:
-    """
-    Load an entry whose domain the API refuses, and return a switch to stop refusing.
-
-    The switch is what makes this a repair rather than a snapshot: the fix
-    flow has to be able to reach a state where the entry works again, and
-    the API answering 403 forever would only ever test the abort.
-    """
+    """Load an entry whose domain the API refuses, with a switch to stop refusing."""
     await async_setup_component(hass, "repairs", {})
 
     state = {"refused": True}
@@ -397,16 +355,7 @@ async def test_a_403_raises_a_fixable_repair_beside_its_setup_error(
     requests_mock: Any,
     config_entry_v3_data: dict[str, Any],
 ) -> None:
-    """
-    Card M-07: the 403 stops being a dead end.
-
-    M-02 made the refusal legible - a translated `ConfigEntryError` saying
-    the domain, not the password, is the problem - and left the user with
-    one way to act on it: remove the integration and add it again, which
-    throws away every entity's history. The error stays (it is what shows on
-    the integration card, where a repair is not visible) and the repair is
-    what can actually be acted on.
-    """
+    """A 403 raises a fixable repair alongside the setup error, not instead of it."""
     patch_authenticate_user(monkeypatch, result=auth_result(make_id_token([DOMAIN_ID])))
 
     entry, _ = await _setup_entry_refused_with_403(
@@ -429,14 +378,7 @@ async def test_the_403_repair_reselects_a_domain_and_reloads_the_entry(
     requests_mock: Any,
     config_entry_v3_data: dict[str, Any],
 ) -> None:
-    """
-    The point of the whole thing: a new domain, the same entities, the same history.
-
-    The entry starts on `home1234`, which the account can no longer reach,
-    and ends on `office56` without anything being removed and re-added -
-    which is what preserves the `entity_id`s every dashboard and automation
-    refers to.
-    """
+    """Reselecting a domain rewrites the entry, reloads it and clears the repair."""
     patch_authenticate_user(monkeypatch, result=auth_result(make_id_token([DOMAIN_ID])))
     register_domains(requests_mock, load_fixture("domains_multi.json"))
 
@@ -476,13 +418,7 @@ async def test_a_successful_setup_clears_a_stale_403_repair(
     requests_mock: Any,
     config_entry_v3_data: dict[str, Any],
 ) -> None:
-    """
-    A 403 that stops happening takes its repair with it, without a fix flow.
-
-    Access can come back on the backend's side - the account is put back
-    into the domain - and a repair card still sitting there afterwards would
-    be pointing at a problem that no longer exists.
-    """
+    """A 403 that stops happening takes its repair with it on the next setup."""
     patch_authenticate_user(monkeypatch, result=auth_result(make_id_token([DOMAIN_ID])))
 
     entry, state = await _setup_entry_refused_with_403(

@@ -1,18 +1,9 @@
 """
-Shared fixtures/helpers for the S-18 test suite.
+Shared fixtures and helpers for the suite.
 
-The Radoff API is mocked at the TRANSPORT level, not per-function: HTTP calls
-made through `api/client.py`'s `requests.Session` are intercepted with
-`requests_mock` (provided by `pytest-homeassistant-custom-component`), and
-the Cognito SRP handshake is intercepted at `pycognito.aws_srp.AWSSRP.
-authenticate_user` - the one seam `api/auth.py::authenticate_user` calls
-through, regardless of which config-flow/coordinator code path triggers it.
-This way every test exercises auth, discovery, entity construction and
-migration exactly as Home Assistant does, not as a shortcut around it.
-
-Fixture JSON payloads under `tests/fixtures/` are anonymized: device/serial
-ids and domain ids are synthetic placeholders, not values captured from a
-real account.
+The Radoff API is mocked at the transport level - `requests_mock` for HTTP,
+`AWSSRP.authenticate_user` for the Cognito handshake - so every test runs
+auth, discovery, entity construction and migration as Home Assistant does.
 """
 
 from __future__ import annotations
@@ -31,13 +22,13 @@ from pycognito.aws_srp import AWSSRP
 from custom_components.radoff.const import DEFAULT_BASE_URL
 
 FIXTURES_DIR = Path(__file__).parent / "fixtures"
-# Fixture REALI, catturate su dev da `scripts/probe_arch2.py` (card M-01) e
-# redatte prima di toccare il disco - distinte da quelle sintetiche che
-# stanno un livello sopra. Vedi `fixtures/dev/README.md`.
+# Fixture reali, catturate su dev da `scripts/probe_arch2.py` e redatte
+# prima di toccare il disco - distinte da quelle sintetiche che stanno un
+# livello sopra. Vedi `fixtures/dev/README.md`.
 DEV_FIXTURES_DIR = FIXTURES_DIR / "dev"
 
-# Base URL the mocked transport answers on (card M-02). Read from const.py
-# instead of being spelled out again: the integration is allowed exactly one
+# Base URL the mocked transport answers on. Read from const.py instead of
+# being spelled out again: the integration is allowed exactly one
 # host, and a suite that hardcoded its own copy would keep passing after a
 # change that never reached the client. The *paths* below stay literal on
 # purpose - those are what the tests are pinning.
@@ -55,42 +46,15 @@ def load_fixture(name: str) -> dict[str, Any]:
 
 
 def load_dev_fixture(name: str) -> Any:
-    """
-    Return the parsed body of a real fixture captured on dev (card M-01).
-
-    `name` is the file's stem as recorded in `_manifest.json`, with or
-    without the `.json` suffix - e.g. `load_dev_fixture("devices__full")`.
-    Unlike `load_fixture` above these payloads were captured from the real
-    arch 2.0 API rather than written by hand, which is the whole point:
-    from M-02 onwards the client is written against what the API actually
-    returns, not against a payload we imagined.
-    """
+    """Return the parsed body of a real fixture captured on dev, by file stem."""
     filename = name if name.endswith(".json") else f"{name}.json"
     return json.loads((DEV_FIXTURES_DIR / filename).read_text(encoding="utf-8"))
 
 
 def load_devices_fixture(name: str) -> dict[str, Any]:
-    """
-    Return a `devices_*.json` fixture with its two timestamps moved to "now".
-
-    The synthetic fixtures carry fixed, illustrative timestamps. Both are
-    rewritten at load time so that no assertion in the suite depends on how
-    long ago the fixture was written:
-
-    - `telemetry.timestamp`, which is published as the `last_measured_at`
-      attribute of every entity of that device (card M-06; until that card
-      it also fed the freshness check `RadoffEntity.available` used to run).
-    - `connection_status_updated_at`, published as an attribute by the same
-      card. Neither one is compared against a threshold any more - M-06
-      removed the last of those - so what the rewrite buys is a fixture
-      that describes a device alive *now* rather than one whose two
-      timestamps recede by a day for every day the suite is not touched.
-      A test that wants a specific age sets the timestamp itself.
-
-    Card M-03 renamed this from `load_device_fixture` along with what it
-    loads: a `GET /data/devices` page holding every device with its
-    telemetry inline, instead of one arch 1.x per-device response.
-    """
+    """Return a `devices_*.json` page with `telemetry.timestamp` and
+    `connection_status_updated_at` moved to now, so no assertion depends on
+    the fixture's age. A test wanting a specific age sets it itself."""
     payload = load_fixture(name)
     now = datetime.now(UTC).isoformat()
     for device in payload.get("devices", []):
@@ -102,17 +66,7 @@ def load_devices_fixture(name: str) -> dict[str, Any]:
 
 
 def make_id_token(domain_ids: list[str]) -> str:
-    """
-    Build a syntactically-valid, unsigned Cognito IdToken carrying `d_<uuid>` claims.
-
-    Only the payload segment is real base64url JSON, which was enough while
-    the client decoded its own token to bootstrap the arch 1.x domain header
-    (`_extract_domain_claims`, removed by card M-02 - arch 2.0's discovery
-    endpoint needs nothing but the bearer token). Nothing reads the claims
-    any more: the tokens these tests build now only have to be shaped like a
-    JWT and carry a plausible payload, and the `d_*` claims are kept because
-    a real Radoff IdToken has them.
-    """
+    """Build an unsigned, JWT-shaped Cognito IdToken carrying `d_<uuid>` claims."""
     header = _b64url({"alg": "none", "typ": "JWT"})
     payload = {f"d_{domain_id}": True for domain_id in domain_ids}
     return f"{header}.{_b64url(payload)}.fake-signature"
@@ -148,13 +102,7 @@ def patch_authenticate_user(
     result: dict[str, Any] | None = None,
     exception: Exception | None = None,
 ) -> None:
-    """
-    Patch the one seam `api/auth.py::authenticate_user` calls: the SRP handshake.
-
-    `AWSSRP.__init__` does no network I/O by itself (it only prepares the SRP
-    math), so tests never need to patch it - only `authenticate_user`, the
-    method that would otherwise talk to Cognito.
-    """
+    """Patch the SRP handshake, the one seam that would otherwise talk to Cognito."""
 
     def _fake_authenticate_user(self: AWSSRP) -> dict[str, Any]:  # noqa: ARG001
         if exception is not None:
@@ -186,15 +134,7 @@ def patch_cognito_refresh(
 
 
 def register_domains(requests_mock: Any, payload: dict[str, Any]) -> None:
-    """
-    Mock `GET /data/user/me/domains`.
-
-    Under `/data/`, not `/auth/`: that is where the discovery endpoint
-    actually lives in arch 2.0 (M-01 probed both - see
-    `custom_components/radoff/api/client.py::DISCOVERY_PATH`), and pinning
-    it here is what makes a regression to the documented-but-absent path
-    fail the suite instead of only failing against dev.
-    """
+    """Mock the discovery call, `GET /data/user/me/domains`."""
     requests_mock.get(f"{BASE_URL}/data/user/me/domains", json=payload)
 
 
@@ -205,19 +145,8 @@ def register_devices(
     base_url: str = BASE_URL,
     with_schema: bool = True,
 ) -> None:
-    """
-    Mock the one call a poll cycle makes: `GET /data/devices` (card M-03).
-
-    Replaces `register_search` + `register_device`, the two mocks the 1 + N
-    pattern of arch 1.x needed. Pass one payload per page, in order; the
-    mock answers each request with the page its `page` query parameter asks
-    for, so a test that pins the pagination loop registers two pages and a
-    test that does not registers one and never thinks about it again.
-
-    With a non-200 `status_code`, the first payload is the error body and
-    every page answers with it - there is nothing to paginate through when
-    the call itself fails.
-    """
+    """Mock `GET /data/devices`, one payload per page in order; with a non-200
+    status the first payload is the error body every page answers with."""
     bodies = list(pages) or [{}]
 
     def _page_body(request: Any, context: Any) -> dict[str, Any]:
@@ -240,22 +169,8 @@ def register_measures_ranges(
     payloads: dict[str, Any] | None = None,
     status_code: int | None = None,
 ) -> None:
-    """
-    Mock `GET /analytics/measures-ranges`, the schema call of card M-04.
-
-    Answers each `device_type` with the real payload M-01 captured for it
-    (`tests/fixtures/dev/measures_ranges__<type>.json`), a type with no
-    fixture with the real 404 body carrying `available`, and a call with no
-    `device_type` with the merged `measures_ranges__all`. `life` needs no
-    special case: the fixture captured for it *is* a 404 body, because that
-    is what dev answered.
-
-    Registered by `register_devices` for every test that sets an entry up,
-    because from M-04 on a setup makes this call as surely as it makes the
-    device one. Pass `payloads`/`status_code` to override that (a schema
-    the suite invents, or an endpoint that is down), or re-register the same
-    URL afterwards - the last registration wins.
-    """
+    """Mock `GET /analytics/measures-ranges` from the captured dev fixtures;
+    `register_devices` registers it, and `payloads`/`status_code` override it."""
 
     def _schema_body(request: Any, context: Any) -> Any:
         device_type = request.qs.get("device_type", [None])[0]
@@ -276,8 +191,8 @@ def register_measures_ranges(
             context.status_code = HTTPStatus.NOT_FOUND
             return load_dev_fixture("error__measures_ranges_unknown_type")
 
-        # The `life` fixture is an error body, not a schema (M-01: that type
-        # has no schema on dev), and is recognisable by `available`.
+        # The `life` fixture is an error body, not a schema - that type has
+        # no schema on dev - and is recognisable by `available`.
         if isinstance(payload, dict) and "available" in payload:
             context.status_code = HTTPStatus.NOT_FOUND
         return payload
@@ -287,7 +202,7 @@ def register_measures_ranges(
 
 @pytest.fixture
 def config_entry_v1_data() -> dict[str, Any]:
-    """Config entry `data` shaped as VERSION 1 (pre-S-02) - Cognito fields still present."""
+    """Config entry `data` shaped as VERSION 1: Cognito fields still present."""
     return {
         "username": "user@example.com",
         "password": "hunter2",
@@ -300,15 +215,7 @@ def config_entry_v1_data() -> dict[str, Any]:
 
 @pytest.fixture
 def config_entry_v2_data() -> dict[str, Any]:
-    """
-    Config entry `data` shaped as VERSION 2 (post-S-02) - no Cognito fields.
-
-    Still the arch 1.x shape, deliberately: the domain is a UUID under the
-    `domain_id` key. Card M-07 is what makes this a *legacy* fixture rather
-    than the current one - see `config_entry_v3_data` below - and the tests
-    that still use it are the migration tests, which need an entry in
-    exactly this state to migrate.
-    """
+    """Config entry `data` shaped as VERSION 2: no Cognito fields, domain as a UUID."""
     return {
         "username": "user@example.com",
         "password": "hunter2",
@@ -318,15 +225,7 @@ def config_entry_v2_data() -> dict[str, Any]:
 
 @pytest.fixture
 def config_entry_v3_data() -> dict[str, Any]:
-    """
-    Config entry `data` shaped as VERSION 3 (card M-07) - a `domain_prefix`.
-
-    The current shape, and what every test that just needs a working entry
-    should ask for. The value is a prefix, not a UUID: that is the whole
-    difference the version-3 migration exists for, and `domain_prefix` is
-    what `api/client.py` puts on the query string of every domain-scoped
-    call.
-    """
+    """Config entry `data` shaped as VERSION 3: a `domain_prefix`, the current shape."""
     return {
         "username": "user@example.com",
         "password": "hunter2",
@@ -335,17 +234,16 @@ def config_entry_v3_data() -> dict[str, Any]:
 
 
 # The entity/device registry of a real installation running the released
-# version (30e0cde), as card RT-2827 measured it entry by entry: two
-# devices, sixteen entities each, 32
-# `unique_id`s of the form `radoff-{device_uuid}-{slug}`.
+# version (30e0cde), measured entry by entry: two devices, sixteen entities
+# each, 32 `unique_id`s of the form `radoff-{device_uuid}-{slug}`.
 #
 # The *shape* is the measured one - the exact slug set, the `-index` suffix
 # on the seven qualitative siblings, the Italian `entity_id`s the released
 # version's friendly names slugified to, and the fact that the AQI has no
 # `-index` sibling while eco2 does. The identifiers themselves are
-# synthetic, per this module's docstring: what the migration has to get
-# right is the structure, and a real account's device UUIDs are not
-# something to commit to a public repository.
+# synthetic: what the migration has to get right is the structure, and a
+# real account's device UUIDs are not something to commit to a public
+# repository.
 REGISTRY_RELEASED_BACKUP = FIXTURES_DIR / "registry_released_backup.json"
 
 
@@ -356,24 +254,9 @@ def seed_released_registry(
     slugs: dict[str, list[str]] | None = None,
     unit_overrides: dict[str, str] | None = None,
 ) -> dict[str, str]:
-    """
-    Recreate a released installation's registries under `config_entry`.
-
-    Returns `{unique_id: entity_id}` for everything it created, which is what
-    a migration test asserts against: an `entity_id` that changed is a
-    dashboard and a set of automations that broke, and that is the failure
-    these tests exist to catch.
-
-    `slugs` narrows what is created, per device serial, for a test that only
-    cares about one entity (`{"AA11BB": ["tvoc"]}`); the default is the full
-    32. `unit_overrides` sets a user display-unit override on the named
-    entities (`{"tvoc": "mg/m³"}`), which is what card M-07 clears when the
-    measure behind the entity stops having that unit.
-
-    Devices are registered exactly as the integration registers them -
-    `identifiers={(DOMAIN, serial_number)}` - because that link is the whole
-    mechanism the offline re-keying runs on: entity -> device -> serial.
-    """
+    """Recreate a released installation's registries and return
+    `{unique_id: entity_id}`. `slugs` narrows what is created per serial,
+    `unit_overrides` sets a user display-unit override on the named entities."""
     from homeassistant.helpers import device_registry as dr
     from homeassistant.helpers import entity_registry as er
 
@@ -422,12 +305,6 @@ def seed_released_registry(
 
 @pytest.fixture(autouse=True)
 def _fixed_time(monkeypatch: pytest.MonkeyPatch) -> None:
-    """
-    Keep `CognitoSession`'s expiry math deterministic across the whole suite.
-
-    Not strictly required by every test, but avoids any flakiness from a
-    token minted with `expires_in=3600` crossing its own expiry margin
-    (`_TOKEN_EXPIRY_MARGIN_SECONDS` = 300s) during a slow test run.
-    """
+    """Freeze the clock so `CognitoSession`'s expiry math is deterministic."""
     frozen = time.time()
     monkeypatch.setattr(time, "time", lambda: frozen)

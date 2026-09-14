@@ -1,18 +1,8 @@
 """
-Schema tests (card M-04): `measures-ranges` -> `MeasureSpec`.
+Reading `measures-ranges` into `MeasureSpec`, against real dev fixtures.
 
-Everything this integration used to hardcode - units, labels, thresholds,
-the vocabulary of the qualitative bands - now comes from the API, so this
-file pins the reading of that response rather than the values themselves.
-Where a value does appear below it is quoted from a real fixture captured
-on dev (`tests/fixtures/dev/measures_ranges__*.json`), never retyped from
-the tables M-04 deleted: a test that restated them would recreate the very
-thing the card removes, one layer down.
-
-The `pos` cases are the heart of it. The backend warned that `pos` is
-sparse and must be used to sort, never to index, so both the real sparse
-fixtures and a deliberately broken one (gaps, duplicates, a missing `pos`)
-are exercised here.
+Covers: `pos` ordering, band vocabulary and boundaries, units and device
+classes, and what a malformed response costs.
 """
 
 from __future__ import annotations
@@ -33,13 +23,11 @@ from custom_components.radoff.schema import (
 
 from .conftest import load_dev_fixture
 
-# Every type the catalogue holds, as M-01 captured it. `life` is excluded:
-# the fixture of that name is the 404 body dev answered with, not a schema.
-#
-# `sismoff` *is* here, and only here. Its schema is read like every other
-# type's - that costs nothing and keeps `co`/`ch4` covered - but the card
-# excludes it from the entity-level checks, because M-01 captured no
-# sismoff device to run them against (decision of 2026-09-10).
+# Every type the catalogue holds. `life` is excluded: the fixture of that
+# name is the 404 body dev answered with, not a schema. `sismoff` is here,
+# and only here - its schema is read like every other type's, keeping
+# `co`/`ch4` covered, but no captured device of that type exists to run the
+# entity-level checks against.
 SCHEMA_TYPES = ("nowplus", "sense", "city", "now", "sismoff")
 
 
@@ -51,7 +39,7 @@ def _specs(device_type: str) -> dict[str, MeasureSpec]:
 
 @pytest.mark.parametrize("device_type", SCHEMA_TYPES)
 def test_measures_are_ordered_by_pos(device_type: str) -> None:
-    """M-04 AC: the measures come out sorted by `pos`, whatever the JSON order."""
+    """The measures come out sorted by `pos`, whatever the JSON order."""
     positions = [spec.pos for spec in _specs(device_type).values()]
 
     assert positions == sorted(positions)
@@ -60,15 +48,7 @@ def test_measures_are_ordered_by_pos(device_type: str) -> None:
 
 @pytest.mark.parametrize("device_type", SCHEMA_TYPES)
 def test_pos_is_sparse_and_is_never_an_index(device_type: str) -> None:
-    """
-    M-04 AC: a non-contiguous `pos` does not break the ordering.
-
-    This is the trap the backend flagged explicitly, and the real fixtures
-    spring it on their own: a `now` declares six measures whose `pos` values
-    are 1, 3, 6, 10, 11, 12 - the gaps being the measures that type does not
-    have. Anything that treated `pos` as an index into a list would raise or
-    silently mis-assign here.
-    """
+    """A sparse `pos` sorts correctly and is never used as a list index."""
     specs = _specs(device_type)
     positions = [spec.pos for spec in specs.values()]
 
@@ -99,14 +79,7 @@ def test_a_broken_pos_still_produces_a_total_order() -> None:
 
 
 def test_bands_keep_the_order_the_api_served() -> None:
-    """
-    The five-band vocabulary is `excellent -> high -> good -> poor -> terrible`.
-
-    `high` sits second, between `excellent` and `good`. That is intentional
-    on the backend's side and it is not the order this integration used to
-    hardcode (`excellent -> good -> medium -> poor -> terrible`), so it is
-    pinned from the fixture rather than assumed.
-    """
+    """The bands keep the served order, `high` second between excellent and good."""
     specs = _specs("nowplus")
 
     assert specs["eco2"].statuses == (
@@ -141,7 +114,7 @@ def test_the_last_band_is_open_ended() -> None:
     ],
 )
 def test_status_for_walks_the_bands_inclusively(value: float, expected: str) -> None:
-    """`upperBound` is inclusive, matching the thresholds T-02 verified."""
+    """`upperBound` is inclusive: a value on the boundary belongs to that band."""
     assert _specs("nowplus")["eco2"].status_for(value) == expected
 
 
@@ -156,14 +129,7 @@ def test_a_measure_with_no_bands_has_no_status() -> None:
 
 @pytest.mark.parametrize("device_type", SCHEMA_TYPES)
 def test_no_scale_factor_is_served_or_applied(device_type: str) -> None:
-    """
-    `scaleFactor` is deliberately absent from the response (T-08).
-
-    Values arrive already scaled and the client must apply nothing. Pinned
-    on the fixtures because the day it *does* appear, this test is the one
-    that should notice - silently ignoring a scale factor would misreport
-    every value of that measure.
-    """
+    """No `scaleFactor` is served, and none is applied: values pass through."""
     payload = load_dev_fixture(f"measures_ranges__{device_type}")
 
     assert all("scaleFactor" not in measure for measure in payload.values())
@@ -181,17 +147,7 @@ def test_every_served_unit_is_mapped(device_type: str) -> None:
 
 
 def test_the_aqi_has_no_unit_and_tvoc_keeps_the_one_the_api_declares() -> None:
-    """
-    The AQI's empty unit maps to nothing; tvoc's `V - Ix` passes through (M-07).
-
-    The two are not the same case, which is why they stopped sharing a test.
-    An index has no unit and Home Assistant renders that correctly, so
-    inventing one would be worse than none. `V - Ix` is not a standard unit
-    either (T-02 D-07) but it is what the API says the number is in, and
-    publishing it is what stops the reading from looking like a
-    concentration whose unit went missing - the shape it had in the
-    released version, where tvoc was µg/m³.
-    """
+    """The AQI is published with no unit; tvoc keeps the `V - Ix` the API sends."""
     specs = _specs("nowplus")
 
     assert specs["aqi_value"].unit == ""
@@ -201,7 +157,7 @@ def test_the_aqi_has_no_unit_and_tvoc_keeps_the_one_the_api_declares() -> None:
 
 
 def test_pressure_is_declared_in_pascal() -> None:
-    """M-04 AC: pressure keeps the unit the API sends; the UI converts, not us."""
+    """Pressure keeps the unit the API sends; the UI converts, not the client."""
     pressure = _specs("nowplus")["pressure"]
 
     assert pressure.unit == "Pa"
@@ -219,14 +175,7 @@ def test_radon_is_served_in_becquerel_and_passes_through() -> None:
 
 @pytest.mark.parametrize("measure", ["aqi_value", "tvoc"])
 def test_measures_with_no_honest_device_class_have_none(measure: str) -> None:
-    """
-    `aqi_value` and `tvoc` are published without a device class, on purpose.
-
-    `SensorDeviceClass.AQI` presupposes the EPA 0-500 scale while this index
-    runs 1-5 (T-02 D-08), and the VOC classes presuppose a concentration
-    while tvoc is served in `V - Ix` (T-02 D-07). A device class is a
-    promise about what a number means; neither promise is true here.
-    """
+    """`aqi_value` and `tvoc` carry no device class, because none would be true."""
     assert _specs("nowplus")[measure].device_class is None
     assert measure not in DEVICE_CLASSES
 
@@ -234,7 +183,7 @@ def test_measures_with_no_honest_device_class_have_none(measure: str) -> None:
 def test_an_unmappable_unit_warns_and_yields_no_unit(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """M-04 AC: a unit outside the map costs the unit, not the setup."""
+    """A unit outside the map costs the unit, not the setup."""
     with caplog.at_level(logging.WARNING):
         resolved = resolve_ha_unit(
             "parsecs per fortnight", measure="eco2", device_type="nowplus"

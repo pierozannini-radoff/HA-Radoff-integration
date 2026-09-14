@@ -1,13 +1,8 @@
 """
-Redaction test for card S-17 (diagnostics.py), integrated with S-18.
+Redaction and coverage of the diagnostics dump.
 
-Builds a real `ConfigEntry` with credential-shaped `data`/`title`/`unique_id`
-plus a fake coordinator carrying one healthy device and one stale device
-(covering the runbook's "entity unavailable" case) and an auth-style
-`last_exception` (covering "auth error"), then asserts none of
-`diagnostics.TO_REDACT`'s values survive in the JSON-serialized result -
-this is what makes the test fail the moment a new sensitive field is added
-to the dump without also being redacted (S-17 AC).
+Covers: every TO_REDACT value redacted, the runbook cases visible in the
+dump, and a meta-test proving the redaction check can fail.
 """
 
 import asyncio
@@ -74,11 +69,10 @@ def _build_entry() -> ConfigEntry:
         data={
             "username": SECRET_USERNAME,
             "password": SECRET_PASSWORD,
-            # Card M-07: the key a version-3 entry carries, and - right
-            # beside it - the one a dump taken from an entry written before
-            # the migration still has on disk. Both are the customer's
-            # tenant, and a diagnostics file is something users attach to
-            # public issues.
+            # The key a version-3 entry carries, and beside it the one an
+            # entry written before the migration still has on disk. Both
+            # are the customer's tenant, and a diagnostics file is
+            # something users attach to public issues.
             "domain_prefix": SECRET_DOMAIN_PREFIX,
             "domain_id": SECRET_DOMAIN_ID,
             # Tokens don't actually live in config_entry.data today, but
@@ -136,7 +130,7 @@ def _build_data() -> RadoffData:
 
 
 def test_diagnostics_redacts_all_sensitive_fields() -> None:
-    """S-17 AC: no TO_REDACT value survives, anywhere in the serialized tree."""
+    """No TO_REDACT value survives anywhere in the serialized tree."""
     entry = _build_entry()
     entry.runtime_data = _FakeCoordinator(
         data=_build_data(),
@@ -161,13 +155,7 @@ def test_diagnostics_redacts_all_sensitive_fields() -> None:
 
 
 def test_diagnostics_covers_runbook_cases() -> None:
-    """
-    The dump carries enough to diagnose the runbook's cases.
-
-    Zero entities (empty device list), an unavailable entity (`stale=True`),
-    and an auth error (`last_update_success=False` + `last_exception` set)
-    must all be visible in the result.
-    """
+    """The dump makes zero entities, an unavailable entity and an auth error visible."""
     entry = _build_entry()
     entry.runtime_data = _FakeCoordinator(
         data=_build_data(),
@@ -185,9 +173,8 @@ def test_diagnostics_covers_runbook_cases() -> None:
     devices = result["data"]["devices"]
     assert any(device["stale"] is True for device in devices)
 
-    # Card M-03: the fields that tell "no telemetry this cycle" apart from
-    # "offline" are both in the dump, even though nothing consumes
-    # `connection_status` until M-06 - a support dump is exactly where that
+    # The two fields that tell "no telemetry this cycle" apart from
+    # "offline" are both in the dump: a support dump is exactly where that
     # distinction has to be readable.
     assert {device["connection_status"] for device in devices} == {
         "connected",
@@ -214,14 +201,7 @@ def test_diagnostics_covers_runbook_cases() -> None:
 
 
 def test_diagnostics_fails_if_a_sensitive_field_is_added_unredacted() -> None:
-    """
-    Meta-test: the redaction test above must actually fail on a regression.
-
-    Simulates "someone adds a sensitive field to the dump without adding it
-    to TO_REDACT" by calling async_redact_data with an empty redact set and
-    checking the secret *does* show up - proving test_diagnostics_redacts_
-    all_sensitive_fields would have caught it.
-    """
+    """A sensitive field left out of TO_REDACT does show up, so the check can fail."""
     from homeassistant.components.diagnostics import async_redact_data
 
     leaked = async_redact_data({"password": SECRET_PASSWORD}, to_redact=set())

@@ -1,23 +1,8 @@
 """
-Coordinator poll tests (S-18, updated by card M-03): nominal and degraded.
+The poll cycle, end to end through a real config entry.
 
-Every test sets up a real config entry end to end (`async_setup_entry` ->
-`RadoffCoordinator.async_config_entry_first_refresh` -> `sensor.py`'s
-platform setup), with the Radoff API mocked at the transport level - the
-same path Home Assistant itself exercises on every startup and poll.
-
-What card M-03 changes here is the shape of "degraded". S-13's degraded
-cases were per-device: one device's `GET` failed, `_merge_device_errors`
-kept its previous readings and flipped `stale`, and the other device kept
-updating. With a single `GET /data/devices` per cycle there is no such
-state to test: a failure is the cycle's, and the per-device condition that
-remains is the one the payload itself reports - `telemetry: null`, a device
-the API answered about and that has no data.
-
-Card M-05 adds a second subject to this file: *when* the cycle runs. The
-scheduling tests below drive `_schedule_refresh` directly rather than
-waiting on the event loop - the point being tested is the delay this
-coordinator asks for, not Home Assistant's ability to honour a timer.
+Covers: the nominal poll, degraded devices and failed cycles, and the
+scheduling - jitter, backoff, and what a 429 does to the next cycle.
 """
 
 from __future__ import annotations
@@ -55,7 +40,7 @@ from .conftest import (
 # Same synthetic body as `test_api_transport.py`: API Gateway's own 429,
 # which carries neither an `error` key nor a `Retry-After` header. Not a
 # captured fixture - provoking a real one would have meant saturating a
-# quota shared with the Radoff mobile app (M-01 deliberately did not).
+# quota shared with the Radoff mobile app.
 RATE_LIMIT_BODY = {"message": "Too Many Requests"}
 
 
@@ -91,14 +76,7 @@ async def test_coordinator_without_a_domain_prefix_raises_config_entry_error(
     hass: HomeAssistant,
     config_entry_v3_data: dict[str, Any],
 ) -> None:
-    """
-    Constructing the coordinator without a `domain_prefix` never raises `KeyError`.
-
-    Card RT-2926 / finding T-06/F1. `__init__.py::async_setup_entry` stops
-    before getting here, but this class must not be the thing that decides
-    whether the integration crashes: any caller reaching it without a
-    domain gets the same explicit, translated `ConfigEntryError`.
-    """
+    """A coordinator built without a `domain_prefix` raises `ConfigEntryError`, not `KeyError`."""
     data = {k: v for k, v in config_entry_v3_data.items() if k != CONF_DOMAIN_PREFIX}
     entry = MockConfigEntry(domain=DOMAIN, data=data, version=3)
     entry.add_to_hass(hass)
@@ -115,14 +93,7 @@ async def test_poll_nominal_produces_expected_entities(
     requests_mock: Any,
     config_entry_v3_data: dict[str, Any],
 ) -> None:
-    """
-    A nominal payload produces the expected entities, with specific values.
-
-    Asserts on concrete unit, device class, index state and value - not just
-    "the entity exists" (S-18 AC: "asserzioni su valori specifici"). The
-    temperature is the one to watch: `20.9` is the value the payload
-    carries, not a scaled one (card M-03 removed the scaling factor).
-    """
+    """A nominal payload produces the expected entities, with unscaled values."""
     register_devices(requests_mock, load_devices_fixture("devices_one_device.json"))
 
     await _setup_entry(hass, monkeypatch, config_entry_v3_data)
@@ -143,9 +114,9 @@ async def test_poll_nominal_produces_expected_entities(
     assert humidity.state == "45.0"
     assert humidity.attributes["device_class"] == "humidity"
 
-    # The AQI entity is created disabled (card M-04, T-08 D-08: the backend
-    # computes its temperature component with the wrong divisor), so there
-    # is no state to poll. `test_sensor.py` asserts on it via the registry.
+    # The AQI entity is created disabled - the backend computes its
+    # temperature component with the wrong divisor - so there is no state
+    # to poll. `test_sensor.py` asserts on it via the registry.
     assert hass.states.get("sensor.living_room_air_quality") is None
 
 
@@ -155,13 +126,7 @@ async def test_the_device_registry_entry_carries_the_firmware_version(
     requests_mock: Any,
     config_entry_v3_data: dict[str, Any],
 ) -> None:
-    """
-    Card M-03: `firmware_version` reaches `device_info.sw_version`.
-
-    A field arch 1.x did not report at all, and the one addition of this
-    card that a user can actually see - in the device page, not in an
-    entity.
-    """
+    """`firmware_version` reaches `device_info.sw_version` in the device registry."""
     from homeassistant.helpers import device_registry as dr
 
     register_devices(requests_mock, load_devices_fixture("devices_one_device.json"))
@@ -197,20 +162,7 @@ async def test_poll_degraded_missing_field_only_affects_that_reading(
     requests_mock: Any,
     config_entry_v3_data: dict[str, Any],
 ) -> None:
-    """
-    A field missing from the telemetry block only affects that one entity.
-
-    Card M-04 changed the shape of "affects", not the isolation: entities
-    follow the device type's schema now, not the last payload, so the
-    missing field keeps its entity instead of producing none at all.
-
-    Card M-06 changes it again, and this time it is what the entity
-    *shows*. The device says `connected`, so nothing about it is
-    unavailable; the one field it did not send has no value to show and no
-    earlier value to fall back on, which is `unknown`. The isolation is
-    unchanged and is still the claim: the sibling that did arrive is
-    unaffected.
-    """
+    """A field missing from the telemetry block leaves its sibling entities untouched."""
     register_devices(requests_mock, load_devices_fixture("devices_missing_field.json"))
 
     await _setup_entry(hass, monkeypatch, config_entry_v3_data)
@@ -230,27 +182,7 @@ async def test_a_connected_device_without_telemetry_keeps_its_entities_available
     requests_mock: Any,
     config_entry_v3_data: dict[str, Any],
 ) -> None:
-    """
-    M-06 AC1: `connected` plus `telemetry: null` is not unavailable.
-
-    The condition of the majority of the devices M-01 censused (D-16), and
-    the card's first acceptance criterion. The entry must load - a domain
-    where nothing is transmitting is a normal state of the world - and the
-    entities must stay available: `GET /data/devices` looks at a 6-hour
-    window and does not widen it on a miss, so silence this long is a fact
-    about the query, not about the device, and the device itself says
-    `connected`.
-
-    Three assertions, and each one failed before this card in a different
-    way. The state is `unknown` rather than `unavailable` (there is no
-    earlier value on a device that has never transmitted, so there is
-    nothing to remember). `stale` is still `True`, because it never meant
-    offline and still does not. And `last_measured_at` is absent rather
-    than borrowed from somewhere: nothing was ever measured.
-
-    Only observable at all since card M-04 - before it, a device with
-    `telemetry: null` had no entities, so the criterion had no subject.
-    """
+    """A `connected` device with `telemetry: null` keeps available entities, state `unknown`."""
     register_devices(requests_mock, load_devices_fixture("devices_no_telemetry.json"))
 
     entry = await _setup_entry(hass, monkeypatch, config_entry_v3_data)
@@ -272,21 +204,7 @@ async def test_a_device_falling_silent_only_affects_its_own_entities(
     requests_mock: Any,
     config_entry_v3_data: dict[str, Any],
 ) -> None:
-    """
-    A device that falls silent keeps its last value; the other one updates.
-
-    This is what per-device degradation looks like after card M-03: not a
-    device whose own request failed (there is no per-device request any
-    more), but a device the API answered about and that has nothing to say.
-
-    Card M-06 decides what that device shows, and this test is where the
-    decision and its cost are both pinned. The state stays the last value
-    the device sent - decided with Piero, so that history stays continuous
-    and automations do not meet `unknown` on every gap - while
-    `last_measured_at` keeps the timestamp that value arrived with. That
-    pair is the whole design: the state looks current and the attribute
-    says it is not. The sibling device, which did report, moves both.
-    """
+    """A device falling silent keeps its last value and timestamp; the other one updates."""
     two_devices = load_devices_fixture("devices_two_devices.json")
     register_devices(requests_mock, two_devices)
     await _setup_entry(hass, monkeypatch, config_entry_v3_data)
@@ -319,15 +237,7 @@ async def test_a_500_costs_the_whole_cycle(
     requests_mock: Any,
     config_entry_v3_data: dict[str, Any],
 ) -> None:
-    """
-    Card M-03: with one call per cycle, a 5xx makes every entity unavailable.
-
-    Deliberately pinned, because it is the behaviour S-13 was written to
-    avoid - back when a 5xx could come from one device's own GET and the
-    other devices' data was still perfectly good. It cannot come from one
-    device any more: the request that failed is the one that would have
-    brought every device's telemetry, so there is nothing to keep.
-    """
+    """A 5xx costs the whole cycle: every entity goes unavailable."""
     register_devices(requests_mock, load_devices_fixture("devices_two_devices.json"))
     await _setup_entry(hass, monkeypatch, config_entry_v3_data)
     assert hass.states.get("sensor.bedroom_temperature").state != "unavailable"
@@ -347,17 +257,7 @@ async def test_a_403_stops_the_entry_instead_of_retrying_forever(
     requests_mock: Any,
     config_entry_v3_data: dict[str, Any],
 ) -> None:
-    """
-    Card M-02: a 403 on the poll is a reconfiguration, not a lost cycle.
-
-    The API refusing the domain persisted on this entry cannot be fixed by
-    retrying (the token is fine, the domain is not), so the coordinator
-    raises `ConfigEntryError` and Home Assistant stops polling - the entry
-    goes to `setup_error` with the translated message, instead of failing an
-    update every interval forever. It is deliberately not
-    `ConfigEntryAuthFailed`: no re-auth prompt appears, because the password
-    is not the problem.
-    """
+    """A 403 stops the entry with `ConfigEntryError`, and opens no re-auth prompt."""
     register_devices(
         requests_mock,
         load_dev_fixture("error__devices_foreign_domain"),
@@ -390,14 +290,7 @@ async def test_the_base_url_option_is_what_the_poll_talks_to(
     requests_mock: Any,
     config_entry_v3_data: dict[str, Any],
 ) -> None:
-    """
-    Card M-02: an entry with `base_url` in its options polls that host.
-
-    The wiring the advanced option exists for, asserted end to end:
-    options -> `RadoffCoordinator` -> `API`. Nothing is registered on the
-    default host, so a request that ignored the option would fail the poll
-    rather than quietly pass.
-    """
+    """An entry with `base_url` in its options polls that host, not the default."""
     other_host = "https://api.int.iot.radoff.life"
     register_devices(
         requests_mock,
@@ -448,14 +341,7 @@ def _make_coordinator(
 def _next_delay(
     coordinator: RadoffCoordinator, monkeypatch: pytest.MonkeyPatch
 ) -> float:
-    """
-    Return the delay, in seconds, this coordinator's next refresh asks for.
-
-    `RadoffCoordinator._schedule_refresh` swaps the delay it wants into
-    `update_interval` and delegates to `DataUpdateCoordinator`, so capturing
-    what the base class sees is exactly what a timer would have been armed
-    with - without arming one, and without a test that has to sleep.
-    """
+    """Return the delay, in seconds, this coordinator's next refresh asks for."""
     seen: list[float] = []
     monkeypatch.setattr(
         DataUpdateCoordinator,
@@ -471,14 +357,7 @@ async def test_two_coordinators_created_together_do_not_poll_together(
     monkeypatch: pytest.MonkeyPatch,
     config_entry_v3_data: dict[str, Any],
 ) -> None:
-    """
-    Card M-05 AC: two coordinators created in the same instant are offset.
-
-    The acceptance criterion in the card's own words ("Due coordinator
-    creati nello stesso istante non pollano nello stesso istante"). Nothing
-    here waits for a timer: what is pinned is the delay each one asks for,
-    which is what a timer would use.
-    """
+    """Two coordinators created in the same instant ask for different delays."""
     first = _make_coordinator(hass, config_entry_v3_data, entry_id="entry-one")
     second = _make_coordinator(hass, config_entry_v3_data, entry_id="entry-two")
 
@@ -491,13 +370,7 @@ async def test_the_offset_never_shortens_the_interval_below_what_was_asked(
     monkeypatch: pytest.MonkeyPatch,
     config_entry_v3_data: dict[str, Any],
 ) -> None:
-    """
-    The offset is added, never subtracted (card M-05).
-
-    A symmetric jitter would put an entry configured at the 60s floor at
-    54s, under the device cadence that floor exists to respect - so the
-    delay stays within [interval, interval + 10%).
-    """
+    """The offset is added, never subtracted: the delay stays in [interval, +10%)."""
     coordinator = _make_coordinator(hass, config_entry_v3_data, entry_id="entry-one")
 
     delay = _next_delay(coordinator, monkeypatch)
@@ -510,16 +383,7 @@ async def test_the_offset_of_an_entry_survives_a_restart(
     hass: HomeAssistant,
     config_entry_v3_data: dict[str, Any],
 ) -> None:
-    """
-    The same entry gets the same offset every time it is set up (M-05).
-
-    This is what makes the spread hold through the correlated events that
-    would otherwise undo it - a Home Assistant upgrade, a host reboot, an
-    outage everyone recovers from at once. A `random` draw would put every
-    installation that restarted together back in step; the offset is
-    derived from the entry_id instead, so rebuilding the coordinator is
-    indistinguishable from never having stopped.
-    """
+    """The same entry gets the same offset every time it is set up."""
     before = _make_coordinator(hass, config_entry_v3_data, entry_id="entry-one")
     after = _make_coordinator(hass, config_entry_v3_data, entry_id="entry-one")
 
@@ -531,16 +395,7 @@ async def test_a_long_backoff_pushes_only_the_next_cycle_out(
     monkeypatch: pytest.MonkeyPatch,
     config_entry_v3_data: dict[str, Any],
 ) -> None:
-    """
-    A backoff longer than the interval delays one cycle, and only one.
-
-    Card M-05, the scheduling half of M-02's 429 work. `update_interval`
-    itself must not move while this happens: the cycle timeout budget
-    (S-13) and this entry's jitter share are both derived from it, and
-    neither has any business changing because one cycle was rate limited.
-    (S-07's freshness threshold hung off it too, and was asserted here
-    until card M-06 removed the threshold itself.)
-    """
+    """A backoff longer than the interval delays one cycle, and leaves `update_interval` alone."""
     coordinator = _make_coordinator(hass, config_entry_v3_data, entry_id="entry-one")
     nominal = coordinator.update_interval
 
@@ -557,15 +412,7 @@ async def test_a_short_backoff_does_not_pull_the_next_cycle_forward(
     monkeypatch: pytest.MonkeyPatch,
     config_entry_v3_data: dict[str, Any],
 ) -> None:
-    """
-    The 429 backoff is a floor on the wait, never a replacement for it.
-
-    Card M-05. A single 429 asks for ~5s (RATE_LIMIT_BACKOFF_START), and
-    the next cycle was five minutes away regardless. Honouring the number
-    literally would poll a rate-limited backend *more* often than a healthy
-    one - which is the failure this assertion exists to prevent someone
-    reintroducing.
-    """
+    """A backoff shorter than the remaining wait does not pull the next cycle forward."""
     coordinator = _make_coordinator(hass, config_entry_v3_data, entry_id="entry-one")
 
     coordinator._rate_limit_delay = 5.0  # noqa: SLF001
@@ -579,27 +426,7 @@ async def test_a_429_skips_the_cycle_without_making_entities_unavailable(
     requests_mock: Any,
     config_entry_v3_data: dict[str, Any],
 ) -> None:
-    """
-    Card M-05 AC: a 429 skips the cycle and the next one runs normally.
-
-    Deliberately the opposite of `test_a_500_costs_the_whole_cycle` above,
-    and the difference is the point: a 5xx means the data could not be
-    fetched, a 429 means it was not asked for. The devices are still online
-    and still emitting once a minute, so their entities keep the previous
-    poll's readings instead of going `unavailable` - and the backoff the
-    client computed is carried into the next scheduling decision.
-
-    Card M-06 AC4 ("un 429 o un ciclo fallito non vengono confusi con un
-    device offline") lands on this test, and makes it stronger than M-05
-    could: back then the entities kept their readings only until those
-    readings aged past the freshness threshold, so a long rate-limited
-    stretch still ended in `unavailable`. There is no threshold now.
-    Availability is the device's `connection_status`, which a 429 does not
-    touch, so the entities also keep reporting `connected` with the
-    `last_measured_at` of the last cycle that succeeded - the rate limit is
-    visible as data that has stopped moving, never as a device that has
-    gone away.
-    """
+    """A 429 skips the cycle: the entities keep the previous readings and stay available."""
     register_devices(requests_mock, load_devices_fixture("devices_two_devices.json"))
     await _setup_entry(hass, monkeypatch, config_entry_v3_data)
     before_state = hass.states.get("sensor.bedroom_temperature")
@@ -615,7 +442,7 @@ async def test_a_429_skips_the_cycle_without_making_entities_unavailable(
     assert hass.states.get("sensor.bedroom_temperature").state == before
     assert hass.states.get("sensor.living_room_temperature").state != "unavailable"
 
-    # M-06 AC4: nothing about the rate limit reads as the device being gone.
+    # Nothing about the rate limit reads as the device being gone.
     bedroom = hass.states.get("sensor.bedroom_temperature")
     assert bedroom.attributes["connection_status"] == "connected"
     assert bedroom.attributes["last_measured_at"] == measured_at_before
@@ -633,14 +460,7 @@ async def test_a_429_on_the_very_first_poll_retries_the_setup(
     requests_mock: Any,
     config_entry_v3_data: dict[str, Any],
 ) -> None:
-    """
-    The one case where a 429 still fails a cycle (card M-05).
-
-    Keeping the previous poll's data needs a previous poll. At setup there
-    is none - and no entities to protect either - so the entry goes to
-    `setup_retry` and Home Assistant retries it, rather than completing a
-    setup with no data at all.
-    """
+    """A 429 on the very first poll sends the entry to `setup_retry`: there is nothing to keep."""
     register_devices(requests_mock, RATE_LIMIT_BODY, status_code=429)
     patch_authenticate_user(
         monkeypatch,
