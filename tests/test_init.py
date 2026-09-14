@@ -786,3 +786,74 @@ def test_the_arch_1x_domain_names_are_gone_from_the_code() -> None:
                 offenders.append(f"{path.name}:{getattr(node, 'lineno', '?')} {used}")
 
     assert not offenders, f"arch 1.x domain names still used: {offenders}"
+
+
+async def test_a_lost_registry_save_is_repaired_on_the_next_start(
+    hass: HomeAssistant, config_entry_v3_data: dict[str, Any]
+) -> None:
+    """
+    An entry already at version 3 whose entities were never re-keyed is put right.
+
+    Found on the verification instance, not by reasoning: the version bump
+    and the registry rewrite are two different stores with two different
+    save delays (one second against ten), so a start interrupted between
+    them records "version 3" on disk over a registry that was never
+    rewritten. Home Assistant then never calls the migration handler again,
+    because the versions match - and sixteen entities stay on arch 1.x
+    identifiers permanently, holding their history, while a fresh set
+    appears beside them.
+
+    The entry here has a domain, so setup gets past the guard and fails
+    later for want of a mocked API; what matters is that the entities are
+    already re-keyed by then.
+    """
+    entry = MockConfigEntry(
+        domain=DOMAIN, version=3, minor_version=1, data=config_entry_v3_data
+    )
+    entry.add_to_hass(hass)
+
+    device_id = _register_device(hass, entry, SERIAL_NOWPLUS)
+    registry = er.async_get(hass)
+    stranded = registry.async_get_or_create(
+        "sensor", DOMAIN, _legacy("eco2"), config_entry=entry, device_id=device_id
+    )
+
+    await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    assert (
+        registry.async_get(stranded.entity_id).unique_id
+        == f"{DOMAIN}-{SERIAL_NOWPLUS}-eco2"
+    )
+
+
+async def test_an_entry_without_a_domain_still_gets_its_entities_re_keyed(
+    hass: HomeAssistant, config_entry_v1_data: dict[str, Any]
+) -> None:
+    """
+    The re-keying runs before the domain guard, not after it.
+
+    An entry that reaches version 3 without a domain sits unloadable until
+    somebody gets round to the repair - which can be days. Its entities are
+    not waiting on anything: their new identifiers are computable from the
+    device registry alone, and leaving them on the old ones for the
+    duration would leave the user's history hanging on a thread for no
+    reason.
+    """
+    entry = MockConfigEntry(domain=DOMAIN, version=1, data=config_entry_v1_data)
+    entry.add_to_hass(hass)
+
+    device_id = _register_device(hass, entry, SERIAL_NOWPLUS)
+    registry = er.async_get(hass)
+    stranded = registry.async_get_or_create(
+        "sensor", DOMAIN, _legacy("tvoc"), config_entry=entry, device_id=device_id
+    )
+
+    assert not await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    assert entry.state is ConfigEntryState.SETUP_ERROR
+    assert (
+        registry.async_get(stranded.entity_id).unique_id
+        == f"{DOMAIN}-{SERIAL_NOWPLUS}-tvoc"
+    )

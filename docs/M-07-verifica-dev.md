@@ -265,6 +265,77 @@ cui il gestore venga invocato lo stesso (una minor version che cambia), ed
 Le tre cose si chiudono insieme, in M-08, su un ripristino che possa parlare
 con l'ambiente a cui le sue credenziali appartengono.
 
+## Un difetto che solo la passata a mano poteva trovare — 2026-09-14
+
+Rilanciando `./scripts/develop` sull'istanza di lavoro, dopo la passata
+descritta sopra, sono comparse due riparazioni invece di nessuna, e le 16
+entità erano **ancora su identificatori arch 1.x** benché la entry fosse a
+`VERSION 3.1`. Non era un caso limite immaginato: era successo.
+
+### Cosa è successo, dai timestamp
+
+| Ora | Fatto |
+|---|---|
+| 11:29:17 | la migrazione ri-chiava tutte e 16 le entità e porta le entry a versione 3 |
+| 11:29:18 | Home Assistant salva `core.config_entries` — **la versione 3 è su disco** |
+| — | il run finisce con `KeyboardInterrupt` |
+| — | `core.entity_registry` risulta scritto l'ultima volta **tre giorni prima**: il re-keying non è mai arrivato su disco |
+| 11:31 | riavvio: le entry sono già a versione 3, quindi Home Assistant **non chiama più il gestore di migrazione**, e quelle entità non le guarda nessuno mai più |
+
+Il bump di versione e la riscrittura del registro non sono una sola
+scrittura, e non sono nemmeno salvati con la stessa cadenza: Home Assistant
+persiste le config entry un secondo dopo la modifica e i registri dieci
+secondi dopo. Un riavvio, un crash o un `Ctrl+C` dentro quella finestra
+lascia su disco una entry che dice «migrata» sopra un registro che non lo
+è. E il danno è esattamente quello che questa card esiste per evitare: 16
+entità orfane con il loro storico attaccato, e 16 nuove che nascono
+accanto appena l'entry si carica.
+
+È un difetto della decisione 3 qui sopra — «l'entry va a VERSION 3 anche
+senza dominio» — che legava due scritture assumendole atomiche.
+
+### La correzione
+
+Il re-keying non dipende più dalla versione per sapere se è stato fatto:
+`async_setup_entry` lo esegue **a ogni avvio**, prima della guardia sul
+dominio. È idempotente per costruzione (calcola l'identificatore che
+scriverebbe e salta l'entità quando è già quello), quindi su una entry già
+a posto non compie nessuna scrittura e costa una scansione delle sue
+entità. Prima della guardia e non dopo, perché una entry senza dominio può
+restare non caricabile per giorni in attesa che qualcuno apra la
+riparazione, e le sue entità non stanno aspettando niente.
+
+Verificata sul soggetto migliore possibile: una copia dell'istanza **nello
+stato rotto**. Home Assistant non ha chiamato il gestore di migrazione
+(zero righe), il setup ha ri-chiavato tutte e 16, `entity_id` tutti fermi,
+nessuna entità creata. Due test nella suite coprono il caso: una entry già
+a versione 3 con entità arch 1.x, e una entry senza dominio le cui entità
+vengono comunque sistemate.
+
+## Perché le riparazioni falliscono sull'istanza di lavoro (e non è un difetto)
+
+Sull'istanza di lavoro le due riparazioni non arrivano in fondo, e i due
+messaggi sono diversi. Entrambi sono il residuo che M-04 ha documentato -
+`const.py` punta all'host **dev** ma al pool Cognito di **prod** - e non
+riguardano questa card:
+
+- l'utenza di dev riceve *«la password memorizzata non è più valida»*
+  (`invalid_auth`): le utenze dei due pool sono separate, quindi per il
+  pool di prod quell'account semplicemente non esiste;
+- l'utenza di produzione supera l'autenticazione (il pool è il suo) e poi
+  riceve *«impossibile raggiungere il servizio»* (`cannot_connect`): il
+  token è valido ma viene dal pool sbagliato per quell'host, e l'API di
+  dev lo rifiuta (M-01, `accepted_pool`).
+
+Nella copia di collaudo, con il pool di dev al posto di quello di prod, la
+stessa riparazione è andata a buon fine al primo colpo. Il messaggio della
+seconda è però più povero di quanto potrebbe essere: `list_domains()`
+traduce ogni risposta non-200 in `cannot_connect`, quindi «il token non
+vale per questo host» e «la rete non va» si leggono uguali. È una scelta
+ereditata da S-09, deliberata (dentro il config flow il rimedio è lo
+stesso), e resta tale - ma vale la pena saperlo prima di diagnosticare un
+ambiente misto.
+
 ## Cosa resta fuori, e dove
 
 - **Il ripristino di un backup di produzione contro il suo ambiente.** Vedi

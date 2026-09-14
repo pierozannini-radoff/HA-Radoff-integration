@@ -105,6 +105,15 @@ async def async_migrate_entry(hass: HomeAssistant, config_entry: ConfigEntry) ->
     the re-keying computes the identifier it would write and skips the
     entity when that is the identifier it already has - so a second pass
     over an already-migrated entry performs zero registry writes.
+
+    That idempotence is also what makes the re-keying safe to run outside
+    this function, which `async_setup_entry` does on every start. It has
+    to: the version bump here and the registry rewrite are two different
+    stores with two different save delays, so a start interrupted between
+    them would otherwise record "migrated" over entities that never were -
+    and this function would never be called again to notice. Keeping the
+    call here as well is not redundant: it is what re-keys an entry that
+    migrates and loads in the same start, before any entity is created.
     """
     _LOGGER.debug(
         "Checking radoff config entry %s for migration (version=%s.%s)",
@@ -524,6 +533,30 @@ async def async_setup_entry(
 ) -> bool:
     """Set up Example Integration from a config entry."""
     _LOGGER.debug("Radoff async_setup_entry")
+
+    # Card M-07, and the reason this runs here and not only inside
+    # `async_migrate_entry`: the version bump and the registry rewrite are
+    # not one write, and they are not even saved on the same schedule.
+    # Home Assistant persists config entries a second after they change and
+    # the entity registry ten seconds after; a restart, a crash or a Ctrl+C
+    # inside that window leaves an entry that says "version 3" on disk over
+    # a registry that was never rewritten - and since Home Assistant only
+    # calls the migration handler when the versions differ, the next start
+    # would never look at those entities again. Seen for real on the
+    # verification instance (docs/M-07-verifica-dev.md): sixteen entities
+    # left on arch 1.x identifiers, permanently, with their history
+    # attached to them and a fresh set of entities about to appear beside
+    # them - the exact damage this card exists to prevent.
+    #
+    # Running it at every setup closes that window: the re-keying is
+    # idempotent by construction (it computes the identifier it would write
+    # and skips the entity when that is the one it already has), so a pass
+    # over an already-migrated entry performs no registry write at all and
+    # costs one scan of that entry's entities. It runs *before* the domain
+    # guard below on purpose - an entry with no domain still has entities
+    # to put right, and it may sit there unloadable until someone gets
+    # round to the repair.
+    _async_migrate_unique_ids_to_serial(hass, config_entry)
 
     # Card RT-2926 / finding T-06/F1. Every entry created by the released
     # version reaches this point without a domain (see `async_migrate_entry`
