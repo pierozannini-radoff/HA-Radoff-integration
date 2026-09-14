@@ -38,6 +38,30 @@ This runs `ruff format .` followed by `ruff check . --fix`, using the rules
 in `.ruff.toml`. CI runs the equivalent checks on every pull request; please
 run this locally before opening one.
 
+## Comments
+
+Code under `custom_components/` ships to users through HACS, where it is read
+by people who have no access to our issue tracker. Comment it as a library,
+not as a work log.
+
+Keep what answers **what this does**, and **which external constraint that
+isn't visible in the code forces it to do it that way** - the API's shared
+request quota, a device's reporting cadence, a field the backend sends
+without a unit. Drop what answers **how we got here**.
+
+- Module docstring: one line; up to three only for a contract the signatures
+  don't show. Class, function and method docstrings: one imperative line,
+  with `Args`/`Returns`/`Raises` only where the signature isn't enough.
+- Inline comments: only where the code looks wrong and isn't. Two lines at
+  most, present tense, about behaviour rather than about the choice.
+- Never write an internal identifier - a ticket key, a commit hash, a path to
+  a file we don't distribute - or a narrative turn: "previously", "used to",
+  "unlike", "this card", "introduced by", "now that", "we decided".
+
+The rationale belongs in the ticket, which has a date and an author. A
+comment that outlives the behaviour it describes costs more than no comment
+at all.
+
 ## Tests
 
 This repository has an automated `pytest` suite under `tests/`, built on

@@ -564,7 +564,7 @@ async def test_an_unknown_connection_status_warns_once(
         if record.levelname == "WARNING" and "evaporated" in record.getMessage()
     ]
     assert len(warnings) == 1
-    assert "T-08" in warnings[0].getMessage()
+    assert "KNOWN_CONNECTION_STATUSES" in warnings[0].getMessage()
 
     for entity_id in (
         "sensor.living_room_temperature",

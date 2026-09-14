@@ -22,23 +22,8 @@ from .schema import MeasureSpec
 
 _LOGGER = logging.getLogger(__name__)
 
-# Measures whose entity is created but left disabled in the entity registry.
-#
-# `aqi_value` is here for one reason, and it is a backend bug rather than a
-# preference: the AQI's temperature component is computed with a divisor of
-# 120 that does not belong there (`aqi_calculator.py`, faithful to a legacy
-# implementation, while `internal_temperature` already arrives in °C), so
-# the published index is systematically wrong - T-08 D-08, still open.
-#
-# Disabled is the right shape for "wrong but not absent": the entity exists,
-# a user who wants it can enable it in one click, and nothing about it is
-# invented. When the backend fixes the divisor we flip this default back and
-# every installation picks the change up on upgrade - no migration, no
-# re-keying, no entity appearing or disappearing under anyone.
-#
-# The qualitative sibling goes with it: `aqi_value_index` bands the very
-# same wrong number, so leaving it enabled would surface the defect through
-# the back door, phrased as a reassuring word.
+# Created but disabled: the AQI's temperature component is divided by 120 on
+# a value already in °C, so the published index is systematically wrong.
 DISABLED_BY_DEFAULT = frozenset({"aqi_value"})
 
 
@@ -64,53 +49,22 @@ def _device_sensors(
     coordinator: RadoffCoordinator, device: RadoffDevice
 ) -> Iterator["RadoffSensor"]:
     """
-    Yield every entity of one device, driven by its type's schema (card M-04).
+    Yield every entity of one device, driven by its type's schema.
 
-    The order of business is the schema's, not the payload's: the measures
-    `/analytics/measures-ranges` declares for this device *type*, already
-    sorted by `pos` (`schema.py::build_specs`). Two consequences, both
-    intended:
+    The schema's order, not the payload's, so a declared measure absent from
+    this poll still gets its entity - showing its last known value, or
+    `unknown`. The schema is served per type, so a device with a measure
+    switched off on the instance gets an entity that stays empty: from here
+    that is indistinguishable from a field not sent yet.
 
-    1. A declared measure absent from this poll still gets its entity. Card
-       M-06 changed what that entity shows: it stays *available* as long as
-       the device reports itself connected, and shows the last value it
-       knew (restored across restarts, see `RadoffSensor`) or `unknown` if
-       it never knew one - where before M-06 it was `unavailable`. A device
-       that is briefly quiet therefore keeps both a stable set of entities
-       and a continuous history.
-    2. A device whose *instance* has a measure switched off in its
-       `deviceConfig` gets an entity that is always empty. That is the known
-       cost of a schema served per type (T-08 D-12, out of scope for this
-       card): there is no per-device schema endpoint yet, and when there is,
-       the filter belongs right here.
-
-       M-06 makes the cost concrete and permanent, which is worth stating
-       plainly rather than leaving for someone to discover: from inside
-       this integration a switched-off measure is indistinguishable from a
-       device that has simply not sent that field yet, so whatever we show
-       for "no value right now" is what these entities will show forever.
-       That is `unknown`, on an available entity - never a value, since
-       there is no last value to remember. An always-`unknown` entity is
-       the honest rendering of "the type declares this measure and this
-       unit does not produce it", and it is visible in the UI, which is
-       what makes the eventual per-device filter easy to justify.
-
-    Then, after them, any telemetry field the schema does *not* declare -
-    read as a bare number with no unit, no device class and no qualitative
-    band. `radon_status` is the field this exists for: T-08 D-10 is still
-    open, so the enumeration behind its value is unknown, and the honest
-    thing is to publish the raw state and say so rather than invent labels
-    for it. (It arrives only if it is numeric at all: `_build_readings`
-    keeps numeric telemetry, and the swagger declares `radon_status` a
-    string while the sample payload shows `2` - the other half of D-10.)
+    Then any telemetry field the schema does not declare, as a bare number
+    with no unit, device class or bands.
     """
     specs = coordinator.schemas.get(device.device_type) or {}
 
     if not specs:
-        # No schema for this type: unknown to the catalogue, or a device
-        # entry with no `type` at all. The device is kept and so is its
-        # data - see `coordinator.py::async_load_schemas`, which already
-        # logged the WARNING naming the type and the valid ones.
+        # Unknown to the catalogue, or a device with no `type` at all. The
+        # device and its data are kept; the warning is logged at load time.
         _LOGGER.debug(
             "No measurement schema for device %s (type '%s'): building its "
             "entities from telemetry alone",
@@ -145,53 +99,21 @@ class RadoffSensor(RadoffEntity, RestoreSensor):
     """
     A sensor representing a Radoff reading (raw value or qualitative index).
 
-    `device_info`, `unique_id`, `available` and the coordinator update
-    handling all now live in `RadoffEntity` (card S-07): this class only adds
-    the sensor-specific value/unit/state-class semantics and the "-index"
-    variant on top.
+    Unit, device class, thresholds and qualitative states all come from the
+    `MeasureSpec` the API served for this device's type. `spec` is `None` for
+    a telemetry field the schema does not describe: a bare number, named
+    after its own field.
 
-    Card M-04 makes it schema-driven. Everything it used to read from a
-    table in this module - the unit, the device class, the thresholds, the
-    set of qualitative states - now comes from the `MeasureSpec` the API
-    served for this device's type, and the only thing left hardcoded is the
-    mapping between the API's vocabulary and Home Assistant's
-    (`schema.py::HA_UNITS`, `schema.py::DEVICE_CLASSES`), which is a
-    translation, not a table of values.
+    This class keeps the one piece of state `RadoffEntity` refuses to: the
+    last value published and the timestamp it arrived with. An available
+    entity has to show something, and silence is not absence, so it shows the
+    last known value rather than `unknown` and history stays continuous. The
+    cost is a value that can be arbitrarily old while the state looks
+    current; `last_measured_at` always carries the timestamp of the value
+    actually shown.
 
-    `spec` is `None` for a telemetry field the schema does not describe (see
-    `_device_sensors`): a bare number, named after its own field.
-
-    Card M-06 gives this class one piece of state, and it is the deliberate
-    exception to `RadoffEntity`'s "nothing is cached" rule (see that
-    module's docstring): the last value this entity published, with the
-    timestamp that came with it. It exists because availability and the
-    presence of a value came apart. A connected device with
-    `telemetry: null` now has available entities - the API's device list
-    looks at a 6-hour window and does not widen it on a miss (T-02 D-16),
-    so silence is not absence - and an available entity has to show
-    something. Decided with Piero: it shows the last known value rather
-    than `unknown`, so history stays continuous and automations that read
-    the state keep reading a number across a gap.
-
-    The cost is real and is not hidden: a value can be arbitrarily old
-    while the state looks current, and radon - slower than its siblings by
-    design (T-08 D-15) - is where that will show first. The mitigation is
-    the `last_measured_at` attribute, which always carries the timestamp of
-    the value actually being shown and never borrows a fresher one from
-    another field (see `measured_at` below). It is an attribute, so a
-    threshold automation will not see it; that is the trade this card
-    accepted knowingly, and the reason the alternative (`unknown` on every
-    gap) is written down here rather than only in the card.
-
-    One seam is left, and it is worth naming rather than discovering. A
-    measure *is* named through `translation_key`, so a measure the backend
-    adds after this release gets an entity whose translation does not exist
-    yet: Home Assistant logs that and leaves the entity unnamed (it falls
-    back to the device's own name). It cannot be papered over from here -
-    setting `_attr_name` as a fallback would override the translation for
-    every measure, not just the missing one - and it is caught early on
-    purpose instead: `test_translations.py` fails the moment a schema
-    fixture declares a measure the three translation files do not cover.
+    A measure is named through `translation_key`, so one the backend adds
+    after this release arrives unnamed until its translation does.
     """
 
     def __init__(
@@ -213,19 +135,14 @@ class RadoffSensor(RadoffEntity, RestoreSensor):
         self._spec = spec
         self._is_index = is_index
 
-        # Card M-06: the last value published by this entity and the
-        # timestamp it arrived with. Seeded from the entity's own restored
-        # state in `async_added_to_hass`, refreshed on every poll that
-        # carries a reading, and read by `native_value` on every poll that
-        # does not.
+        # The last value published, refreshed by every poll that carries a
+        # reading and read by every poll that does not.
         self._last_native_value: int | float | str | None = None
         self._last_measured_at: datetime | None = None
 
         if spec is None:
-            # Nothing describes this field, so there is nothing to translate
-            # it with: a translation key with no entry behind it would leave
-            # the entity nameless. The field name, spaced out, is a worse
-            # label than a real translation and a much better one than none.
+            # A translation key with nothing behind it leaves the entity
+            # nameless, so the spaced-out field name stands in.
             self._attr_translation_key = None
             self._attr_name = name.replace("_", " ").capitalize()
         else:
@@ -242,18 +159,10 @@ class RadoffSensor(RadoffEntity, RestoreSensor):
 
     async def async_added_to_hass(self) -> None:
         """
-        Register with the coordinator, then recover the last value (card M-06).
+        Register with the coordinator, then recover the last value.
 
-        `super()` is what wires the coordinator listener (`CoordinatorEntity`)
-        and the restore machinery (`RestoreSensor`); both run because every
-        class in the chain calls it in turn.
-
-        Order matters on the two lines that follow. The stored value is
-        recovered first and the current poll is remembered second, so a
-        restart that lands on a device already reporting a value keeps the
-        fresh one and only an entity with nothing in this poll falls back to
-        what it had before the restart. Restoring after the poll would
-        reinstate a value from the previous run over one just received.
+        The order of the last two lines matters: restoring after remembering
+        would reinstate a value from the previous run over one just received.
         """
         await super().async_added_to_hass()
         await self._restore_last_value()
@@ -263,18 +172,10 @@ class RadoffSensor(RadoffEntity, RestoreSensor):
         """
         Seed the value cache from this entity's own state before the restart.
 
-        Card M-06. `RestoreSensor` gives back the typed native value, which
-        is what the cache holds - a number for a measure, the qualitative
-        string for an index - so nothing has to be re-derived or re-parsed
-        into the right type. The timestamp comes from the restored *state's*
-        attributes instead, because it is published as an attribute
-        (`last_measured_at`) rather than as part of the sensor's stored
-        data: recovering both is what keeps a restored value from looking
-        like it was measured at the moment of the restart.
-
-        Silently tolerant of everything a restore can be missing: a first
-        run, a new entity, a purged recorder database. The cache simply
-        stays empty and the entity shows `unknown` until a value arrives.
+        The value comes back typed from `RestoreSensor`; the timestamp comes
+        from the restored state's attributes, where it is published, so a
+        restored value does not look measured at the moment of the restart.
+        Everything a restore can be missing leaves the cache empty.
         """
         stored = await self.async_get_last_sensor_data()
         if (
@@ -303,15 +204,10 @@ class RadoffSensor(RadoffEntity, RestoreSensor):
         """
         Copy this poll's value into the cache, or leave the cache alone.
 
-        Card M-06. Called before every state write rather than from inside
-        `native_value`: a property that mutates the entity on read is a
-        property that behaves differently depending on who looked at it,
-        and this one is read by the state machine, by templates and by
-        diagnostics.
-
-        A poll with no reading for this entity is not an erasure - it is
-        the case the cache exists for - so the previous value and its
-        timestamp stay exactly as they are.
+        Called before every state write rather than from `native_value`,
+        which is read by the state machine, templates and diagnostics alike
+        and must not mutate the entity. A poll with no reading is the case
+        the cache exists for, not an erasure.
         """
         value = self._live_native_value()
         if value is None:
@@ -324,13 +220,8 @@ class RadoffSensor(RadoffEntity, RestoreSensor):
         Return the value this poll carries for this entity, or `None`.
 
         The reading-to-state conversion, with no memory in it: `None` means
-        this poll has nothing for this entity, never "the value is
-        unknown".
-
-        Card M-03 removed the `normalize_fn` hook this used to apply: arch
-        2.0 sends each value in the unit it declares, so the raw value is
-        the value. Card M-04 confirms it from the other end - the schema
-        carries no `scaleFactor`, deliberately (see `schema.py`).
+        this poll has nothing for this entity, never "the value is unknown".
+        No scaling is applied - values arrive in the unit they declare.
         """
         reading = self._reading
         if reading is None:
@@ -348,26 +239,11 @@ class RadoffSensor(RadoffEntity, RestoreSensor):
         """
         Return this poll's value, or the last one this entity published.
 
-        Card M-06, and the fallback is the card's decision rather than a
-        defensive habit. Until M-06 a missing reading meant the entity was
-        `unavailable` (S-07) and this return value was only there to avoid
-        raising; now a connected device with no telemetry has available
-        entities, because the API's device list looks at a 6-hour window
-        and answers `telemetry: null` for anything quieter (T-02 D-16), and
-        the question of what those entities show had to be answered.
-        Decided with Piero: the last known value, restored across restarts,
-        so that history stays continuous and automations reading the state
-        do not have to special-case `unknown` on every gap.
-
-        `None` - rendered as `unknown` by Home Assistant - is what is left
-        when there is no last value at all: a brand new entity, or one for
-        a measure the device's type declares and this particular unit never
-        produces (T-08 D-12, see `_device_sensors`), which will show
-        `unknown` for as long as that stays true.
-
-        What this deliberately does not do is make the value look fresh:
-        `measured_at` below reports the timestamp of the value being shown,
-        not of the poll that failed to update it.
+        The fallback keeps history continuous across a quiet device, so
+        automations do not have to special-case `unknown` on every gap.
+        `None` is left only when there is no last value at all. It does not
+        make the value look fresh: `measured_at` reports the timestamp of the
+        value being shown.
         """
         live = self._live_native_value()
         return live if live is not None else self._last_native_value
@@ -377,18 +253,10 @@ class RadoffSensor(RadoffEntity, RestoreSensor):
         """
         Return the timestamp of the value this entity is actually showing.
 
-        Card M-06. With a reading in this poll it is that reading's
-        timestamp, straight from the base class. Without one - the entity
-        is showing a remembered value - it is the timestamp that value
-        arrived with, which is the entire mitigation for showing an old
-        value as current state: `last_measured_at` ages while the state
-        does not, so a support case can see a three-day-old radon figure
-        for what it is.
-
-        Never borrows the device's `telemetry_timestamp` for a field this
-        poll did not carry (the base class dropped that fallback for the
-        same reason): on a device that reported other measures, that would
-        stamp a fresh timestamp on a value that has not moved.
+        A remembered value keeps the timestamp it arrived with, so the
+        attribute ages while the state does not and an old radon figure is
+        visible for what it is. The device's own telemetry timestamp is never
+        borrowed: it would stamp a fresh time on a value that has not moved.
         """
         if self._reading is not None:
             return super().measured_at
@@ -396,30 +264,14 @@ class RadoffSensor(RadoffEntity, RestoreSensor):
 
     @property
     def native_unit_of_measurement(self) -> str | None:
-        """
-        Return the unit the API declared for this measure, in Home Assistant terms.
-
-        `None` for an index entity (an enum has no unit), for a field with no
-        schema, and for a unit that has no Home Assistant equivalent - the
-        AQI's empty string, tvoc's `V - Ix`, or a unit this integration has
-        never seen, which `schema.py::resolve_ha_unit` has already warned
-        about by the time this is read.
-        """
+        """Return the unit the API declared, in Home Assistant's own terms."""
         if self._is_index or self._spec is None:
             return None
         return None if self._spec.ha_unit is None else str(self._spec.ha_unit)
 
     @property
     def state_class(self) -> str | None:
-        """
-        Return state class.
-
-        `measurement` for every numeric reading, including the ones with no
-        device class (`radon_bqm3`, `aqi_value`, `ch4`, `tvoc`): the state
-        class is what makes a value a measurement Home Assistant can record
-        statistics for, and it is independent of whether a device class
-        fits. An index entity is an enum and has none.
-        """
+        """Return the state class: every numeric reading is a measurement."""
         if self._is_index:
             return None
         return SensorStateClass.MEASUREMENT
@@ -429,17 +281,10 @@ class RadoffSensor(RadoffEntity, RestoreSensor):
         """
         Add the measure's own labels to the attributes the base class exposes.
 
-        The base class contributes the four diagnostic fields of card M-06
-        (`last_measured_at`, `connection_status`,
-        `connection_status_updated_at`, `status`); these two are the
-        sensor-specific half.
-
-        `measure_label`/`measure_acronym` are what `/analytics/measures-
-        ranges` calls this measure ("Volatile organic compounds", "TVOC").
-        They are attributes rather than the entity name on purpose: the name
-        stays translated through `translation_key`, in the user's own
-        language, while these two say what the backend called it - which is
-        what a support conversation needs when the two disagree.
+        `measure_label` and `measure_acronym` are what the API calls this
+        measure. They are attributes, not the entity name: the name stays
+        translated in the user's language, while these say what the backend
+        called it - which is what a support case needs when the two disagree.
         """
         attributes = super().extra_state_attributes or {}
         if self._spec is None:

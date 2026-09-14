@@ -438,4 +438,4 @@ def test_a_nested_life_is_logged_and_produces_no_device(
         "E754F0",
     }
     assert "855894" in caplog.text
-    assert "T-08 D-33" in caplog.text
+    assert "does not model" in caplog.text

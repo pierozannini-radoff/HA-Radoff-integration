@@ -1,42 +1,8 @@
 """
-Diagnostics support for the radoff integration (card S-17).
+Diagnostics support for the radoff integration.
 
-Before this card, the only support channel was pasting raw Home Assistant
-logs into an issue - and the raw log contains, today, the full device
-payload (finding S5), error response bodies including 401s (S6), and
-domain UUIDs at INFO level (S7). Card S-03 removes those from the log, but
-that leaves support with no diagnostic tool at all: this module is the
-replacement, not an addition.
-
-`async_get_config_entry_diagnostics` dumps the config entry (`entry.as_dict()`)
-and the coordinator's last successful `RadoffData`, then redacts everything
-that identifies the user or their account via `TO_REDACT` before returning -
-`async_redact_data` walks the whole structure recursively, so a leftover
-identifier nested anywhere in `entry.data`/`entry.options`/the runtime dump
-is still caught, not just at the top level.
-
-`RadoffData.devices[*].readings` is dumped field by field rather than with
-`dataclasses.asdict()`: only `value` and `measured_at` are needed to
-diagnose the runbook's three cases (zero entities, entity unavailable, auth
-error), and the card's own instruction is explicit that this is allowed ("i
-VALORI dei sensori si possono includere, non sono dati personali; gli
-identificatori no").
-
-Card M-03 follows the model through. Readings are keyed by telemetry field
-name, since that is the key now (no more buckets, no more
-`reading_key_slug`), and the device dump carries what arch 2.0 actually
-reports - the serial as the only identity, plus the connection and firmware
-fields the payload gained. `connection_status` in particular is here
-*before* anything consumes it (M-06 does): a support dump that shows a
-device `connected` with no telemetry, or `disconnected` with fresh
-telemetry, is what tells those two situations apart.
-
-Card M-06 adds `status` beside it, and now both are worth having for a
-second reason: entity availability is decided from `connection_status`
-alone, so a dump is where you check whether a device reported unavailable
-really said `disconnected` - or said something this version has never seen
-and was kept available on purpose (`ConnectionState.INDETERMINATE`,
-`api/models.py`).
+The config entry and the coordinator's last data, with everything
+identifying the user redacted. Sensor values are kept: not personal data.
 """
 
 from __future__ import annotations
@@ -55,29 +21,8 @@ if TYPE_CHECKING:
     from . import RadoffConfigEntry
     from .api.models import RadoffDevice, Reading
 
-# Keys redacted anywhere they appear in the dumped structure (S-17 "COSA
-# FARE"). `serial_number` is the dict key `_dump_device` below emits, chosen
-# to match this set rather than a translation table, so `async_redact_data`'s
-# plain key-name matching catches it.
-#
-# Card M-03 adds `serial_number` and keeps `device_id`/`serial`, which
-# nothing emits any more: arch 2.0 has no device UUID and the model field is
-# named `serial_number` now. They stay because this set is also walked over
-# `entry.as_dict()`, whose contents come from whatever a config entry
-# happened to be written with - including entries created before this
-# migration.
-#
-# Card M-07 adds `domain_prefix` for the same reason `domain_id` was here:
-# it identifies the customer's tenant, which is not this integration's to
-# put in a file a user attaches to a public issue. `domain_id` stays next to
-# it under the rule above - an entry written before the version-3 migration
-# still has one on disk, and a diagnostics dump is taken from whatever is
-# actually there.
-#
-# The third field S-17's successor list named - coordinates - has nothing to
-# redact: the arch 2.0 device model carries none (see `api/models.py`), and
-# `_dump_device` emits no location of any kind. Noted rather than guessed
-# at, so the next reader does not go looking for the omission.
+# Redacted anywhere they appear, matched by plain key name. Keys nothing
+# emits now are kept: this also walks whatever the entry was written with.
 TO_REDACT = {
     "password",
     "username",

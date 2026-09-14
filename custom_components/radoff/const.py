@@ -9,243 +9,74 @@ _LOGGER = logging.getLogger(__name__)
 DOMAIN = "radoff"
 CONF_POOL_ID = "pool_id"
 CONF_POOL_REGION = "pool_region"
-# Default poll interval, in seconds (card M-05). Raised from 60 to 300 now
-# that T-02 has answered: five minutes is one request per cycle against a
-# quota of 50 req/s steady (100 burst) shared, per stage, by the mobile app,
-# the web app and every integration - and it is above the horizon at which
-# the device itself has anything new to say (see MIN_SCAN_INTERVAL below).
-# Polling faster does not produce fresher data, it only spends someone
-# else's quota.
+
+# Default poll interval, in seconds: one request per cycle against a quota of
+# 50 req/s shared, per stage, with Radoff's own apps.
 DEFAULT_SCAN_INTERVAL = 300
 
-# Floor for the OptionsFlow's scan_interval, in seconds. Card S-11 raised it
-# from 10 to 30 and said so in as many words: "a provisional, defensible
-# floor, not a value derived from any confirmed rate limit - revisit once
-# T-02 actually answers question 6". T-02 has now answered (card M-05), and
-# the answer moves the floor to 60 for a reason that is not the one S-11
-# guessed at.
-#
-# The binding number is the *device* cadence, not a rate limit and not a
-# cache TTL: a Radoff device emits one message per minute, and the radon
-# figure it carries is aggregated over at least five minutes. Below 60s
-# there is simply nothing new to fetch - the same reading comes back, at
-# full price. (The 60s TTL quoted in the swagger docs is on Aurora's device
-# row, not on the telemetry; reading it as a freshness bound is what had led
-# this project to the wrong conclusion.)
-#
-# The rate limit T-02 did report - 50 req/s steady, 100 burst, per stage,
-# shared across every client of the API, with no per-user and no per-IP
-# allowance and no WAF - is what makes the floor non-negotiable rather than
-# advisory: there is no headroom reserved for this integration to spend, and
-# nothing upstream that would absorb a swarm of installations polling as
-# fast as the form lets them.
+# Floor for the poll interval, set by the device cadence rather than by any
+# rate limit: a device emits one message per minute, radon every five.
 MIN_SCAN_INTERVAL = 60
 
-# Upper bound for the OptionsFlow's scan_interval NumberSelector (card
-# S-11). Not a backend requirement, just a sane ceiling so the form can't be
-# set to something the user would forget about (e.g. once a day).
+# Ceiling for the poll interval, so the form cannot be set to once a day.
 MAX_SCAN_INTERVAL = 3600
 
 CONF_INDEX = "generate_index"
 
-# Current config entry version, and the single place it is written down
-# (card M-07). `config_flow.py` stamps new entries with it and
-# `__init__.py::async_migrate_entry` migrates old ones up to it, and those
-# two disagreeing is a defect that shows up only on someone else's
-# installation - a fresh entry sent through a migration it does not need, or
-# an old one never migrated at all.
-#
-# 3 is the arch 2.0 shape: `domain_prefix` instead of the `domain_id` UUID
-# in `data`, and every entity keyed on `radoff-{serial}-{measure}`. The
-# minor version goes back to 1 with it: the 2.2 it counted was RT-2927's AQI
-# re-keying step, which the version-3 migration absorbs.
+# Current config entry version, and the single place it is written down.
 CONFIG_ENTRY_VERSION = 3
 CONFIG_ENTRY_MINOR_VERSION = 1
 
-# The tenant domain persisted on a config entry (card M-07).
-#
-# It replaces `CONF_DOMAIN_ID` ("domain_id"), which held the arch 1.x
-# domain UUID. In arch 2.0 the domain is a human-readable `domain_prefix`
-# travelling as a query parameter on every domain-scoped call (T-02 D-03,
-# and `api/client.py::_domain_params`, which has been calling its argument
-# `domain_prefix` since card M-02 while still being handed a UUID from
-# here). The UUID is not convertible into a prefix - there is no offline
-# mapping between the two and arch 2.0 does not know the UUID at all - so
-# the rename is also a migration: see `async_migrate_entry` (__init__.py),
-# where an entry carrying the old key is sent to the Repairs flow rather
-# than translated in place.
+# The tenant domain persisted on a config entry: a human-readable prefix,
+# passed as a query parameter on every domain-scoped call.
 CONF_DOMAIN_PREFIX = "domain_prefix"
 
-# Base URL of the arch 2.0 API (card M-02). This is the single place the
-# integration knows a host: in arch 2.0 the version lives in the *hostname*,
-# not in the path (there is no `/v2/...` prefix), so pointing the client at
-# another environment means pointing it at another host - prod is
-# `v2.api.iot.radoff.life`, stg `v2.api.stg.iot.radoff.life`, int
-# `api.int.iot.radoff.life` (that one without the `v2.` prefix). Deliberately
-# NOT an environment->host mapping: T-02 D-01 established that 1.x and 2.0
-# are two separate API Gateways on different hosts and coexist natively, so
-# there is no cut-over date to prepare for and no reason for the client to
-# carry more than the one host it actually talks to.
-#
-# It stays on dev for the whole duration of the migration (T-02 D-01:
-# development, tests and validation all happen on dev, where InfluxDB and
-# `/analytics/*` are deployed), and can be overridden per config entry from
-# the options flow's advanced field (`CONF_BASE_URL` below), so reaching
-# stg/prod later needs no code change.
+# Base URL, and the single place a host is written down: the API version
+# lives in the hostname, so another environment is another host.
 DEFAULT_BASE_URL = "https://v2.api.dev.iot.radoff.life"
 
-# Options key holding a per-entry override of `DEFAULT_BASE_URL` (card M-02).
-# Lives in `options`, not `data`: it is not connection *identity* (the
-# account is), it is where to reach the API, and it must be editable without
-# re-adding the integration. Only offered when Home Assistant's advanced
-# mode is on (see `RadoffOptionsFlow`, config_flow.py) - decided with Piero:
-# a normal user has no reason to see it, and unlike the Cognito parameters
-# S-02 removed, it deliberately does NOT come back as a config-flow field.
+# Per-entry override of `DEFAULT_BASE_URL`. In `options`, not `data`: it is
+# where to reach the API, not connection identity.
 CONF_BASE_URL = "base_url"
 
-# HTTP 429 backoff (card M-02; T-02 D-21/D-22). The 429 is generated by API
-# Gateway, not by the application: body `{"message": "Too Many Requests"}`
-# and **no** `Retry-After` header, so the delay is entirely ours to choose.
-# The backend's own instruction is to treat it as "skip this cycle", with an
-# exponential backoff plus jitter starting at ~5s, and never as "retry now"
-# - an immediate retry is what makes a saturated stage worse, which is also
-# why 429 is no longer in the `Retry` status_forcelist (api/client.py).
-# `RATE_LIMIT_BACKOFF_MAX` caps the exponential growth at 5 minutes, the
-# default poll interval arch 2.0 aims for, so a long rate-limited stretch
-# degrades to "one attempt per cycle" rather than to silence.
+# HTTP 429 backoff. The response carries no `Retry-After`, so the delay is
+# this client's to choose; the cap is one poll interval.
 RATE_LIMIT_BACKOFF_START = 5
 RATE_LIMIT_BACKOFF_MAX = 300
 
-# Fraction of the computed backoff drawn at random and subtracted from it
-# (card M-02): thousands of installations hitting the same 429 must not come
-# back in lockstep. 0.25 keeps the delay within [0.75, 1.0] of the nominal
-# value - spread enough to break the alignment, never below the ~5s floor by
-# more than a quarter.
+# Fraction of the backoff drawn at random and subtracted, so installations
+# hitting the same 429 do not come back in lockstep.
 RATE_LIMIT_BACKOFF_JITTER = 0.25
 
-# Fraction of the poll interval drawn once per config entry and *added* to
-# every cycle, so that two installations configured identically do not poll
-# in lockstep (card M-05). An explicit request from the backend team, and
-# the reason is arithmetic rather than defensive: thousands of entries at a
-# flat 300s all fire on the round minute they happened to start on, which
-# turns a load the shared quota can absorb on average into a periodic spike
-# it cannot. Spreading the *period* (300s -> 300..330s per entry), not just
-# the first poll, keeps them apart permanently instead of only until a
-# restart re-aligns them.
-#
-# Deliberately one-sided, unlike RATE_LIMIT_BACKOFF_JITTER above which is
-# subtracted: a symmetric +-10% would put an entry configured at
-# MIN_SCAN_INTERVAL at 54s, under the device cadence that floor exists to
-# respect. Adding only ever costs the backend less than the nominal rate.
-#
-# The draw itself is stable per entry, not per cycle - see
-# `RadoffCoordinator.poll_jitter` (coordinator.py) for why it is derived
-# from the entry_id rather than from `random`.
+# Fraction of the poll interval drawn once per entry and added to every
+# cycle. One-sided: subtracting would breach the floor above.
 POLL_JITTER_FRACTION = 0.10
 
-# Repairs issue raised when a config entry carries no `domain_prefix` at
-# all (card RT-2926, finding T-06/F1; renamed by card M-07). `domain_id`
-# was born with the multi-domain discovery of S-01/RT-2803, in the same
-# milestone that introduced config entry VERSION 2: no entry created by the
-# released version (30e0cde) can possibly contain it, and
-# `async_migrate_entry` (__init__.py) deliberately does not go online to
-# invent one. The entry is therefore left in an explicit setup error and
-# this issue is what carries the user to the fix flow in `repairs.py`,
-# where the domain is discovered (and, when ambiguous, chosen)
-# interactively.
-#
-# Card M-07 widens who reaches it. It is no longer only the entry that
-# never had a domain: an entry created in QA against arch 1.x carries a
-# `domain_id` UUID, which arch 2.0 cannot use and cannot translate, so it
-# arrives here too. What all of them have in common is the only thing the
-# issue says out loud - this entry does not know which domain to poll, and
-# only the user can settle it.
+# Repair for an entry with no usable domain: it does not know which domain to
+# poll, and only the user can settle it.
 ISSUE_MISSING_DOMAIN_PREFIX = "missing_domain_prefix"
 
-# Repairs issue raised when the API answers 403 on the domain persisted in
-# the entry (card M-07, completing the note M-02 left on
-# `ERROR_DOMAIN_ACCESS_DENIED` below).
-#
-# Same fix flow as the issue above and deliberately a *different* issue id:
-# the two are the same repair but not the same sentence. "This entry never
-# had a domain" and "the account lost access to the domain it had" send the
-# user to the same form, and telling them apart is what makes the card
-# readable to someone who had a working installation yesterday.
+# Repair for an entry the API answers 403 on. Same fix flow, distinct id so
+# the wording can say access was lost rather than never granted.
 ISSUE_DOMAIN_ACCESS_DENIED = "domain_access_denied"
 
-# Translation key of the setup error raised when the API answers 403 on the
-# domain persisted in the config entry (card M-02): the account does not
-# belong to that domain any more. Not a Repairs issue like the one above,
-# and deliberately not `ConfigEntryAuthFailed`: the credentials are valid,
-# so re-asking for the password would be a dead end. The entry stops with a
-# translated error that says what to do instead.
-#
-# Card M-07 does the wiring M-02 left pending here: the error still stops
-# the entry exactly as before, but `async_setup_entry` (__init__.py) now
-# raises `ISSUE_DOMAIN_ACCESS_DENIED` alongside it, so the user is carried
-# into the same domain re-selection flow (`repairs.py`) instead of being
-# told to remove and re-add the integration. The translated setup error is
-# kept as well - it is what shows on the entry itself, where a Repairs
-# issue is not visible.
+# Translation key of the setup error raised on that same 403. Not an auth
+# failure: the credentials are valid, so asking for the password is a dead end.
 ERROR_DOMAIN_ACCESS_DENIED = "domain_access_denied"
 
-# Fraction of `update_interval` used as the overall wall-clock budget for one
-# coordinator update cycle (card S-13). The pattern this guards against is
-# not the one S-13 wrote it for: since card M-03 a cycle is a single
-# `GET /data/devices` plus one request per page beyond the first (page_size
-# 200, capped at 25 pages), not the 1 + N of arch 1.x. What has not changed
-# is that the fetch is still synchronous `requests` code run in the executor
-# and not yet converted to aiohttp (tracked separately as an "L" item, see
-# `architettura-target-sprint-m.md` §11), so a slow or unresponsive backend
-# could otherwise let a single update cycle run well past `update_interval`
-# itself with nothing to stop it.
-#
-# Card M-05 re-read the factor after moving the default interval from 60s to
-# 300s and left it at 0.8. It is a fraction, so it scaled with the interval
-# on its own: the budget went from 48s to 240s, which is generous for one to
-# a few requests but is meant to be - it is a backstop against a hung cycle
-# overlapping the next one, not a per-request timeout (that one lives in
-# `API.DEFAULT_TIMEOUT`). At the 60s floor it is 48s, still several times a
-# healthy cycle.
-# `RadoffCoordinator.async_update_data` wraps its work in
-# `asyncio.timeout(update_interval * UPDATE_TIMEOUT_FACTOR)` and raises
-# `UpdateFailed` with an explicit message if that budget is exceeded,
-# instead of letting the cycle run indefinitely and the next one start late
-# or overlap with a still-running one.
+# Fraction of `update_interval` budgeted for one update cycle: a backstop
+# against a hung cycle overlapping the next, not a per-request timeout.
 UPDATE_TIMEOUT_FACTOR = 0.8
 
-# AWS Cognito defaults for Radoff API.
-#
-# These are internal implementation details, not secrets: a public Cognito app
-# client is by definition distributed with any client that talks to it. They
-# used to be exposed as required, user-editable fields in the config flow
-# (client_id, pool_id, pool_region) and persisted verbatim into each config
-# entry's `data` (see S-02). This meant a user could see and mistakenly edit
-# production infrastructure values, and rotating the Cognito app client would
-# silently break every existing installation, since the old values stayed
-# written in users' entries forever.
-#
-# As of config entry VERSION 2, these are read directly from here by
-# `api.py` (via `API.__init__` defaults) and are no longer part of the config
-# flow schema or of `config_entry.data`. Rotating the app client is now a
-# matter of updating these constants and releasing a new integration version;
-# `async_migrate_entry` (see __init__.py) strips any leftover Cognito fields
-# from entries created before this change.
+# AWS Cognito defaults. Not secrets: a public app client is distributed with
+# every client that talks to it, and rotating it is a release.
 DEFAULT_POOL_ID = "eu-west-1_zD4CSIZ6i"
 DEFAULT_POOL_REGION = "eu-west-1"
 DEFAULT_CLIENT_ID = "61ckd0c4qoq0ov7mmphrj7kstj"
 
 
 def _load_manifest() -> dict[str, str]:
-    """
-    Read `manifest.json` next to this file.
-
-    The integration version lives in exactly one place - `manifest.json`,
-    bumped at release time (see card S-19) - so nothing else hardcodes it.
-    A read failure here is only expected in an unpacked/dev checkout that is
-    missing the file; degrade to a clearly-fallback value instead of crashing
-    the whole integration over a User-Agent string (see card S-03).
-    """
+    """Read `manifest.json` next to this file, falling back to an empty dict."""
     manifest_path = Path(__file__).with_name("manifest.json")
     try:
         return json.loads(manifest_path.read_text(encoding="utf-8"))
@@ -256,17 +87,14 @@ def _load_manifest() -> dict[str, str]:
 
 _MANIFEST = _load_manifest()
 
-# Version and documentation URL used to build USER_AGENT below. Both come
-# from manifest.json so they can never drift from what HACS/HA itself report
-# for this integration.
+# Read from manifest.json so they cannot drift from what HACS and Home
+# Assistant report for this integration.
 INTEGRATION_VERSION = _MANIFEST.get("version", "0.0.0")
 INTEGRATION_DOCUMENTATION_URL = _MANIFEST.get(
     "documentation", "https://github.com/radoff/ha-radoff-integration"
 )
 
-# Identifies our own traffic to the Radoff API instead of impersonating the
-# official mobile app (see card S-03). Backend-side recognition of this
-# prefix for segmentation/rate-limiting is tracked separately in T-02.
+# Identifies this integration's traffic instead of impersonating the app.
 USER_AGENT = (
     f"HomeAssistant-Radoff/{INTEGRATION_VERSION} (+{INTEGRATION_DOCUMENTATION_URL})"
 )

@@ -1,42 +1,8 @@
 """
 Repairs fix flow for a config entry that cannot say which domain to poll.
 
-Card RT-2926, finding T-06/F1, widened by card M-07. A domain on the entry
-was introduced by the multi-domain discovery of S-01/RT-2803, in the same
-milestone that bumped the config entry to VERSION 2: an entry created by the
-released version (30e0cde) cannot contain one, so after the update every
-existing installation would fail setup - originally with a bare `KeyError`,
-now with an explicit `ConfigEntryError` (see `__init__.py::async_setup_entry`)
-and the fixable issue this module resolves.
-
-M-07 brings two more ways to arrive here, and they are the reason this flow
-matters more than it did:
-
-- an entry created in QA against arch 1.x carries a `domain_id` UUID, which
-  arch 2.0 neither accepts nor can translate offline. The version-3
-  migration drops it, and the entry lands in exactly the state above;
-- an entry that *has* a `domain_prefix` the account has lost access to: the
-  API answers 403, the coordinator stops the entry and raises
-  `ISSUE_DOMAIN_ACCESS_DENIED` (see `issues.py`). Before this card the only
-  remedy was to remove the integration and add it again - which throws away
-  every entity's history, the very thing this milestone spent a card
-  preserving. Here it is a domain re-selection with nothing lost.
-
-Both issues carry the entry id in their `data` and open this same flow: the
-question they ask the user is the same one.
-
-Why a repair rather than doing it inside `async_migrate_entry`: a migration
-runs during Home Assistant startup, must not block it on network I/O, and -
-decisively - has no way to ask anything of anyone. An account with access to
-more than one domain has no correct answer that this code could pick on the
-user's behalf (that is the very reason the config flow grew its own `domain`
-step in S-01). The repair moves both the discovery call and the choice to a
-moment where the user is present.
-
-Nothing here is a new authentication path: `config_flow.py::validate_input`
-is reused verbatim, so every Cognito outcome is classified exactly as it is
-during setup and re-auth (S-09), and the credentials used are the ones
-already persisted on the entry - the user is never asked to retype them.
+A repair rather than part of the migration, which runs at startup and cannot
+ask anything of anyone. The config flow's own validation is reused here.
 """
 
 from __future__ import annotations
@@ -64,10 +30,8 @@ if TYPE_CHECKING:
 
 _LOGGER = logging.getLogger(__name__)
 
-# The three outcomes `config_flow.py::validate_input` already classifies
-# (S-09), mapped to this flow's own abort reasons - same texts the config
-# flow shows, reworded for someone standing in front of a repair rather
-# than in front of the setup form (see `strings.json`, issues section).
+# The outcomes the config flow's validation classifies, mapped to this flow's
+# own abort reasons: same situations, worded for a repair not a setup form.
 _ABORT_REASONS = {
     UnsupportedChallengeError: "unsupported_challenge",
     InvalidAuthError: "invalid_auth",
@@ -83,15 +47,10 @@ async def async_create_fix_flow(
     """
     Build the fix flow for either of this integration's two domain issues.
 
-    The entry id travels in the issue's own `data` (see `issues.py`) rather
-    than being parsed back out of `issue_id`, so the issue id stays an opaque
-    string - and so one flow serves both issues without having to tell them
-    apart. It does not need to: "this entry never had a domain" and "this
-    entry lost access to the one it had" differ in the card the user read,
-    not in what has to happen next.
-    The entry may legitimately be gone by the time the user clicks the
-    repair (they removed and re-added the integration instead); that case
-    aborts with its own reason instead of raising.
+    The entry id travels in the issue's `data` rather than being parsed back
+    out of `issue_id`, so one flow serves both issues: they differ in what
+    the user read, not in what has to happen next. The entry may be gone by
+    the time the repair is opened, which aborts rather than raises.
     """
     entry_id = (data or {}).get("entry_id")
     entry = (
@@ -120,14 +79,7 @@ class DomainRepairFlow(RepairsFlow):
     async def async_step_confirm(
         self, user_input: dict[str, str] | None = None
     ) -> FlowResult:
-        """
-        Explain what is about to happen, then run discovery on confirmation.
-
-        Deliberately a confirmation form with no fields: the credentials are
-        already on the entry, and the only thing this step needs from the
-        user is the go-ahead to contact the Radoff API on their behalf - the
-        repair must not fire a login the moment the issue is opened.
-        """
+        """Explain what is about to happen, then run discovery on confirmation."""
         if self._config_entry is None:
             return self.async_abort(reason="entry_not_found")
 
@@ -158,8 +110,7 @@ class DomainRepairFlow(RepairsFlow):
             info = await validate_input(
                 self.hass,
                 dict(self._config_entry.data),
-                # Card M-02: the environment this entry actually polls, not
-                # necessarily the default one.
+                # The environment this entry actually polls, not the default.
                 self._config_entry.options.get(CONF_BASE_URL, DEFAULT_BASE_URL),
             )
         except (
@@ -198,21 +149,7 @@ class DomainRepairFlow(RepairsFlow):
         )
 
     def _apply(self, domain_prefix: str) -> FlowResult:
-        """
-        Write the resolved `domain_prefix` onto the entry and reload it.
-
-        The reload is scheduled explicitly rather than left to the update
-        listener `__init__.py` registers on every entry: that listener is
-        attached during a *successful* setup, and this entry has none - its
-        setup is precisely what failed. `async_schedule_reload` also keeps
-        the reload off this flow's own await path, so the repair dialog
-        closes immediately instead of waiting for the first poll.
-
-        No issue deletion here: the repairs flow manager removes the issue
-        itself for any flow that ends in anything other than an abort. If
-        the reload fails again for some other reason, `async_setup_entry`
-        raises a fresh one.
-        """
+        """Write the resolved `domain_prefix` onto the entry and reload it."""
         self.hass.config_entries.async_update_entry(
             self._config_entry,
             data={**self._config_entry.data, CONF_DOMAIN_PREFIX: domain_prefix},
