@@ -148,10 +148,15 @@ cat <<'NOTE'
   Resta una cosa che nessuno script puo' fare, ed e' quella che conta di
   piu' in questa card: la migrazione su un backup vero.
 
-  La suite la esercita su una ricostruzione fedele del registry misurato da
-  RT-2827 (32 entita', due device, docs/T-06-evidenze.md), ma una
-  ricostruzione e' pur sempre scritta da noi. La passata a mano, che chiude
-  M-08:
+  Una passata a mano e' gia' stata fatta il 2026-09-14 su una copia
+  dell'harness, che conteneva 16 entita' vere ancora su identificatori
+  arch 1.x: 52 entita' su 52 hanno tenuto il loro entity_id, 16 sono
+  passate al serial, nessuna serie statistica e' andata persa e il riavvio
+  successivo non ha cambiato niente. L'esito completo, e le tre cose che
+  quella passata NON ha potuto vedere, stanno in docs/M-07-verifica-dev.md.
+
+  Cio' che resta e' un ripristino che possa parlare con l'ambiente a cui le
+  sue credenziali appartengono, per vedere i grafici proseguire davvero:
 
     1. Partire da un backup di un'istanza alla versione rilasciata
        (30e0cde), ripristinato su un'istanza di prova - MAI su quella di

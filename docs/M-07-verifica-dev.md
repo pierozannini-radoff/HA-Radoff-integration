@@ -163,24 +163,114 @@ Tre cose che questa passata dice e che vale la pena tenere:
   15 che sono frammenti di UUID; questo account ne vede uno solo, ed è un
   frammento di UUID anche lui, con un `name` leggibile accanto. La scelta di
   etichettare con `name` non è un'ipotesi;
-- **l'account di dev vede un dominio, non quindici.** M-01 sondava con
-  un'utenza che ne raggiungeva quindici: la differenza è di permessi, non di
-  API. Conseguenza pratica per il collaudo di M-08: con questo account **lo
-  step di scelta del dominio non compare**, quindi l'AC1 si vede dal vivo e
-  l'AC sul multi-dominio no — quello resta coperto dalla suite;
+- **quante domini si vedano dipende dall'utenza, non dall'API.** L'account
+  del `.env` ne raggiunge uno solo, dove M-01 ne sondava quindici: è una
+  differenza di permessi. Conseguenza pratica, e la ragione per cui questa
+  riga è cambiata il giorno stesso: con quell'account **lo step di scelta
+  del dominio non compare**, il che verifica dal vivo l'AC1; ma la passata a
+  mano più sotto ha usato una seconda utenza che ne raggiunge quattro o più,
+  e ha mostrato anche lo step di scelta — con le etichette leggibili al
+  posto dei prefissi, che è T-08 D-03 verificato a occhio e non solo nella
+  suite;
 - **il 403 arriva con un messaggio esplicito del backend** (`Forbidden: you
   do not belong to domain '…'`), non con un 401 né con un 200 filtrato male.
   È il presupposto dell'intero flusso Repairs sul 403, ed è verificato
   contro l'API vera, non contro una fixture.
 
+## Passata a mano sulla migrazione — 2026-09-14
+
+È la verifica che nessuno script può fare, ed è quella che conta di più in
+questa card. Eseguita su una **copia usa-e-getta** di `.devcontainer/config`,
+mai sull'istanza di lavoro, con `scripts/ha_registry_snapshot.py` a
+fotografare il registry e lo storico prima e dopo.
+
+### Il soggetto, e perché è credibile
+
+L'harness conteneva già un residuo vero della versione rilasciata: **16
+entità ancora su identificatori `radoff-{uuid}-{slug}`**, appartenenti
+all'entry di produzione, sul device serial `4C5784`, con **9982 righe di
+stato e 9 serie long-term** dietro, scritte da polling reale. Non una
+ricostruzione: lo stato che un utente ha davvero.
+
+Due entry, e si sono divise il lavoro:
+
+| | entry di produzione | entry di dev |
+|---|---|---|
+| device | `4C5784` | `3D90E0`, `57FA28` |
+| entità | 16, tutte arch 1.x | 36, già sul serial |
+| verifica | la migrazione (AC 3, 4, 5, 7) | la riparazione (AC 6, 1) |
+
+Entrambe erano a `VERSION 2.2` con `domain_id`, quindi la passata esercita
+il ramo **2.x → 3** e non l'1 → 3. I due differiscono solo per lo strip dei
+campi Cognito, coperto dai test, e finiscono nello stesso punto — ma va
+detto, non lasciato intendere.
+
+### Esito
+
+| Criterio | Misura |
+|---|---|
+| entità prima / dopo | **52 / 52** — nessuna sparita, nessuna nuova, nessun duplicato |
+| `entity_id` invariati | **52 su 52** |
+| ri-chiavate sul serial | **16**, incluso `airqualityindex_average` → `aqi_value` |
+| rimaste su identificatori arch 1.x | **0** |
+| righe di stato sulle migrate | 9982 → 10030 (cresciute, mai perse) |
+| serie long-term sulle migrate | **9 → 9**, 937 righe → 937 |
+| riavvio successivo | **0 ri-chiavate, 0 differenze** |
+
+### Le quattro cose che si sono viste solo qui
+
+1. **La riparazione risolve davvero.** Sull'entry dev: conferma, nessuno
+   step di scelta (un dominio solo), `domain_prefix=875fe89b` scritto,
+   entry ricaricata e caricata, scheda della riparazione sparita. Le 52
+   entità sono identiche prima e dopo il reload: **nessuna creata**.
+2. **La riparazione dell'altra entry resta aperta**, come deve: quell'entry
+   non ha ancora un dominio, e la scheda è l'unico modo per tornarci.
+3. **Lo step di scelta del dominio esiste e si legge.** Aperta la
+   riparazione della seconda utenza, la tendina elenca quattro o più domini
+   **con il loro nome leggibile**, non con il prefisso. È la verifica a
+   occhio di T-08 D-03. Non è stato scelto nessun dominio: assegnare a
+   quell'entry un dominio che non contiene il suo device avrebbe sporcato
+   la verifica successiva senza dimostrare niente.
+4. **Il buco del tvoc è solo del tvoc.** A entry caricata,
+   `sensor.piero_test_dev_vocs` pubblica `V - Ix` contro una serie
+   statistica che non ha unità: disallineamento, e il recorder chiuderà la
+   serie. `eco2` pubblica `ppm` contro una serie in `ppm`: nessun
+   disallineamento. È ciò che il README annuncia, misurato invece che
+   supposto.
+
+### L'idempotenza, dal vivo, è più forte di quanto la card chieda
+
+Al riavvio successivo la migrazione non scrive niente — ma non perché la
+sua guardia interna la fermi: **Home Assistant non chiama proprio il
+gestore**, perché la entry è già alla versione del flow. La guardia
+`version >= CONFIG_ENTRY_VERSION` resta comunque necessaria per il caso in
+cui il gestore venga invocato lo stesso (una minor version che cambia), ed
+è quello che copre il test nella suite.
+
+### Cosa questa passata non ha potuto vedere
+
+- **I grafici delle 16 entità migrate che proseguono attraverso
+  l'aggiornamento.** Appartengono all'entry di produzione, che con le
+  credenziali disponibili non può caricarsi contro dev: che i loro
+  identificatori siano passati al serial, che gli `entity_id` non si siano
+  mossi e che storico e serie siano ancora attaccati è verificato nelle
+  tabelle qui sopra, ma la continuità *visiva* del grafico no.
+- **Lo scalino di ~4 °C.** Stessa ragione: il device che ha lo storico di
+  temperatura sta su quell'entry.
+- **La riparazione del recorder sull'unità del tvoc** comparirà allo
+  scoccare dell'ora, quando le statistiche si compilano. Il presupposto -
+  il disallineamento fra unità pubblicata e unità della serie - è misurato
+  sopra.
+
+Le tre cose si chiudono insieme, in M-08, su un ripristino che possa parlare
+con l'ambiente a cui le sue credenziali appartengono.
+
 ## Cosa resta fuori, e dove
 
-- **La migrazione su un backup vero.** È il punto 3 degli AC e la ragione
-  per cui questa card è irreversibile. La suite la esercita sulla
-  ricostruzione dei 32 identificatori; la passata su un ripristino reale è
+- **Il ripristino di un backup di produzione contro il suo ambiente.** Vedi
+  il paragrafo qui sopra: è ciò che manca alla passata a mano, e chiude in
   M-08. La checklist è in coda a `./scripts/verify_m07`.
-- **Il flusso Repairs end to end nell'interfaccia.** Verificato in
-  `tests/test_repairs.py` attraverso il vero flow manager; a mano si guarda
-  con `./scripts/develop`.
-- **Il multi-dominio dal vivo.** Vedi sopra: serve un'utenza che raggiunga
-  più di un dominio su dev.
+- **Il re-auth end to end.** Non è mai stato coperto da test (S-08 non lo
+  copriva) e questa card ha toccato `validate_input`: è il punto più facile
+  da rompere in silenzio, e va guardato a mano cambiando la password
+  dell'account di dev.

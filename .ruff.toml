@@ -68,6 +68,12 @@ ignore = [
 # La migrazione del registry e' offline e vive in tests/test_init.py.
 "verify_m07_live.py" = ["ALL"]
 
+# Fotografia del registry/storico di un'istanza Home Assistant ferma, per la
+# passata a mano della migrazione: stessa convenzione dei probe e dei verify
+# qui sopra - vive in scripts/, non e' importata da custom_components/, si
+# esegue a mano su un config dir e stampare un verdetto e' il suo scopo.
+"ha_registry_snapshot.py" = ["ALL"]
+
 # Standalone verification scripts (S-06, S-07, S-08, S-09, S-10, S-11, S-12,
 # S-13): run by hand with `python3 verify_sXX.py`, not shipped code, and
 # deliberately monkeypatch/stub homeassistant modules and private attributes
