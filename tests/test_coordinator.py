@@ -251,6 +251,24 @@ async def test_a_500_costs_the_whole_cycle(
     assert hass.states.get("sensor.bedroom_temperature").state == "unavailable"
 
 
+async def test_a_status_outside_the_taxonomy_costs_the_whole_cycle(
+    hass: HomeAssistant,
+    monkeypatch: pytest.MonkeyPatch,
+    requests_mock: Any,
+    config_entry_v3_data: dict[str, Any],
+) -> None:
+    """A status the taxonomy does not classify costs the whole cycle, like a 5xx."""
+    register_devices(requests_mock, load_devices_fixture("devices_two_devices.json"))
+    await _setup_entry(hass, monkeypatch, config_entry_v3_data)
+    assert hass.states.get("sensor.bedroom_temperature").state != "unavailable"
+
+    register_devices(requests_mock, {"error": "teapot"}, status_code=418)
+    await _repoll(hass)
+
+    assert hass.states.get("sensor.living_room_temperature").state == "unavailable"
+    assert hass.states.get("sensor.bedroom_temperature").state == "unavailable"
+
+
 async def test_a_403_stops_the_entry_instead_of_retrying_forever(
     hass: HomeAssistant,
     monkeypatch: pytest.MonkeyPatch,
