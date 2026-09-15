@@ -39,6 +39,7 @@ from .const import (
     UPDATE_TIMEOUT_FACTOR,
 )
 from .issues import async_create_domain_access_denied_issue
+from .redact import scrub
 from .schema import MeasureSpec, build_specs
 
 _LOGGER = logging.getLogger(__name__)
@@ -102,7 +103,10 @@ class RadoffCoordinator(DataUpdateCoordinator[RadoffData]):
             hass,
             _LOGGER,
             config_entry=config_entry,
-            name=f"{HOMEASSISTANT_DOMAIN} ({config_entry.unique_id})",
+            # Home Assistant writes this name on every cycle and on every
+            # failed one: the entry id tells two entries apart, its unique_id
+            # is the account's own address.
+            name=f"{HOMEASSISTANT_DOMAIN} ({config_entry.entry_id})",
             update_interval=timedelta(seconds=self.poll_interval),
         )
 
@@ -165,7 +169,7 @@ class RadoffCoordinator(DataUpdateCoordinator[RadoffData]):
                     "qualitative bands. %s",
                     device_type,
                     ", ".join(err.available) or "no type at all",
-                    err,
+                    self._scrub(err),
                 )
                 self.schemas[device_type] = {}
                 continue
@@ -176,6 +180,20 @@ class RadoffCoordinator(DataUpdateCoordinator[RadoffData]):
                 device_type,
                 len(self.schemas[device_type]),
             )
+
+    def _failed_cycle(self, what: str, err: Exception) -> UpdateFailed:
+        """Report one cycle that ended in a failure, and return it to raise."""
+        # The traceback quotes the request URL, query string and domain
+        # included, so it belongs to the level that may carry a domain. What
+        # stays above it is the text, scrubbed.
+        text = self._scrub(err)
+        _LOGGER.error("%s: %s", what, text)
+        _LOGGER.debug(what, exc_info=True)
+        return UpdateFailed(f"{what}: {text}")
+
+    def _scrub(self, err: BaseException) -> str:
+        """Return an exception's text with this entry's own identifiers held back."""
+        return scrub(str(err), self.domain_prefix, self.username)
 
     @property
     def poll_jitter(self) -> timedelta:
@@ -235,9 +253,9 @@ class RadoffCoordinator(DataUpdateCoordinator[RadoffData]):
             _LOGGER.warning(
                 "Radoff rate limit reached on the first poll of this entry; "
                 "setup will be retried: %s",
-                err,
+                self._scrub(err),
             )
-            msg = f"Rate limited by the Radoff API: {err}"
+            msg = f"Rate limited by the Radoff API: {self._scrub(err)}"
             raise UpdateFailed(msg) from err
 
         self._rate_limit_delay = err.retry_after
@@ -246,7 +264,7 @@ class RadoffCoordinator(DataUpdateCoordinator[RadoffData]):
             "the previous poll's readings and the next attempt waits at "
             "least ~%.1fs: %s",
             err.retry_after,
-            err,
+            self._scrub(err),
         )
         return self.data
 
@@ -296,23 +314,24 @@ class RadoffCoordinator(DataUpdateCoordinator[RadoffData]):
                 "Radoff now requires a challenge this integration cannot "
                 "complete (%s), starting re-auth: %s",
                 err.challenge_name,
-                err,
+                self._scrub(err),
             )
-            raise ConfigEntryAuthFailed(str(err)) from err
+            raise ConfigEntryAuthFailed(self._scrub(err)) from err
 
         except AuthInvalidError as err:
             # No traceback: an expected end-user situation, not a bug.
             # Raising stops the refresh until re-auth completes.
             _LOGGER.warning(
-                "Radoff credentials are no longer valid, starting re-auth: %s", err
+                "Radoff credentials are no longer valid, starting re-auth: %s",
+                self._scrub(err),
             )
-            raise ConfigEntryAuthFailed(str(err)) from err
+            raise ConfigEntryAuthFailed(self._scrub(err)) from err
 
         except AuthExpiredError as err:
             # The session is invalid but the credentials are not proven wrong,
             # so only a rejected refresh later becomes `AuthInvalidError`.
             _LOGGER.debug("Radoff authentication token expired, will retry: %s", err)
-            msg = f"Authentication token expired: {err}"
+            msg = f"Authentication token expired: {self._scrub(err)}"
             raise UpdateFailed(msg) from err
 
         except AuthUnavailableError as err:
@@ -323,7 +342,7 @@ class RadoffCoordinator(DataUpdateCoordinator[RadoffData]):
                 "will retry: %s",
                 err,
             )
-            msg = f"Authentication service temporarily unavailable: {err}"
+            msg = f"Authentication service temporarily unavailable: {self._scrub(err)}"
             raise UpdateFailed(msg) from err
 
         except APIDomainAccessError as err:
@@ -332,11 +351,11 @@ class RadoffCoordinator(DataUpdateCoordinator[RadoffData]):
             _LOGGER.warning(
                 "Radoff denied access to the configured domain, "
                 "reconfiguration needed: %s",
-                err,
+                self._scrub(err),
             )
             self._async_raise_domain_access_issue()
             raise ConfigEntryError(
-                str(err),
+                self._scrub(err),
                 translation_domain=DOMAIN,
                 translation_key=ERROR_DOMAIN_ACCESS_DENIED,
             ) from err
@@ -349,26 +368,22 @@ class RadoffCoordinator(DataUpdateCoordinator[RadoffData]):
         except APIAuthError as err:
             # The catch-all, for a status nobody has characterised yet. One
             # call per cycle means one failure costs the whole cycle.
-            _LOGGER.exception("Authentication error")
-            msg = f"Authentication error: {err}"
-            raise UpdateFailed(msg) from err
+            failure = self._failed_cycle("Authentication error", err)
+            raise failure from err
 
         except requests.exceptions.Timeout as err:
-            _LOGGER.exception(
-                "Request timeout after %s seconds", self.api.DEFAULT_TIMEOUT
+            failure = self._failed_cycle(
+                f"Request timeout after {self.api.DEFAULT_TIMEOUT} seconds", err
             )
-            msg = f"Request timeout: {err}"
-            raise UpdateFailed(msg) from err
+            raise failure from err
 
         except requests.exceptions.ConnectionError as err:
-            _LOGGER.exception("Connection error")
-            msg = f"Connection error: {err}"
-            raise UpdateFailed(msg) from err
+            failure = self._failed_cycle("Connection error", err)
+            raise failure from err
 
         except Exception as err:
-            _LOGGER.exception("Unexpected error")
-            msg = f"Unexpected error: {err}"
-            raise UpdateFailed(msg) from err
+            failure = self._failed_cycle("Unexpected error", err)
+            raise failure from err
 
         else:
             _LOGGER.debug(
