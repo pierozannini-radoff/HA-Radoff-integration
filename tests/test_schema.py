@@ -39,18 +39,26 @@ def _specs(device_type: str) -> dict[str, MeasureSpec]:
 
 @pytest.mark.parametrize("device_type", SCHEMA_TYPES)
 def test_measures_are_ordered_by_pos(device_type: str) -> None:
-    """The measures come out sorted by `pos`, with no `pos` missing."""
-    positions = [spec.pos for spec in _specs(device_type).values()]
+    """The measures come out sorted by `pos`, with no `pos` missing, whatever the JSON order."""
+    specs = _specs(device_type)
+    positions = [spec.pos for spec in specs.values()]
 
     assert positions == sorted(positions)
     assert None not in positions
 
+    # `pos` is the order, not the order the keys happen to arrive in: the same
+    # measures served the other way round come out in the same sequence.
+    payload = load_dev_fixture(f"measures_ranges__{device_type}")
+    backwards = dict(reversed(list(payload.items())))
+    assert list(build_specs(backwards, device_type=device_type)) == list(specs)
+
 
 @pytest.mark.parametrize("device_type", SCHEMA_TYPES)
 def test_pos_is_sparse_and_is_never_an_index(device_type: str) -> None:
-    """A `pos` with real gaps in it still sorts the measures end to end."""
+    """A sparse `pos` sorts the measures end to end, and each measure keeps its own."""
     specs = _specs(device_type)
     positions = [spec.pos for spec in specs.values()]
+    payload = load_dev_fixture(f"measures_ranges__{device_type}")
 
     # Sparse for real, not just in theory: the values skip numbers.
     assert max(positions) > len(positions)
@@ -58,6 +66,10 @@ def test_pos_is_sparse_and_is_never_an_index(device_type: str) -> None:
     assert list(specs) == [
         name for name, _ in sorted(specs.items(), key=lambda kv: kv[1].pos)
     ]
+    # Ordering is not indexing: a defect that shifted the measures one against
+    # another would keep the sequence and lose this.
+    for name, spec in specs.items():
+        assert spec.pos == payload[name]["pos"]
 
 
 def test_a_broken_pos_still_produces_a_total_order() -> None:
