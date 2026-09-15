@@ -3,6 +3,7 @@ The poll cycle, end to end through a real config entry.
 
 Covers: the nominal poll, degraded devices and failed cycles, and the
 scheduling - jitter, backoff, and what a 429 does to the next cycle.
+Which status raises which error is the other half, in `test_api_transport.py`.
 """
 
 from __future__ import annotations

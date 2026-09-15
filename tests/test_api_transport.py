@@ -3,6 +3,7 @@ How a request is built, and what each HTTP status raises.
 
 Covers: `domain_prefix` and base URL, the taxonomy per status, the 429
 backoff, and the codebase-wide checks on transport leftovers and hosts.
+What a status costs a poll cycle is the other half, in `test_coordinator.py`.
 """
 
 from __future__ import annotations
