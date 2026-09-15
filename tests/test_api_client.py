@@ -315,7 +315,7 @@ def test_a_nested_life_is_logged_and_produces_no_device(
     requests_mock: Any,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """A nested LIFE is logged by serial and produces no device of its own."""
+    """A nested LIFE produces no device of its own, and exactly one log line names it."""
     page = _real_page()
     controller = copy.deepcopy(_devices_of(page)[REPORTING_SERIAL])
     slave = copy.deepcopy(_devices_of(page)[SILENT_SERIAL])
@@ -343,5 +343,8 @@ def test_a_nested_life_is_logged_and_produces_no_device(
         SILENT_SERIAL,
         "E754F0",
     }
-    assert "855894" in caplog.text
-    assert "does not model" in caplog.text
+    naming_the_nested = [
+        record for record in caplog.records if "855894" in record.getMessage()
+    ]
+    assert len(naming_the_nested) == 1
+    assert "does not model" in naming_the_nested[0].getMessage()

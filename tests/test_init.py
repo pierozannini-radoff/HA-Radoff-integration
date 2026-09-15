@@ -312,7 +312,7 @@ async def test_an_orphaned_average_entity_is_removed_not_left_unavailable(
 async def test_a_lone_average_entity_is_migrated_not_removed(
     hass: HomeAssistant, config_entry_v1_data: dict[str, Any]
 ) -> None:
-    """A lone `airqualityindex_average` is re-keyed onto `aqi_value`, same `entity_id`."""
+    """A lone `airqualityindex_average` is re-keyed onto `aqi_value`, keeping its history."""
     entry = MockConfigEntry(domain=DOMAIN, version=1, data=config_entry_v1_data)
     entry.add_to_hass(hass)
 
@@ -332,6 +332,14 @@ async def test_a_lone_average_entity_is_migrated_not_removed(
     migrated = registry.async_get(aqi.entity_id)
     assert migrated is not None
     assert migrated.unique_id == f"{DOMAIN}-{SERIAL_NOWPLUS}-aqi_value"
+    # States and statistics hang off the `entity_id`, not off the unique id:
+    # the row found under the new key has to be the row that was already there.
+    assert (
+        registry.async_get_entity_id(
+            "sensor", DOMAIN, f"{DOMAIN}-{SERIAL_NOWPLUS}-aqi_value"
+        )
+        == aqi.entity_id
+    )
 
 
 async def test_an_entity_without_a_device_is_left_intact(

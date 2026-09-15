@@ -415,7 +415,7 @@ async def test_no_discovery_on_reload(
 
 
 def test_the_domain_prefix_survives_session_invalidate() -> None:
-    """`CognitoSession.invalidate()` leaves `domain_prefix` untouched."""
+    """`CognitoSession.invalidate()` clears the tokens; `domain_prefix` survives."""
     api = API(
         username="user@example.com",
         password="hunter2",
@@ -425,6 +425,7 @@ def test_the_domain_prefix_survives_session_invalidate() -> None:
 
     api._session.invalidate()  # noqa: SLF001
 
+    assert not api._session.tokens  # noqa: SLF001
     assert api.domain_prefix == "home1234"
 
 
@@ -515,13 +516,19 @@ async def test_saving_options_without_the_field_keeps_the_base_url(
     assert entry.options["scan_interval"] == 120
 
 
-async def test_a_base_url_equal_to_the_default_is_not_stored(
+@pytest.mark.parametrize(
+    "submitted",
+    [f"{DEFAULT_BASE_URL}/", ""],
+    ids=["the default with a trailing slash", "blank"],
+)
+async def test_a_base_url_equal_to_the_default_or_blank_is_not_stored(
     hass: HomeAssistant,
     monkeypatch: pytest.MonkeyPatch,
     requests_mock: Any,
     config_entry_v3_data: dict[str, Any],
+    submitted: str,
 ) -> None:
-    """A base URL equal to the default, trailing slash included, removes the override."""
+    """A base URL equal to the default, trailing slash included, or blank, is not stored."""
     entry = await _loaded_entry(
         hass,
         monkeypatch,
@@ -536,7 +543,7 @@ async def test_a_base_url_equal_to_the_default_is_not_stored(
         {
             "scan_interval": 60,
             "generate_index": True,
-            CONF_BASE_URL: f"{DEFAULT_BASE_URL}/",
+            CONF_BASE_URL: submitted,
         },
     )
     await hass.async_block_till_done()
