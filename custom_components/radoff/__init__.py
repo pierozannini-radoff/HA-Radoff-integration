@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from collections import Counter
 from typing import TYPE_CHECKING
 
 from homeassistant.config_entries import ConfigEntry
@@ -93,9 +94,15 @@ async def async_migrate_entry(hass: HomeAssistant, config_entry: ConfigEntry) ->
     # reader something that looks like a domain and is not one.
     legacy_domain_id = new_data.pop(_LEGACY_DOMAIN_ID_KEY, None)
     if legacy_domain_id:
+        # The repair is the part a user can act on; which id was dropped is
+        # for whoever is reading the entry alongside the registry.
         _LOGGER.info(
-            "Config entry %s carried the arch 1.x domain id %s, which arch 2.0 "
+            "Config entry %s carried an arch 1.x domain id, which arch 2.0 "
             "cannot use: a repair will be raised to choose the domain again",
+            config_entry.entry_id,
+        )
+        _LOGGER.debug(
+            "The arch 1.x domain id dropped from config entry %s is %s",
             config_entry.entry_id,
             legacy_domain_id,
         )
@@ -243,6 +250,7 @@ def _async_migrate_unique_ids_to_serial(
     """
     registry = er.async_get(hass)
     entity_entries = er.async_entries_for_config_entry(registry, config_entry.entry_id)
+    outcomes: Counter[str] = Counter()
 
     def migration_order(entity_entry: er.RegistryEntry) -> tuple[int, str]:
         parsed = _parse_legacy_unique_id(entity_entry.unique_id)
@@ -266,6 +274,7 @@ def _async_migrate_unique_ids_to_serial(
 
         serial = _async_serial_of_device(hass, entity_entry.device_id)
         if serial is None:
+            outcomes["no_serial"] += 1
             _LOGGER.warning(
                 "Not migrating %s: it has no device to read a serial number "
                 "from, so its new unique_id cannot be computed",
@@ -284,9 +293,11 @@ def _async_migrate_unique_ids_to_serial(
             entity_entry.domain, entity_entry.platform, new_unique_id
         )
         if collision_entity_id is not None:
-            _async_handle_collision(
-                registry, entity_entry, slug, new_unique_id, collision_entity_id
-            )
+            outcomes[
+                _async_handle_collision(
+                    registry, entity_entry, slug, new_unique_id, collision_entity_id
+                )
+            ] += 1
             continue
 
         if measure in _UNIT_CHANGED_MEASURES:
@@ -296,12 +307,50 @@ def _async_migrate_unique_ids_to_serial(
             entity_entry.entity_id, new_unique_id=new_unique_id
         )
 
+        outcomes["migrated"] += 1
+        # The entity_id is the handle a support request is written around and
+        # is visible in the interface anyway; the pair of identifiers is what
+        # a registry query needs, and carries the serial.
         _LOGGER.info(
+            "Migrated %s onto its serial-based identifier",
+            entity_entry.entity_id,
+        )
+        _LOGGER.debug(
             "Migrated %s from unique_id %s to %s",
             entity_entry.entity_id,
             entity_entry.unique_id,
             new_unique_id,
         )
+
+    _async_log_migration_summary(config_entry, outcomes)
+
+
+@callback
+def _async_log_migration_summary(
+    config_entry: ConfigEntry, outcomes: Counter[str]
+) -> None:
+    """Log what a whole migration run did, silent when it did nothing."""
+    summary = (
+        "Radoff entity migration of config entry %s: %d migrated, %d removed "
+        "as duplicates, %d left alone (%d with no device to read a serial "
+        "from, %d whose new identifier belongs to another entity)"
+    )
+    args = (
+        config_entry.entry_id,
+        outcomes["migrated"],
+        outcomes["removed"],
+        outcomes["no_serial"] + outcomes["kept"],
+        outcomes["no_serial"],
+        outcomes["kept"],
+    )
+
+    if not outcomes:
+        # This runs again at every setup, where having nothing to do is the
+        # normal case and one line per restart would be noise.
+        _LOGGER.debug(summary, *args)
+        return
+
+    _LOGGER.info(summary, *args)
 
 
 @callback
@@ -311,7 +360,7 @@ def _async_handle_collision(
     slug: str,
     new_unique_id: str,
     collision_entity_id: str,
-) -> None:
+) -> str:
     """
     Deal with one entity whose new identifier is already someone else's.
 
@@ -321,28 +370,44 @@ def _async_handle_collision(
     migration performs. Everything else is left alone and logged - the
     colliding entity may belong to another config entry entirely, and a
     genuine ambiguity is to report, not to resolve by guessing.
+
+    Returns
+    -------
+        Which of the two outcomes this entity got, to count in the summary.
+
     """
     collision = registry.async_get(collision_entity_id)
 
     if slug in _REMOVABLE_ON_COLLISION and collision is not None:
         _LOGGER.warning(
-            "Removing %s: its measure now lives on %s (unique_id %s), and an "
-            "entity that can never receive a value again is worse kept than "
-            "removed",
+            "Removing %s: its measure now lives on %s, and an entity that can "
+            "never receive a value again is worse kept than removed",
+            entity_entry.entity_id,
+            collision.entity_id,
+        )
+        _LOGGER.debug(
+            "%s was removed in favour of %s, which holds unique_id %s",
             entity_entry.entity_id,
             collision.entity_id,
             new_unique_id,
         )
         registry.async_remove(entity_entry.entity_id)
-        return
+        return "removed"
 
     _LOGGER.warning(
-        "Not migrating %s: unique_id %s is already held by %s. The entity is "
-        "left untouched",
+        "Not migrating %s: its new identifier is already held by %s. The "
+        "entity is left untouched",
         entity_entry.entity_id,
-        new_unique_id,
         collision_entity_id,
     )
+    _LOGGER.debug(
+        "%s keeps unique_id %s: %s already holds %s",
+        entity_entry.entity_id,
+        entity_entry.unique_id,
+        collision_entity_id,
+        new_unique_id,
+    )
+    return "kept"
 
 
 async def async_setup_entry(

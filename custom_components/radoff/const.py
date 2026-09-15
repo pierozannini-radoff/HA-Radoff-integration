@@ -68,6 +68,49 @@ ERROR_DOMAIN_ACCESS_DENIED = "domain_access_denied"
 # against a hung cycle overlapping the next, not a per-request timeout.
 UPDATE_TIMEOUT_FACTOR = 0.8
 
+# The fields this integration holds back, in three layers because they do not
+# carry the same risk. One declaration with three readers: the diagnostics
+# redaction, the level a log point is allowed to write at, and the scrubber
+# in `redact.py`. A field added here is a field whose log points are reviewed
+# in the same change.
+
+# Credentials. They leave the process nowhere: not in the diagnostics dump,
+# not in a log record, not at DEBUG.
+SECRETS = frozenset(
+    {
+        "password",
+        "IdToken",
+        "AccessToken",
+        "RefreshToken",
+    }
+)
+
+# They name a person. Redacted in the dump and kept out of the log at every
+# level, DEBUG included: `entry_id` already tells two entries apart without
+# naming whoever owns them. A config entry's own `unique_id` is the
+# normalised username, which is why the key is here.
+PERSONAL = frozenset(
+    {
+        "username",
+        "unique_id",
+        "title",
+    }
+)
+
+# They name an organisation or one physical device. Redacted in the dump, and
+# written to the log at DEBUG only, which is a level a user turns on
+# deliberately. An entity's `unique_id` carries the serial, so it falls under
+# this rule by its value while its key sits in `PERSONAL`.
+TENANT = frozenset(
+    {
+        "domain_prefix",
+        "domain_id",
+        "serial",
+        "serial_number",
+        "device_id",
+    }
+)
+
 # AWS Cognito defaults. Not secrets: a public app client is distributed with
 # every client that talks to it, and rotating it is a release.
 DEFAULT_POOL_ID = "eu-west-1_zD4CSIZ6i"

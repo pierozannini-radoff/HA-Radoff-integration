@@ -93,6 +93,50 @@ The rationale belongs in the ticket, which has a date and an author. A
 comment that outlives the behaviour it describes costs more than no comment
 at all.
 
+## Logging
+
+A default Home Assistant installation writes `WARNING` and above to
+`home-assistant.log`, and users paste that file into public issues without
+rereading it. `DEBUG` is off until someone turns it on for this integration,
+on purpose, and turns it off again afterwards. Every rule below follows from
+that one difference.
+
+- **`DEBUG`** - what a maintainer needs to follow one poll, one migration,
+  one request. Verbose is fine: nobody reads it who did not ask for it.
+- **`INFO`** - something a user may want to find again later, such as what a
+  migration did to their entities.
+- **`WARNING`** - the integration is degraded, or made a choice the user may
+  want to revisit, and the line says what to do about it.
+- **`ERROR`** - the integration cannot do its job until someone acts.
+  `_LOGGER.exception` adds a traceback and belongs to a failure that is a
+  bug, not to one the user is expected to hit.
+
+`const.py` declares which fields are held back, in three sets, and the level
+a field may be written at follows from the set it is in:
+
+| Set | Diagnostics dump | Log |
+| --- | --- | --- |
+| `SECRETS` | Redacted | Nowhere, `DEBUG` included |
+| `PERSONAL` | Redacted | Nowhere: `entry_id` tells two entries apart without naming whoever owns them |
+| `TENANT` | Redacted | `DEBUG` only |
+
+Two things that rule does not say:
+
+- It bans the **value**, not the information. A serial cut to its last four
+  characters (`redact.short_serial`) identifies no device, and is allowed
+  above `DEBUG`; so is an `entity_id`, which the interface shows anyway.
+- It cannot reach inside a string. Text this integration did not write - a
+  backend error body, a third-party exception message - goes through
+  `redact.scrub` before it is logged or carried into an exception message,
+  since redaction by key name never sees a value that arrived as part of a
+  sentence.
+
+**When a field joins one of the three sets, the log points are reviewed in
+the same change.** The three readers of the declaration - the dump, the
+levels, the scrubber - are what makes that a mechanical review rather than a
+judgement call, and `tests/test_log_privacy.py` is what makes it fail out
+loud when it is skipped.
+
 ## Tests
 
 This repository has an automated `pytest` suite under `tests/`, built on
