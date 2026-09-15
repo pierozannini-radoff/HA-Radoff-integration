@@ -12,6 +12,10 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from homeassistant.components.diagnostics import async_redact_data
+from homeassistant.const import CONF_USERNAME
+
+from .const import CONF_DOMAIN_PREFIX, PERSONAL, SECRETS, TENANT
+from .redact import scrub
 
 if TYPE_CHECKING:
     from datetime import datetime
@@ -20,23 +24,13 @@ if TYPE_CHECKING:
 
     from . import RadoffConfigEntry
     from .api.models import RadoffDevice, Reading
+    from .coordinator import RadoffData
 
-# Redacted anywhere they appear, matched by plain key name. Keys nothing
-# emits now are kept: this also walks whatever the entry was written with.
-TO_REDACT = {
-    "password",
-    "username",
-    "domain_prefix",
-    "domain_id",
-    "device_id",
-    "serial",
-    "serial_number",
-    "IdToken",
-    "AccessToken",
-    "RefreshToken",
-    "unique_id",
-    "title",
-}
+# Redacted anywhere they appear, matched by plain key name: the three layers
+# differ in what the log may write, not in what the dump holds back. Keys
+# nothing emits now are kept, since this also walks whatever the entry was
+# written with.
+TO_REDACT = SECRETS | PERSONAL | TENANT
 
 _MANIFEST_PATH = Path(__file__).parent / "manifest.json"
 
@@ -78,6 +72,20 @@ def _dump_device(device: RadoffDevice) -> dict[str, Any]:
     }
 
 
+def _known_values(
+    entry: RadoffConfigEntry, data: RadoffData | None
+) -> list[str | None]:
+    """Return the identifying values of one entry, for the scrubber to hide."""
+    values: list[str | None] = [
+        entry.data.get(CONF_DOMAIN_PREFIX),
+        entry.data.get(CONF_USERNAME),
+        entry.unique_id,
+    ]
+    if data is not None:
+        values += [device.serial_number for device in data.devices]
+    return values
+
+
 async def async_get_config_entry_diagnostics(
     hass: HomeAssistant,  # noqa: ARG001
     entry: RadoffConfigEntry,
@@ -95,8 +103,13 @@ async def async_get_config_entry_diagnostics(
             else None
         ),
         "last_update_success": coordinator.last_update_success,
+        # Scrubbed rather than redacted: the key-name redaction below cannot
+        # look inside a string, and an exception message can carry the values
+        # it was raised about.
         "last_exception": (
-            str(coordinator.last_exception) if coordinator.last_exception else None
+            scrub(str(coordinator.last_exception), *_known_values(entry, data))
+            if coordinator.last_exception
+            else None
         ),
         "data": None,
     }
