@@ -1,0 +1,26 @@
+{
+  "email": "**REDACTED**",
+  "domains": [
+    {
+      "domain": {
+        "prefix": "875fe89b",
+        "name": "<label-1>",
+        "type": "customer",
+        "parent_domain_prefix": "fdffb4d9",
+        "created_at": "2026-04-09T12:50:06"
+      },
+      "role": {
+        "code": "user",
+        "name": "User",
+        "description": "Standard user access"
+      },
+      "assigned_at": "2026-04-09T12:51:36"
+    }
+  ],
+  "pagination": {
+    "page": 1,
+    "page_size": 20,
+    "total": 1,
+    "total_pages": 1
+  }
+}

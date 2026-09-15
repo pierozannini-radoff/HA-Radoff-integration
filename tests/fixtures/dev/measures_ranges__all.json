@@ -1,0 +1,302 @@
+{
+  "tvoc": {
+    "label": "Volatile organic compounds",
+    "unit": "V - Ix",
+    "dataType": "float",
+    "ranges": [
+      {
+        "status": "excellent",
+        "upperBound": 100
+      },
+      {
+        "status": "high",
+        "upperBound": 200
+      },
+      {
+        "status": "good",
+        "upperBound": 300
+      },
+      {
+        "status": "poor",
+        "upperBound": 400
+      },
+      {
+        "status": "terrible"
+      }
+    ],
+    "acronym": "TVOC",
+    "pos": 6
+  },
+  "eco2": {
+    "label": "Carbon dioxide",
+    "unit": "ppm",
+    "dataType": "float",
+    "ranges": [
+      {
+        "status": "excellent",
+        "upperBound": 500
+      },
+      {
+        "status": "high",
+        "upperBound": 1000
+      },
+      {
+        "status": "good",
+        "upperBound": 1500
+      },
+      {
+        "status": "poor",
+        "upperBound": 2000
+      },
+      {
+        "status": "terrible"
+      }
+    ],
+    "acronym": "CO2",
+    "pos": 3
+  },
+  "internal_temperature": {
+    "label": "Temperature",
+    "unit": "°C",
+    "dataType": "float",
+    "ranges": [
+      {
+        "status": "low",
+        "upperBound": 18
+      },
+      {
+        "status": "good",
+        "upperBound": 27
+      },
+      {
+        "status": "high"
+      }
+    ],
+    "acronym": "T",
+    "pos": 10
+  },
+  "relative_humidity": {
+    "label": "Relative humidity",
+    "unit": "%",
+    "dataType": "float",
+    "ranges": [
+      {
+        "status": "low",
+        "upperBound": 40
+      },
+      {
+        "status": "good",
+        "upperBound": 60
+      },
+      {
+        "status": "high"
+      }
+    ],
+    "acronym": "RH",
+    "pos": 11
+  },
+  "pressure": {
+    "label": "Atmospheric pressure",
+    "unit": "Pa",
+    "dataType": "float",
+    "ranges": [],
+    "acronym": "P",
+    "pos": 12
+  },
+  "aqi_value": {
+    "label": "Air Quality Index",
+    "unit": "",
+    "dataType": "float",
+    "ranges": [
+      {
+        "status": "excellent",
+        "upperBound": 1
+      },
+      {
+        "status": "high",
+        "upperBound": 2
+      },
+      {
+        "status": "good",
+        "upperBound": 3
+      },
+      {
+        "status": "poor",
+        "upperBound": 4
+      },
+      {
+        "status": "terrible"
+      }
+    ],
+    "acronym": "AQI",
+    "pos": 1
+  },
+  "co": {
+    "label": "Carbon monoxide",
+    "unit": "ppm",
+    "dataType": "float",
+    "ranges": [
+      {
+        "status": "excellent",
+        "upperBound": 5
+      },
+      {
+        "status": "high",
+        "upperBound": 9
+      },
+      {
+        "status": "good",
+        "upperBound": 25
+      },
+      {
+        "status": "poor",
+        "upperBound": 50
+      },
+      {
+        "status": "terrible"
+      }
+    ],
+    "acronym": "CO",
+    "pos": 4
+  },
+  "ch4": {
+    "label": "Methane",
+    "unit": "ppm",
+    "dataType": "float",
+    "ranges": [
+      {
+        "status": "excellent",
+        "upperBound": 500
+      },
+      {
+        "status": "high",
+        "upperBound": 1000
+      },
+      {
+        "status": "good",
+        "upperBound": 3000
+      },
+      {
+        "status": "poor",
+        "upperBound": 5000
+      },
+      {
+        "status": "terrible"
+      }
+    ],
+    "acronym": "CH4",
+    "pos": 5
+  },
+  "radon_bqm3": {
+    "label": "Radon",
+    "unit": "Bq/m³",
+    "dataType": "float",
+    "ranges": [
+      {
+        "status": "excellent",
+        "upperBound": 100
+      },
+      {
+        "status": "high",
+        "upperBound": 200
+      },
+      {
+        "status": "good",
+        "upperBound": 300
+      },
+      {
+        "status": "poor",
+        "upperBound": 500
+      },
+      {
+        "status": "terrible"
+      }
+    ],
+    "acronym": "Rn",
+    "pos": 2
+  },
+  "pm10": {
+    "label": "Particulate matter",
+    "unit": "µg/m³",
+    "dataType": "float",
+    "ranges": [
+      {
+        "status": "excellent",
+        "upperBound": 20
+      },
+      {
+        "status": "high",
+        "upperBound": 30
+      },
+      {
+        "status": "good",
+        "upperBound": 40
+      },
+      {
+        "status": "poor",
+        "upperBound": 50
+      },
+      {
+        "status": "terrible"
+      }
+    ],
+    "acronym": "PM10",
+    "pos": 9
+  },
+  "pm25": {
+    "label": "Particulate matter",
+    "unit": "µg/m³",
+    "dataType": "float",
+    "ranges": [
+      {
+        "status": "excellent",
+        "upperBound": 16
+      },
+      {
+        "status": "high",
+        "upperBound": 21
+      },
+      {
+        "status": "good",
+        "upperBound": 26
+      },
+      {
+        "status": "poor",
+        "upperBound": 32
+      },
+      {
+        "status": "terrible"
+      }
+    ],
+    "acronym": "PM2.5",
+    "pos": 8
+  },
+  "pm1": {
+    "label": "Particulate matter",
+    "unit": "µg/m³",
+    "dataType": "float",
+    "ranges": [
+      {
+        "status": "excellent",
+        "upperBound": 6
+      },
+      {
+        "status": "high",
+        "upperBound": 9
+      },
+      {
+        "status": "good",
+        "upperBound": 12
+      },
+      {
+        "status": "poor",
+        "upperBound": 15
+      },
+      {
+        "status": "terrible"
+      }
+    ],
+    "acronym": "PM1",
+    "pos": 7
+  }
+}

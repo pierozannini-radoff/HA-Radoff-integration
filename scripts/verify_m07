@@ -1,0 +1,191 @@
+#!/usr/bin/env bash
+#
+# Tutte le verifiche di domain_prefix e config entry VERSION 3, in un colpo.
+#
+#   ./scripts/verify_m07              # tutto, verifica dal vivo compresa
+#   ./scripts/verify_m07 --offline    # salta la passata su dev (nessuna rete)
+#
+# Le credenziali si leggono da .env (gitignored), come RADOFF_USERNAME /
+# RADOFF_PASSWORD: questo script non le contiene e non le stampa.
+#
+# Anche il pool Cognito di dev viene da .env, come RADOFF_DEV_POOL_ID /
+# RADOFF_DEV_CLIENT_ID: serve finche' const.py punta a un pool diverso
+# dall'ambiente di DEFAULT_BASE_URL. Sovrascrivibili dall'ambiente:
+#   M07_POOL_ID=... M07_DOMAIN_PREFIX=... ./scripts/verify_m07
+
+set -uo pipefail
+
+cd "$(dirname "$0")/.."
+
+# Il pool Cognito di dev non sta nel repo: si legge da .env (gitignored),
+# come le credenziali. `env_value` lo estrae senza eseguire il file.
+env_value() {
+    [[ -f .env ]] || return 0
+    sed -n "s/^[[:space:]]*$1[[:space:]]*=[[:space:]]*//p" .env | tail -1 | tr -d "\"'"
+}
+
+POOL_ID="${M07_POOL_ID:-$(env_value RADOFF_DEV_POOL_ID)}"
+CLIENT_ID="${M07_CLIENT_ID:-$(env_value RADOFF_DEV_CLIENT_ID)}"
+DOMAIN_PREFIX="${M07_DOMAIN_PREFIX:-875fe89b}"
+
+if [[ -z "${POOL_ID}" || -z "${CLIENT_ID}" ]]; then
+    echo
+    echo "  Mancano RADOFF_DEV_POOL_ID e RADOFF_DEV_CLIENT_ID."
+    echo "  Mettili in .env (gitignored) o esportali: il pool Cognito di dev"
+    echo "  non e' nel repo."
+    exit 2
+fi
+
+OFFLINE=0
+[[ "${1:-}" == "--offline" ]] && OFFLINE=1
+
+FAILED=()
+
+# Errori mypy gia' presenti prima di questo lavoro.
+MYPY_BASELINE="${MYPY_BASELINE:-21}"
+
+# I file in cui un errore di tipo non puo' essere debito ereditato.
+# config_flow.py, repairs.py e coordinator.py restano fuori pur essendo
+# riscritti: portano dodici errori `ConfigEntry | None` preesistenti (il tipo
+# che Home Assistant dichiara e che questi flussi usano sapendo che non e'
+# None), e includerli farebbe fallire lo script su debito non contratto qui.
+# Su quelli vigila il conto totale, che non deve salire sopra la baseline.
+MYPY_OWNED='custom_components/radoff/(__init__|issues|const|schema|diagnostics)\.py'
+
+check_types() {
+    local output count owned
+    output="$(python3 -m mypy custom_components/radoff 2>&1)"
+    count="$(printf '%s\n' "${output}" | grep -cE '^custom_components/.*error:')"
+
+    # `import-untyped` sugli stub di requests e' ambientale, non nostro.
+    owned="$(printf '%s\n' "${output}" \
+        | grep -E "^(${MYPY_OWNED})" \
+        | grep 'error:' \
+        | grep -v 'import-untyped' || true)"
+
+    echo "    errori totali: ${count} (baseline ${MYPY_BASELINE})"
+    if [[ -n "${owned}" ]]; then
+        echo "    errori nei file di questa card:"
+        printf '%s\n' "${owned}" | sed 's/^/      /'
+        return 1
+    fi
+    [[ "${count}" -le "${MYPY_BASELINE}" ]]
+}
+
+step() {
+    local name="$1"
+    shift
+    echo
+    echo "═══ ${name}"
+    echo "    \$ $*"
+    echo
+    if "$@"; then
+        echo
+        echo "    ✓ ${name}"
+    else
+        echo
+        echo "    ✗ ${name}"
+        FAILED+=("${name}")
+    fi
+}
+
+echo
+echo "  Verifiche di domain_prefix e config entry VERSION 3"
+echo "  branch: $(git branch --show-current)"
+
+# 1. Formattazione e lint. --check non riscrive nulla: se fallisce, il
+#    comando da lanciare e' ./scripts/lint, che formatta e corregge.
+step "Formattazione (nessuna riscrittura)" ruff format --check .
+step "Lint" ruff check .
+
+# 2. La suite intera. Non solo i test di questa card: rinominare la chiave
+#    del dominio e cambiare l'unita' del tvoc tocca file che altri test
+#    asserivano per conto loro.
+step "Suite completa" python3 -m pytest -q
+
+# 3. Gli AC di questa card, isolati e con i nomi in chiaro: serve a leggere
+#    quale criterio e' coperto da quale test, non a coprire di piu'.
+#
+#    AC1 un dominio -> nessuno step   -> test_a_single_domain_is_never_put_to_the_user
+#    AC2 i nomi vecchi non esistono   -> test_the_arch_1x_domain_names_are_gone_from_the_code
+#    AC3 backup reale, 32 entita'     -> test_a_released_backup_keeps_every_entity_id_and_gains_serial_keys
+#    AC4 destinazione occupata        -> test_an_occupied_target_unique_id_is_not_overwritten
+#    AC5 le *_average rimosse         -> test_an_orphaned_average_entity_is_removed_not_left_unavailable
+#    AC6 entry senza dominio -> fix   -> test_repair_single_domain_loads_the_entry
+#                                        + test_upgrade_of_a_real_v1_entry_raises_a_repair_not_a_keyerror
+#    AC7 migrazione idempotente       -> test_the_released_backup_migration_is_idempotent
+step "Criteri, uno per riga" python3 -m pytest -v --no-cov -p no:randomly \
+    tests/test_init.py \
+    tests/test_config_flow.py \
+    tests/test_repairs.py \
+    -k "single_domain or gone_from_the_code or released_backup or occupied_target or orphaned_average or repair or keyerror or idempotent or no_device or labelled"
+
+# 4. I file che la card nomina come «verdi»: interi, non filtrati.
+step "test_init.py, test_repairs.py e test_translations.py interi" \
+    python3 -m pytest -q --no-cov \
+    tests/test_init.py tests/test_repairs.py tests/test_translations.py
+
+# 5. I tipi. mypy su questo repo esce 1 da prima di questa card, quindi
+#    passarlo a `step` cosi' com'e' farebbe fallire lo script sempre. Il
+#    criterio e' quello vero: il conto non sale, e nessun errore arriva dai
+#    file che questa card riscrive.
+step "Tipi: nessun errore nuovo (baseline ${MYPY_BASELINE})" check_types
+
+# 6. La passata dal vivo su dev. E' l'unica che tocca la rete, e verifica
+#    la sola meta' della card che dipende dall'API: la forma della
+#    discovery, l'etichetta dei domini e il 403 su un dominio altrui.
+if [[ "${OFFLINE}" -eq 1 ]]; then
+    echo
+    echo "═══ Verifica dal vivo su dev"
+    echo "    saltata (--offline)"
+else
+    step "Verifica dal vivo su dev" python3 scripts/verify_m07_live.py \
+        --pool-id "${POOL_ID}" \
+        --client-id "${CLIENT_ID}" \
+        --domain-prefix "${DOMAIN_PREFIX}"
+fi
+
+echo
+echo "═══════════════════════════════════════════════════════════════"
+if [[ ${#FAILED[@]} -eq 0 ]]; then
+    echo "  Tutto verde."
+else
+    echo "  Falliti: ${#FAILED[@]}"
+    for name in "${FAILED[@]}"; do
+        echo "    - ${name}"
+    done
+fi
+
+cat <<'NOTE'
+
+  Resta una cosa che nessuno script puo' fare, ed e' quella che conta di
+  piu' in questa card: la migrazione su un backup vero.
+
+  Una passata a mano e' gia' stata fatta il 2026-09-14 su una copia
+  dell'harness, che conteneva 16 entita' vere ancora su identificatori
+  arch 1.x: 52 entita' su 52 hanno tenuto il loro entity_id, 16 sono
+  passate al serial, nessuna serie statistica e' andata persa e il riavvio
+  successivo non ha cambiato niente.
+
+  Cio' che resta e' un ripristino che possa parlare con l'ambiente a cui le
+  sue credenziali appartengono, per vedere i grafici proseguire davvero:
+
+    1. Partire da un backup di un'istanza alla versione rilasciata
+       (30e0cde), ripristinato su un'istanza di prova - MAI su quella di
+       qualcuno: questa migrazione non si annulla.
+    2. Annotare PRIMA: numero di entita', quante hanno statistiche
+       long-term, e gli entity_id di almeno una per tipo di misura.
+    3. Aggiornare l'integrazione e riavviare Home Assistant.
+    4. Completare la riparazione «Radoff non sa quale dominio usare»
+       scegliendo il dominio.
+    5. Verificare DOPO: stesso numero di entita', stessi entity_id,
+       nessuna entita' duplicata, nessuna in «non disponibile» per sempre,
+       e i grafici che continuano attraverso l'aggiornamento - con lo
+       scalino di ~4 °C sulla temperatura e il buco sul solo tvoc, che
+       sono attesi e scritti nel README.
+    6. Riavviare una seconda volta: niente deve cambiare (AC7 dal vivo).
+
+NOTE
+
+[[ ${#FAILED[@]} -eq 0 ]] || exit 1
+exit 0

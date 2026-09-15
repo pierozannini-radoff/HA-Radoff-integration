@@ -1,13 +1,8 @@
 """
-Redaction test for card S-17 (diagnostics.py), integrated with S-18.
+Redaction and coverage of the diagnostics dump.
 
-Builds a real `ConfigEntry` with credential-shaped `data`/`title`/`unique_id`
-plus a fake coordinator carrying one healthy device and one stale device
-(covering the runbook's "entity unavailable" case) and an auth-style
-`last_exception` (covering "auth error"), then asserts none of
-`diagnostics.TO_REDACT`'s values survive in the JSON-serialized result -
-this is what makes the test fail the moment a new sensitive field is added
-to the dump without also being redacted (S-17 AC).
+Covers: every TO_REDACT value redacted, the runbook cases visible in the
+dump, and a meta-test proving the redaction check can fail.
 """
 
 import asyncio
@@ -24,7 +19,6 @@ sys.path.insert(0, str(REPO_ROOT))
 
 from custom_components.radoff import diagnostics  # noqa: E402
 from custom_components.radoff.api.models import (  # noqa: E402
-    Bucket,
     RadoffDevice,
     Reading,
 )
@@ -36,7 +30,7 @@ from custom_components.radoff.coordinator import RadoffData  # noqa: E402
 SECRET_USERNAME = "someone@example.com"
 SECRET_PASSWORD = "super-secret-password"  # noqa: S105
 SECRET_DOMAIN_ID = "11111111-1111-1111-1111-111111111111"
-SECRET_DEVICE_ID = "22222222-2222-2222-2222-222222222222"
+SECRET_DOMAIN_PREFIX = "acme4269"
 SECRET_SERIAL = "RADOFF-SERIAL-0042"
 SECRET_UNIQUE_ID = "radoff-account-unique-id"
 SECRET_TITLE = "someone@example.com (domain X)"
@@ -48,7 +42,7 @@ ALL_SECRETS = [
     SECRET_USERNAME,
     SECRET_PASSWORD,
     SECRET_DOMAIN_ID,
-    SECRET_DEVICE_ID,
+    SECRET_DOMAIN_PREFIX,
     SECRET_SERIAL,
     SECRET_UNIQUE_ID,
     SECRET_TITLE,
@@ -75,6 +69,11 @@ def _build_entry() -> ConfigEntry:
         data={
             "username": SECRET_USERNAME,
             "password": SECRET_PASSWORD,
+            # The key a version-3 entry carries, and beside it the one an
+            # entry written before the migration still has on disk. Both
+            # are the customer's tenant, and a diagnostics file is
+            # something users attach to public issues.
+            "domain_prefix": SECRET_DOMAIN_PREFIX,
             "domain_id": SECRET_DOMAIN_ID,
             # Tokens don't actually live in config_entry.data today, but
             # TO_REDACT covers them defensively - assert they'd be caught
@@ -92,39 +91,36 @@ def _build_entry() -> ConfigEntry:
         state=ConfigEntryState.LOADED,
         title=SECRET_TITLE,
         unique_id=SECRET_UNIQUE_ID,
-        version=2,
+        version=3,
     )
 
 
 def _build_data() -> RadoffData:
+    now = datetime.now(UTC)
     healthy_device = RadoffDevice(
-        device_id=SECRET_DEVICE_ID,
-        device_serial=SECRET_SERIAL,
-        device_type="now_plus",
+        serial_number=SECRET_SERIAL,
+        device_type="nowplus",
         name="Living room",
         readings={
-            (Bucket.DATA, "temperature"): Reading(
-                name="temperature",
-                bucket=Bucket.DATA,
+            "internal_temperature": Reading(
+                name="internal_temperature",
                 value=21.5,
-                device_class=None,
-                friendly_name="Temperature",
-                unit="°C",
-                normalize_fn=None,
-                measured_at=None,
+                measured_at=now,
             ),
         },
+        connection_status="connected",
+        firmware_version="0.2.8",
+        telemetry_timestamp=now,
         stale=False,
-        last_data_received_at=datetime.now(UTC),
     )
     stale_device = RadoffDevice(
-        device_id="33333333-3333-3333-3333-333333333333",
-        device_serial="RADOFF-SERIAL-0099",
-        device_type="now_plus",
+        serial_number="RADOFF-SERIAL-0099",
+        device_type="nowplus",
         name="Bedroom",
         readings={},
+        connection_status="disconnected",
+        firmware_version="0.2.8",
         stale=True,
-        last_data_received_at=None,
     )
     return RadoffData(
         controller_name="cloud_poller",
@@ -134,7 +130,7 @@ def _build_data() -> RadoffData:
 
 
 def test_diagnostics_redacts_all_sensitive_fields() -> None:
-    """S-17 AC: no TO_REDACT value survives, anywhere in the serialized tree."""
+    """No TO_REDACT value survives anywhere in the serialized tree."""
     entry = _build_entry()
     entry.runtime_data = _FakeCoordinator(
         data=_build_data(),
@@ -159,13 +155,7 @@ def test_diagnostics_redacts_all_sensitive_fields() -> None:
 
 
 def test_diagnostics_covers_runbook_cases() -> None:
-    """
-    The dump carries enough to diagnose the runbook's cases.
-
-    Zero entities (empty device list), an unavailable entity (`stale=True`),
-    and an auth error (`last_update_success=False` + `last_exception` set)
-    must all be visible in the result.
-    """
+    """The dump makes zero entities, an unavailable entity and an auth error visible."""
     entry = _build_entry()
     entry.runtime_data = _FakeCoordinator(
         data=_build_data(),
@@ -183,6 +173,18 @@ def test_diagnostics_covers_runbook_cases() -> None:
     devices = result["data"]["devices"]
     assert any(device["stale"] is True for device in devices)
 
+    # The two fields that tell "no telemetry this cycle" apart from
+    # "offline" are both in the dump: a support dump is exactly where that
+    # distinction has to be readable.
+    assert {device["connection_status"] for device in devices} == {
+        "connected",
+        "disconnected",
+    }
+    assert all("telemetry_timestamp" in device for device in devices)
+    assert all(device["firmware_version"] == "0.2.8" for device in devices)
+    healthy = next(device for device in devices if device["stale"] is False)
+    assert healthy["readings"]["internal_temperature"]["value"] == 21.5
+
     entry_zero = _build_entry()
     entry_zero.runtime_data = _FakeCoordinator(
         data=RadoffData(
@@ -199,14 +201,7 @@ def test_diagnostics_covers_runbook_cases() -> None:
 
 
 def test_diagnostics_fails_if_a_sensitive_field_is_added_unredacted() -> None:
-    """
-    Meta-test: the redaction test above must actually fail on a regression.
-
-    Simulates "someone adds a sensitive field to the dump without adding it
-    to TO_REDACT" by calling async_redact_data with an empty redact set and
-    checking the secret *does* show up - proving test_diagnostics_redacts_
-    all_sensitive_fields would have caught it.
-    """
+    """A sensitive field left out of TO_REDACT does show up, so the check can fail."""
     from homeassistant.components.diagnostics import async_redact_data
 
     leaked = async_redact_data({"password": SECRET_PASSWORD}, to_redact=set())

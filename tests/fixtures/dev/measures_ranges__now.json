@@ -1,0 +1,134 @@
+{
+  "tvoc": {
+    "label": "Volatile organic compounds",
+    "unit": "V - Ix",
+    "dataType": "float",
+    "ranges": [
+      {
+        "status": "excellent",
+        "upperBound": 100
+      },
+      {
+        "status": "high",
+        "upperBound": 200
+      },
+      {
+        "status": "good",
+        "upperBound": 300
+      },
+      {
+        "status": "poor",
+        "upperBound": 400
+      },
+      {
+        "status": "terrible"
+      }
+    ],
+    "acronym": "TVOC",
+    "pos": 6
+  },
+  "eco2": {
+    "label": "Carbon dioxide",
+    "unit": "ppm",
+    "dataType": "float",
+    "ranges": [
+      {
+        "status": "excellent",
+        "upperBound": 500
+      },
+      {
+        "status": "high",
+        "upperBound": 1000
+      },
+      {
+        "status": "good",
+        "upperBound": 1500
+      },
+      {
+        "status": "poor",
+        "upperBound": 2000
+      },
+      {
+        "status": "terrible"
+      }
+    ],
+    "acronym": "CO2",
+    "pos": 3
+  },
+  "internal_temperature": {
+    "label": "Temperature",
+    "unit": "°C",
+    "dataType": "float",
+    "ranges": [
+      {
+        "status": "low",
+        "upperBound": 18
+      },
+      {
+        "status": "good",
+        "upperBound": 27
+      },
+      {
+        "status": "high"
+      }
+    ],
+    "acronym": "T",
+    "pos": 10
+  },
+  "relative_humidity": {
+    "label": "Relative humidity",
+    "unit": "%",
+    "dataType": "float",
+    "ranges": [
+      {
+        "status": "low",
+        "upperBound": 40
+      },
+      {
+        "status": "good",
+        "upperBound": 60
+      },
+      {
+        "status": "high"
+      }
+    ],
+    "acronym": "RH",
+    "pos": 11
+  },
+  "pressure": {
+    "label": "Atmospheric pressure",
+    "unit": "Pa",
+    "dataType": "float",
+    "ranges": [],
+    "acronym": "P",
+    "pos": 12
+  },
+  "aqi_value": {
+    "label": "Air Quality Index",
+    "unit": "",
+    "dataType": "float",
+    "ranges": [
+      {
+        "status": "excellent",
+        "upperBound": 1
+      },
+      {
+        "status": "high",
+        "upperBound": 2
+      },
+      {
+        "status": "good",
+        "upperBound": 3
+      },
+      {
+        "status": "poor",
+        "upperBound": 4
+      },
+      {
+        "status": "terrible"
+      }
+    ],
+    "acronym": "AQI",
+    "pos": 1
+  }
+}

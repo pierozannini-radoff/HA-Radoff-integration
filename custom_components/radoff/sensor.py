@@ -1,104 +1,30 @@
 """Class which represent the Radoff sensor entity."""
 
 import logging
-from collections.abc import Callable
-from enum import StrEnum
-from numbers import Number
+from collections.abc import Iterator
+from datetime import datetime
 from typing import Any
 
 from homeassistant.components.sensor import (
+    RestoreSensor,
     SensorDeviceClass,
-    SensorEntity,
     SensorStateClass,
 )
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.util import dt as dt_util
 
 from . import RadoffConfigEntry
 from .api import RadoffDevice
-from .api.models import ReadingKey
 from .coordinator import RadoffCoordinator
-from .entity import RadoffEntity, reading_key_slug
+from .entity import RadoffEntity
+from .schema import MeasureSpec
 
 _LOGGER = logging.getLogger(__name__)
 
-FIVE_LEVELS = ("excellent", "good", "medium", "poor", "terrible")
-THREE_LEVELS = ("excellent", "good", "terrible")
-
-
-def _threshold_index(
-    thresholds: tuple[float, ...], levels: tuple[str, ...]
-) -> Callable[[Number], str]:
-    """
-    Build the index function of a property from its thresholds.
-
-    The first threshold the value is lower than or equal to selects the level of
-    the same position. `levels` holds exactly one entry more than `thresholds`:
-    the last one is returned when no threshold matches.
-    """
-
-    def _index(val: Number) -> str:
-        for threshold, level in zip(thresholds, levels, strict=False):
-            if val <= threshold:
-                return level
-        return levels[-1]
-
-    return _index
-
-
-# Thresholds named so tests can probe boundary values from the same source
-# the index functions below are built from, instead of duplicating them.
-_TVOC_THRESHOLDS = (100.0, 200.0, 300.0, 400.0)
-_ECO2_THRESHOLDS = (500.0, 1000.0, 1500.0, 2000.0)
-_PM10_THRESHOLDS = (20.0, 30.0, 40.0, 50.0)
-_PM25_THRESHOLDS = (16.0, 21.0, 26.0, 32.0)
-_PM1_THRESHOLDS = (6.0, 9.0, 12.0, 15.0)
-_TEMPERATURE_THRESHOLDS = (18.0, 27.0)
-_HUMIDITY_THRESHOLDS = (40.0, 60.0)
-
-# Keyed by bare property name, independent of which bucket(s) a reading of
-# that name exists in (card S-10 does not move this table - see
-# `properties.py`'s docstring, "OUT OF SCOPE"). Today only DATA-bucket
-# readings ever match a key here: `airqualityindex`, the only property the
-# AGGREGATED bucket carries, is not one of them, so it never gets an "-index"
-# sibling entity, in either bucket.
-INDEX_MAPPING: dict[str, dict[str, Any]] = {
-    "tvoc": {
-        "index": _threshold_index(_TVOC_THRESHOLDS, FIVE_LEVELS),
-        "states": FIVE_LEVELS,
-        "thresholds": _TVOC_THRESHOLDS,
-    },
-    "eco2": {
-        "index": _threshold_index(_ECO2_THRESHOLDS, FIVE_LEVELS),
-        "states": FIVE_LEVELS,
-        "thresholds": _ECO2_THRESHOLDS,
-    },
-    "pm10": {
-        "index": _threshold_index(_PM10_THRESHOLDS, FIVE_LEVELS),
-        "states": FIVE_LEVELS,
-        "thresholds": _PM10_THRESHOLDS,
-    },
-    "pm25": {
-        "index": _threshold_index(_PM25_THRESHOLDS, FIVE_LEVELS),
-        "states": FIVE_LEVELS,
-        "thresholds": _PM25_THRESHOLDS,
-    },
-    "pm1": {
-        "index": _threshold_index(_PM1_THRESHOLDS, FIVE_LEVELS),
-        "states": FIVE_LEVELS,
-        "thresholds": _PM1_THRESHOLDS,
-    },
-    "internal_temperature": {
-        "index": _threshold_index(_TEMPERATURE_THRESHOLDS, THREE_LEVELS),
-        "states": THREE_LEVELS,
-        "thresholds": _TEMPERATURE_THRESHOLDS,
-    },
-    "relative_humidity": {
-        "index": _threshold_index(_HUMIDITY_THRESHOLDS, THREE_LEVELS),
-        "states": THREE_LEVELS,
-        "thresholds": _HUMIDITY_THRESHOLDS,
-    },
-}
+# Created but disabled: the AQI's temperature component is divided by 120 on
+# a value already in °C, so the published index is systematically wrong.
+DISABLED_BY_DEFAULT = frozenset({"aqi_value"})
 
 
 async def async_setup_entry(
@@ -111,129 +37,269 @@ async def async_setup_entry(
 
     coordinator: RadoffCoordinator = config_entry.runtime_data
 
-    sensors = []
+    sensors: list[RadoffSensor] = []
     for device in coordinator.data.devices:
-        for reading_key, reading in device.readings.items():
-            sensors.append(
-                RadoffSensor(
-                    reading_key=reading_key,
-                    coordinator=coordinator,
-                    device=device,
-                    device_class=reading.device_class,
-                    friendly_name=reading.friendly_name,
-                    unit=reading.unit,
-                    normalize_fn=reading.normalize_fn,
-                    is_index=False,
-                    index_fn=None,
-                    index_states=None,
-                )
-            )
-            if coordinator.data.generate_index and reading.name in INDEX_MAPPING:
-                index_obj = INDEX_MAPPING[reading.name]
-                sensors.append(
-                    RadoffSensor(
-                        reading_key=reading_key,
-                        coordinator=coordinator,
-                        device=device,
-                        device_class=SensorDeviceClass.ENUM,
-                        friendly_name=reading.friendly_name,
-                        unit=None,
-                        normalize_fn=reading.normalize_fn,
-                        is_index=True,
-                        index_fn=index_obj["index"],
-                        index_states=index_obj["states"],
-                    )
-                )
+        sensors.extend(_device_sensors(coordinator, device))
 
     # Create the sensors.
     async_add_entities(sensors)
 
 
-class RadoffSensor(RadoffEntity, SensorEntity):
+def _device_sensors(
+    coordinator: RadoffCoordinator, device: RadoffDevice
+) -> Iterator["RadoffSensor"]:
+    """
+    Yield every entity of one device, driven by its type's schema.
+
+    The schema's order, not the payload's, so a declared measure absent from
+    this poll still gets its entity - showing its last known value, or
+    `unknown`. The schema is served per type, so a device with a measure
+    switched off on the instance gets an entity that stays empty: from here
+    that is indistinguishable from a field not sent yet.
+
+    Then any telemetry field the schema does not declare, as a bare number
+    with no unit, device class or bands.
+    """
+    specs = coordinator.schemas.get(device.device_type) or {}
+
+    if not specs:
+        # Unknown to the catalogue, or a device with no `type` at all. The
+        # device and its data are kept; the warning is logged at load time.
+        _LOGGER.debug(
+            "No measurement schema for device %s (type '%s'): building its "
+            "entities from telemetry alone",
+            device.serial_number,
+            device.device_type,
+        )
+
+    for spec in specs.values():
+        yield RadoffSensor(coordinator=coordinator, device=device, spec=spec)
+
+        if coordinator.data.generate_index and spec.ranges:
+            yield RadoffSensor(
+                coordinator=coordinator, device=device, spec=spec, is_index=True
+            )
+
+    for field in device.readings:
+        if field in specs:
+            continue
+        _LOGGER.debug(
+            "Telemetry field %s of device %s is not declared by the schema "
+            "of type '%s': exposed as a raw value, without unit or bands",
+            field,
+            device.serial_number,
+            device.device_type,
+        )
+        yield RadoffSensor(
+            coordinator=coordinator, device=device, spec=None, field=field
+        )
+
+
+class RadoffSensor(RadoffEntity, RestoreSensor):
     """
     A sensor representing a Radoff reading (raw value or qualitative index).
 
-    `device_info`, `unique_id`, `available` and the coordinator update
-    handling all now live in `RadoffEntity` (card S-07): this class only adds
-    the sensor-specific value/unit/state-class semantics and the "-index"
-    variant on top.
+    Unit, device class, thresholds and qualitative states all come from the
+    `MeasureSpec` the API served for this device's type. `spec` is `None` for
+    a telemetry field the schema does not describe: a bare number, named
+    after its own field.
+
+    This class keeps the one piece of state `RadoffEntity` refuses to: the
+    last value published and the timestamp it arrived with. An available
+    entity has to show something, and silence is not absence, so it shows the
+    last known value rather than `unknown` and history stays continuous. The
+    cost is a value that can be arbitrarily old while the state looks
+    current; `last_measured_at` always carries the timestamp of the value
+    actually shown.
+
+    A measure is named through `translation_key`, so one the backend adds
+    after this release arrives unnamed until its translation does.
     """
 
-    def __init__(  # noqa: PLR0913
+    def __init__(
         self,
-        reading_key: ReadingKey,
-        device: RadoffDevice,
         coordinator: RadoffCoordinator,
-        device_class: SensorDeviceClass | None,
-        friendly_name: str,
-        normalize_fn: Callable[[Number], float | int] | None,
-        unit: type[StrEnum] | str | None,
-        index_fn: Callable[[Number], str] | None,
-        index_states: tuple[str, ...] | None,
+        device: RadoffDevice,
+        spec: MeasureSpec | None,
+        field: str | None = None,
         *,
-        is_index: bool | None = None,
+        is_index: bool = False,
     ) -> None:
         """Initialize the sensor."""
-        super().__init__(coordinator, device, reading_key)
-        self.friendly_name = friendly_name
-        self.unit = unit
-        self._attr_device_class = device_class
-        self._normalize_fn = normalize_fn
+        name = spec.name if spec is not None else field
+        if name is None:
+            msg = "RadoffSensor needs either a MeasureSpec or a field name"
+            raise ValueError(msg)
+
+        super().__init__(coordinator, device, name)
+        self._spec = spec
         self._is_index = is_index
-        self._index_fn = index_fn
-        if index_states is not None:
-            self._attr_options = list(index_states)
 
-    @property
-    def translation_key(self) -> str:
+        # The last value published, refreshed by every poll that carries a
+        # reading and read by every poll that does not.
+        self._last_native_value: int | float | str | None = None
+        self._last_measured_at: datetime | None = None
+
+        if spec is None:
+            # A translation key with nothing behind it leaves the entity
+            # nameless, so the spaced-out field name stands in.
+            self._attr_translation_key = None
+            self._attr_name = name.replace("_", " ").capitalize()
+        else:
+            self._attr_translation_key = f"{name}_index" if is_index else name
+
+        if is_index:
+            self._attr_device_class = SensorDeviceClass.ENUM
+            self._attr_options = list(spec.statuses) if spec is not None else []
+        elif spec is not None:
+            self._attr_device_class = spec.device_class
+
+        if name in DISABLED_BY_DEFAULT:
+            self._attr_entity_registry_enabled_default = False
+
+    async def async_added_to_hass(self) -> None:
         """
-        Return the translation key to translate the entity's name and states.
+        Register with the coordinator, then recover the last value.
 
-        Built from `reading_key_slug()` (card S-10), the same helper
-        `RadoffEntity.unique_id` uses: a DATA-bucket reading resolves to
-        exactly the bare property name it always has (e.g. `"tvoc"` /
-        `"tvoc_index"`), and any other bucket gets its own suffixed slug
-        (e.g. `"airqualityindex_average"`) so it never collides with, or
-        shadows, the DATA-bucket entity for the same property.
+        The order of the last two lines matters: restoring after remembering
+        would reinstate a value from the previous run over one just received.
         """
-        slug = reading_key_slug(self.reading_key)
-        return slug if not self._is_index else f"{slug}_index"
+        await super().async_added_to_hass()
+        await self._restore_last_value()
+        self._remember_current_value()
 
-    @property
-    def native_value(self) -> int | float | str | None:
+    async def _restore_last_value(self) -> None:
         """
-        Return the state of the entity.
+        Seed the value cache from this entity's own state before the restart.
 
-        `None` here is only a defensive fallback (S-06, C2 origin): a missing
-        or stale reading already makes the entity `unavailable` via
-        `RadoffEntity.available` (S-07), so HA does not rely on this return
-        value to hide a bad sample any more - it just avoids ever raising.
+        The value comes back typed from `RestoreSensor`; the timestamp comes
+        from the restored state's attributes, where it is published, so a
+        restored value does not look measured at the moment of the restart.
+        Everything a restore can be missing leaves the cache empty.
+        """
+        stored = await self.async_get_last_sensor_data()
+        if (
+            stored is not None
+            and isinstance(stored.native_value, int | float | str)
+            and not isinstance(stored.native_value, bool)
+        ):
+            self._last_native_value = stored.native_value
+
+        last_state = await self.async_get_last_state()
+        if last_state is None:
+            return
+
+        restored_measured_at = last_state.attributes.get("last_measured_at")
+        if isinstance(restored_measured_at, str):
+            self._last_measured_at = dt_util.parse_datetime(restored_measured_at)
+
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        """Remember this poll's value, if it brought one, then write the state."""
+        self._remember_current_value()
+        super()._handle_coordinator_update()
+
+    @callback
+    def _remember_current_value(self) -> None:
+        """
+        Copy this poll's value into the cache, or leave the cache alone.
+
+        Called before every state write rather than from `native_value`,
+        which is read by the state machine, templates and diagnostics alike
+        and must not mutate the entity. A poll with no reading is the case
+        the cache exists for, not an erasure.
+        """
+        value = self._live_native_value()
+        if value is None:
+            return
+        self._last_native_value = value
+        self._last_measured_at = super().measured_at
+
+    def _live_native_value(self) -> int | float | str | None:
+        """
+        Return the value this poll carries for this entity, or `None`.
+
+        The reading-to-state conversion, with no memory in it: `None` means
+        this poll has nothing for this entity, never "the value is unknown".
+        No scaling is applied - values arrive in the unit they declare.
         """
         reading = self._reading
         if reading is None:
             return None
 
-        if self._normalize_fn is not None:
-            val = float(self._normalize_fn(reading.value))
-        else:
-            raw_val = reading.value
-            val = int(raw_val) if isinstance(raw_val, int) else float(raw_val)
+        raw_val = reading.value
+        val = int(raw_val) if isinstance(raw_val, int) else float(raw_val)
 
         if self._is_index:
-            return self._index_fn(val)
+            return None if self._spec is None else self._spec.status_for(val)
         return val
 
     @property
+    def native_value(self) -> int | float | str | None:
+        """
+        Return this poll's value, or the last one this entity published.
+
+        The fallback keeps history continuous across a quiet device, so
+        automations do not have to special-case `unknown` on every gap.
+        `None` is left only when there is no last value at all. It does not
+        make the value look fresh: `measured_at` reports the timestamp of the
+        value being shown.
+        """
+        live = self._live_native_value()
+        return live if live is not None else self._last_native_value
+
+    @property
+    def measured_at(self) -> datetime | None:
+        """
+        Return the timestamp of the value this entity is actually showing.
+
+        A remembered value keeps the timestamp it arrived with, so the
+        attribute ages while the state does not and an old radon figure is
+        visible for what it is. The device's own telemetry timestamp is never
+        borrowed: it would stamp a fresh time on a value that has not moved.
+        """
+        if self._reading is not None:
+            return super().measured_at
+        return self._last_measured_at
+
+    @property
     def native_unit_of_measurement(self) -> str | None:
-        """Return unit."""
-        return None if self.unit is None else str(self.unit)
+        """Return the unit the API declared, in Home Assistant's own terms."""
+        if self._is_index or self._spec is None:
+            return None
+        return None if self._spec.ha_unit is None else str(self._spec.ha_unit)
 
     @property
     def state_class(self) -> str | None:
-        """Return state class."""
+        """Return the state class: every numeric reading is a measurement."""
         if self._is_index:
             return None
         return SensorStateClass.MEASUREMENT
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any] | None:
+        """
+        Add the measure's own labels to the attributes the base class exposes.
+
+        `measure_label` and `measure_acronym` are what the API calls this
+        measure. They are attributes, not the entity name: the name stays
+        translated in the user's language, while these say what the backend
+        called it - which is what a support case needs when the two disagree.
+        """
+        attributes = super().extra_state_attributes or {}
+        if self._spec is None:
+            return attributes or None
+
+        extra = {
+            key: value
+            for key, value in (
+                ("measure_label", self._spec.label),
+                ("measure_acronym", self._spec.acronym),
+            )
+            if value
+        }
+        merged = {**attributes, **extra}
+        return merged or None
 
     @property
     def unique_id(self) -> str:

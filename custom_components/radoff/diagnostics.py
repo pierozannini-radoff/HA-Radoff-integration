@@ -1,28 +1,8 @@
 """
-Diagnostics support for the radoff integration (card S-17).
+Diagnostics support for the radoff integration.
 
-Before this card, the only support channel was pasting raw Home Assistant
-logs into an issue - and the raw log contains, today, the full device
-payload (finding S5), error response bodies including 401s (S6), and
-domain UUIDs at INFO level (S7). Card S-03 removes those from the log, but
-that leaves support with no diagnostic tool at all: this module is the
-replacement, not an addition.
-
-`async_get_config_entry_diagnostics` dumps the config entry (`entry.as_dict()`)
-and the coordinator's last successful `RadoffData`, then redacts everything
-that identifies the user or their account via `TO_REDACT` before returning -
-`async_redact_data` walks the whole structure recursively, so a leftover
-identifier nested anywhere in `entry.data`/`entry.options`/the runtime dump
-is still caught, not just at the top level.
-
-`RadoffData.devices[*].readings` is deliberately NOT dumped with
-`dataclasses.asdict()`: `Reading.normalize_fn` is a `Callable`, which is not
-JSON-serializable, and `Reading.device_class`/`Reading.unit` are internal
-implementation detail, not needed to diagnose the runbook's three cases
-(zero entities, entity unavailable, auth error). Only `value` and
-`measured_at` are pulled out per reading - the card's own instruction ("i
-VALORI dei sensori si possono includere, non sono dati personali; gli
-identificatori no").
+The config entry and the coordinator's last data, with everything
+identifying the user redacted. Sensor values are kept: not personal data.
 """
 
 from __future__ import annotations
@@ -33,25 +13,24 @@ from typing import TYPE_CHECKING, Any
 
 from homeassistant.components.diagnostics import async_redact_data
 
-from .entity import reading_key_slug
-
 if TYPE_CHECKING:
+    from datetime import datetime
+
     from homeassistant.core import HomeAssistant
 
     from . import RadoffConfigEntry
-    from .api.models import RadoffDevice, Reading, ReadingKey
+    from .api.models import RadoffDevice, Reading
 
-# Keys redacted anywhere they appear in the dumped structure (S-17 "COSA
-# FARE"). `serial` (not `device_serial`) and `device_id` are the dict keys
-# `_dump_device` below actually emits - chosen to match this set rather than
-# the dataclass's own field names, so `async_redact_data`'s plain key-name
-# matching catches them without a translation table.
+# Redacted anywhere they appear, matched by plain key name. Keys nothing
+# emits now are kept: this also walks whatever the entry was written with.
 TO_REDACT = {
     "password",
     "username",
+    "domain_prefix",
     "domain_id",
     "device_id",
     "serial",
+    "serial_number",
     "IdToken",
     "AccessToken",
     "RefreshToken",
@@ -68,31 +47,33 @@ def _integration_version() -> str:
     return manifest["version"]
 
 
-def _dump_readings(readings: dict[ReadingKey, Reading]) -> dict[str, Any]:
-    """Return only the value and measured_at for each reading, keyed by slug."""
+def _iso(value: datetime | None) -> str | None:
+    """Return an ISO-8601 string for a timestamp, or None."""
+    return value.isoformat() if value else None
+
+
+def _dump_readings(readings: dict[str, Reading]) -> dict[str, Any]:
+    """Return only the value and measured_at of each reading, keyed by field."""
     return {
-        reading_key_slug(key): {
+        field: {
             "value": reading.value,
-            "measured_at": (
-                reading.measured_at.isoformat() if reading.measured_at else None
-            ),
+            "measured_at": _iso(reading.measured_at),
         }
-        for key, reading in readings.items()
+        for field, reading in readings.items()
     }
 
 
 def _dump_device(device: RadoffDevice) -> dict[str, Any]:
     """Return the diagnostic-relevant fields of one device (pre-redaction)."""
     return {
-        "device_id": device.device_id,
-        "serial": device.device_serial,
+        "serial_number": device.serial_number,
         "device_type": device.device_type,
         "stale": device.stale,
-        "last_data_received_at": (
-            device.last_data_received_at.isoformat()
-            if device.last_data_received_at
-            else None
-        ),
+        "connection_status": device.connection_status,
+        "connection_status_updated_at": _iso(device.connection_status_updated_at),
+        "status": device.status,
+        "firmware_version": device.firmware_version,
+        "telemetry_timestamp": _iso(device.telemetry_timestamp),
         "readings": _dump_readings(device.readings),
     }
 

@@ -1,6 +1,33 @@
 {
   "entity": {
     "sensor": {
+      "aqi_value": {
+        "name": "Air Quality"
+      },
+      "radon_bqm3": {
+        "name": "Radon"
+      },
+      "eco2": {
+        "name": "Co2"
+      },
+      "co": {
+        "name": "Carbon Monoxide"
+      },
+      "ch4": {
+        "name": "Methane"
+      },
+      "tvoc": {
+        "name": "VOCs"
+      },
+      "pm1": {
+        "name": "PM1"
+      },
+      "pm25": {
+        "name": "PM2.5"
+      },
+      "pm10": {
+        "name": "PM10"
+      },
       "internal_temperature": {
         "name": "Temperature"
       },
@@ -10,46 +37,22 @@
       "pressure": {
         "name": "Pressure"
       },
-      "airqualityindex_average": {
-        "name": "Air Quality Average"
-      },
-      "eco2": {
-        "name": "Co2"
-      },
-      "tvoc": {
-        "name": "VOCs"
-      },
-      "pm10": {
-        "name": "PM10"
-      },
-      "pm25": {
-        "name": "PM2.5"
-      },
-      "pm1": {
-        "name": "PM1"
-      },
-      "internal_temperature_index": {
-        "name": "Temperature Index",
-        "state": {
-          "excellent": "Low",
-          "good": "Optimal",
-          "terrible": "High"
-        }
-      },
-      "relative_humidity_index": {
-        "name": "Humidity Index",
-        "state": {
-          "excellent": "Low",
-          "good": "Optimal",
-          "terrible": "High"
-        }
-      },
-      "tvoc_index": {
-        "name": "VOCs Index",
+      "aqi_value_index": {
+        "name": "Air Quality Index",
         "state": {
           "excellent": "Excellent",
+          "high": "High",
           "good": "Good",
-          "medium": "Medium",
+          "poor": "Poor",
+          "terrible": "Terrible"
+        }
+      },
+      "radon_bqm3_index": {
+        "name": "Radon Index",
+        "state": {
+          "excellent": "Excellent",
+          "high": "High",
+          "good": "Good",
           "poor": "Poor",
           "terrible": "Terrible"
         }
@@ -58,28 +61,38 @@
         "name": "CO2 Index",
         "state": {
           "excellent": "Excellent",
+          "high": "High",
           "good": "Good",
-          "medium": "Medium",
           "poor": "Poor",
           "terrible": "Terrible"
         }
       },
-      "pm10_index": {
-        "name": "PM10 Index",
+      "co_index": {
+        "name": "Carbon Monoxide Index",
         "state": {
           "excellent": "Excellent",
+          "high": "High",
           "good": "Good",
-          "medium": "Medium",
           "poor": "Poor",
           "terrible": "Terrible"
         }
       },
-      "pm25_index": {
-        "name": "PM2.5 Index",
+      "ch4_index": {
+        "name": "Methane Index",
         "state": {
           "excellent": "Excellent",
+          "high": "High",
           "good": "Good",
-          "medium": "Medium",
+          "poor": "Poor",
+          "terrible": "Terrible"
+        }
+      },
+      "tvoc_index": {
+        "name": "VOCs Index",
+        "state": {
+          "excellent": "Excellent",
+          "high": "High",
+          "good": "Good",
           "poor": "Poor",
           "terrible": "Terrible"
         }
@@ -88,10 +101,46 @@
         "name": "PM1 Index",
         "state": {
           "excellent": "Excellent",
+          "high": "High",
           "good": "Good",
-          "medium": "Medium",
           "poor": "Poor",
           "terrible": "Terrible"
+        }
+      },
+      "pm25_index": {
+        "name": "PM2.5 Index",
+        "state": {
+          "excellent": "Excellent",
+          "high": "High",
+          "good": "Good",
+          "poor": "Poor",
+          "terrible": "Terrible"
+        }
+      },
+      "pm10_index": {
+        "name": "PM10 Index",
+        "state": {
+          "excellent": "Excellent",
+          "high": "High",
+          "good": "Good",
+          "poor": "Poor",
+          "terrible": "Terrible"
+        }
+      },
+      "internal_temperature_index": {
+        "name": "Temperature Index",
+        "state": {
+          "low": "Low",
+          "good": "Optimal",
+          "high": "High"
+        }
+      },
+      "relative_humidity_index": {
+        "name": "Humidity Index",
+        "state": {
+          "low": "Low",
+          "good": "Optimal",
+          "high": "High"
         }
       }
     }
@@ -108,7 +157,7 @@
         "title": "Select domain",
         "description": "Your Radoff account has access to more than one domain. Select the one Home Assistant should use.",
         "data": {
-          "domain_id": "Domain"
+          "domain_prefix": "Domain"
         }
       },
       "reauth_confirm": {
@@ -126,6 +175,7 @@
     },
     "abort": {
       "already_configured": "[%key:common::config_flow::abort::already_configured_device%]",
+      "no_devices": "The selected Radoff domain has no device, so this integration would have nothing to show. Add a device to the domain in the Radoff app, or pick another domain, then try again.",
       "no_domains": "This account has no domain available. Please contact Radoff support before retrying.",
       "reauth_successful": "[%key:common::config_flow::abort::reauth_successful%]",
       "unsupported_challenge": "Your Radoff account needs an extra verification step (such as setting a new password or confirming multi-factor authentication) that this integration cannot complete yet. Please finish that step in the Radoff mobile app first, then try adding the integration again."
@@ -135,32 +185,60 @@
     "step": {
       "init": {
         "title": "Radoff options",
-        "description": "Changing either option reloads the integration to apply it immediately.",
+        "description": "Changing any of these options reloads the integration to apply it immediately.",
         "data": {
           "scan_interval": "Polling interval (seconds)",
-          "generate_index": "Generate index entities"
+          "generate_index": "Generate index entities",
+          "base_url": "API base URL (advanced)"
         },
         "data_description": {
           "scan_interval": "How often to poll the Radoff API, in seconds.",
-          "generate_index": "Also create a qualitative *_index sensor (e.g. Excellent, Good, ...) alongside applicable measurements."
+          "generate_index": "Also create a qualitative *_index sensor (e.g. Excellent, Good, ...) alongside applicable measurements.",
+          "base_url": "Which Radoff environment this configuration talks to. Leave it as it is unless Radoff support asked you to change it: in this API version the environment is the hostname, so a wrong value makes the integration stop loading. Clear the field to go back to the default."
         }
       }
     }
   },
   "issues": {
-    "missing_domain_id": {
+    "missing_domain_prefix": {
       "title": "Radoff does not know which domain to use for {username}",
       "fix_flow": {
         "step": {
           "confirm": {
             "title": "Finish setting up Radoff",
-            "description": "The Radoff configuration for {username} was created before this integration supported accounts with access to more than one domain, so no domain was ever saved for it and it cannot load. Submit to sign in with the credentials already stored for this configuration and look up the domains your account can reach; if there is more than one, you will be asked which to use. Nothing is changed until then."
+            "description": "The Radoff configuration for {username} does not have a domain this version of the integration can use, so it cannot load. That is expected for a configuration created before this integration supported accounts with access to more than one domain, and for one created against the previous version of the Radoff API, whose domain identifiers this version no longer accepts. Submit to sign in with the credentials already stored for this configuration and look up the domains your account can reach; if there is more than one, you will be asked which to use. Nothing is changed until then. Your devices, their history and your automations are not affected."
           },
           "domain": {
             "title": "[%key:component::radoff::config::step::domain::title%]",
             "description": "[%key:component::radoff::config::step::domain::description%]",
             "data": {
-              "domain_id": "[%key:component::radoff::config::step::domain::data::domain_id%]"
+              "domain_prefix": "[%key:component::radoff::config::step::domain::data::domain_prefix%]"
+            }
+          }
+        },
+        "abort": {
+          "entry_not_found": "That Radoff configuration no longer exists, so there is nothing left to repair.",
+          "cannot_connect": "Could not reach the Radoff service. Check your connection and start this repair again.",
+          "invalid_auth": "The password stored for this configuration is no longer valid. Reauthenticate Radoff first, then start this repair again.",
+          "unsupported_challenge": "Your Radoff account needs an extra verification step (such as setting a new password or confirming multi-factor authentication) that this integration cannot complete yet. Please finish that step in the Radoff mobile app first, then start this repair again.",
+          "no_domains": "[%key:component::radoff::config::abort::no_domains%]",
+          "unknown": "[%key:common::config_flow::error::unknown%]"
+        }
+      }
+    },
+    "domain_access_denied": {
+      "title": "Radoff denied access to the domain used for {username}",
+      "fix_flow": {
+        "step": {
+          "confirm": {
+            "title": "Select a Radoff domain again",
+            "description": "The Radoff account {username} can no longer access the domain saved in this configuration, so its devices cannot be read. The password is still valid - it is the domain that changed. Submit to look up the domains your account can reach now and select one; if there is only one, it is applied straight away. Your devices, their history and your automations are kept."
+          },
+          "domain": {
+            "title": "[%key:component::radoff::config::step::domain::title%]",
+            "description": "[%key:component::radoff::config::step::domain::description%]",
+            "data": {
+              "domain_prefix": "[%key:component::radoff::config::step::domain::data::domain_prefix%]"
             }
           }
         },
@@ -176,8 +254,11 @@
     }
   },
   "exceptions": {
-    "missing_domain_id": {
-      "message": "This Radoff configuration was created before the integration supported accounts with more than one domain, so it does not know which domain to use and cannot load. Open Settings > System > Repairs and complete the pending Radoff repair."
+    "missing_domain_prefix": {
+      "message": "This Radoff configuration does not have a domain this version of the integration can use, so it cannot load. Open Settings > System > Repairs and complete the pending Radoff repair."
+    },
+    "domain_access_denied": {
+      "message": "The Radoff account can no longer access the domain saved in this configuration, so its devices cannot be read. The credentials are still valid - it is the domain that changed. Open Settings > System > Repairs and complete the pending Radoff repair to select a domain the account can reach; your devices and their history are kept."
     }
   }
 }

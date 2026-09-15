@@ -1,0 +1,656 @@
+"""
+Verifica dal vivo, su dev, di `connection_status` e del suo timestamp.
+
+La disponibilita' delle entita' dipende da un campo che non e' nostro. La
+suite mockata verifica cosa fa il codice per ogni valore di quel campo -
+`connected`, `disconnected`, un valore mai visto, il campo assente - e lo fa
+meglio di qualunque passata dal vivo, perche' puo' provocarli a comando.
+
+Cio' che nessuna suite mockata puo' dire e' quali valori l'API serva
+*davvero* oggi, e con che eta':
+
+- se dev servisse un terzo valore, `KNOWN_CONNECTION_STATUSES`
+  (api/models.py) sarebbe gia' incompleto e ogni device che lo porta
+  finirebbe in `INDETERMINATE` - disponibile, ma per la ragione sbagliata;
+- cosa misuri `connection_status_updated_at`. Il confronto con l'eta' della
+  telemetria dice che e' il momento dell'ultimo **cambio** di stato, non
+  dell'ultimo controllo. Questa passata continua a misurarlo perche' e'
+  l'unico posto dove quel confronto si puo' fare: se un giorno il campo
+  cambiasse semantica, e' qui che si vedrebbe.
+
+Su un timestamp di ultimo cambio nessuna soglia di eta' distingue un device
+stabile da un campo congelato, e per questo l'integrazione non ne ha una.
+
+Come si esegue
+--------------
+    # credenziali nel proprio .env (gitignored), come RADOFF_USERNAME /
+    # RADOFF_PASSWORD - oppure RADOFF_DEV_USERNAME / RADOFF_DEV_PASSWORD
+    python3 scripts/verify_m06_live.py --domain-prefix 875fe89b
+
+    # i due override di pool servono finche' const.py punta a un pool
+    # diverso dall'ambiente di DEFAULT_BASE_URL
+    python3 scripts/verify_m06_live.py \
+        --pool-id eu-west-1_XXXXXXXX --client-id XXXXXXXX \
+        --domain-prefix XXXXXXXX
+
+Cosa NON verifica, e perche'
+----------------------------
+- **Il valore inatteso di `connection_status`.** Non e' provocabile: e' il
+  backend a scriverlo. Se questa passata ne trovasse uno, sarebbe un FAIL
+  che chiede di aggiornare l'enumerazione, non un test. Il comportamento
+  del client davanti a un valore nuovo (entita' disponibili, un WARNING)
+  e' verificato in `tests/test_sensor.py`.
+- **Il ripristino dopo un riavvio.** Riguarda il registro di stato di Home
+  Assistant, non l'API: si verifica in
+  `tests/test_sensor.py::test_a_restart_restores_the_last_known_value`, e
+  a mano con `./scripts/develop`.
+- **Il 429.** Saturare una quota condivisa con l'app mobile
+  per vedere un errore degraderebbe dev per chiunque altro. La
+  coordinazione fra 429 e disponibilita' e' verificata in
+  `tests/test_coordinator.py`.
+
+Politica di stampa
+------------------
+Stessa di `probe_arch2.py` e degli altri `verify_*_live.py`: i serial si
+stampano, le etichette scritte da persone no - `name`, `room_name`,
+`building_name` non compaiono mai, ne' le coordinate, ne' l'email, ne'
+alcun token.
+"""
+
+from __future__ import annotations
+
+import argparse
+import collections
+import logging
+import os
+import sys
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import Any
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(REPO_ROOT))
+
+from custom_components.radoff.api import (  # noqa: E402
+    API,
+    AuthExpiredError,
+    AuthInvalidError,
+)
+from custom_components.radoff.api.models import (  # noqa: E402
+    KNOWN_CONNECTION_STATUSES,
+    ConnectionState,
+    RadoffDevice,
+)
+from custom_components.radoff.const import (  # noqa: E402
+    DEFAULT_BASE_URL,
+    DEFAULT_CLIENT_ID,
+    DEFAULT_POOL_ID,
+    DEFAULT_POOL_REGION,
+)
+
+# Il caso riproducibile su dev: un sense che non trasmette, e che espone
+# comunque le 10 entita' del suo tipo.
+SILENT_DEVICE_SERIAL = "57FA28"
+
+
+def pool_label(pool_id: str) -> str:
+    """L'ambiente a cui appartiene un pool, per spiegare un errore di auth."""
+    if pool_id == DEFAULT_POOL_ID:
+        return "prod (il default di const.py)"
+    if pool_id:
+        return "non quello di const.py, quindi un altro ambiente"
+    return "sconosciuto"
+
+
+def auth_hint(err: Exception, pool_id: str) -> str:
+    """
+    Spiegare un fallimento di autenticazione invece di riportarlo e basta.
+
+    I due modi in cui questa passata puo' non partire si assomigliano nel
+    log e portano a conclusioni opposte, e distinguerli a mano e' costato
+    un'indagine il 2026-09-11:
+
+    - `AuthInvalidError` = Cognito ha rifiutato le credenziali **per quel
+      pool**. Dev e prod hanno utenze separate: un account che esiste su
+      uno non esiste necessariamente sull'altro, quindi le stesse
+      credenziali che funzionano altrove qui sono semplicemente sbagliate.
+    - `AuthExpiredError` / 401 dopo un handshake riuscito = le credenziali
+      erano buone, ma il token viene da un pool che quell'API non accetta
+      (`accepted_pool: pool_dev` in `tests/fixtures/dev/_manifest.json`).
+
+    Nessuna chiamata in piu' per scoprirlo: un secondo tentativo su un
+    altro pool sarebbe un secondo login fallito a carico dell'account.
+    """
+    label = pool_label(pool_id)
+    if isinstance(err, AuthInvalidError):
+        return (
+            f"Cognito ha rifiutato le credenziali sul pool {pool_id} "
+            f"({label}).\n"
+            "Le utenze dei due pool sono separate: credenziali valide su un "
+            "ambiente non lo sono sull'altro.\n"
+            f"Verificare che il .env contenga l'utenza di {label}, non quella "
+            "di un altro ambiente."
+        )
+    if isinstance(err, AuthExpiredError):
+        return (
+            f"L'handshake sul pool {pool_id} ({label}) e' riuscito, ma l'API "
+            "ha risposto 401.\n"
+            "E' il token a essere del pool sbagliato per questo host: l'API "
+            "di dev accetta solo il pool dev (accepted_pool).\n"
+            "Passare --pool-id / --client-id del pool giusto per l'host in "
+            "uso (vedi l'intestazione qui sopra)."
+        )
+    return ""
+
+
+class Verdict:
+    """Raccoglie gli esiti dei controlli e stampa il verdetto finale."""
+
+    def __init__(self) -> None:
+        self.rows: list[tuple[str, str, str]] = []
+
+    def record(self, status: str, name: str, detail: str = "") -> None:
+        self.rows.append((status, name, detail))
+        icon = {"PASS": "  ok  ", "FAIL": " FAIL ", "SKIP": " skip "}[status]
+        print(f"[{icon}] {name}")
+        if detail:
+            for line in detail.splitlines():
+                print(f"          {line}")
+
+    def ok(self, name: str, detail: str = "") -> None:
+        self.record("PASS", name, detail)
+
+    def fail(self, name: str, detail: str = "") -> None:
+        self.record("FAIL", name, detail)
+
+    def skip(self, name: str, detail: str = "") -> None:
+        self.record("SKIP", name, detail)
+
+    def check(self, condition: bool, name: str, detail: str = "") -> bool:  # noqa: FBT001
+        (self.ok if condition else self.fail)(name, detail)
+        return condition
+
+    def exit_code(self) -> int:
+        failed = [row for row in self.rows if row[0] == "FAIL"]
+        skipped = [row for row in self.rows if row[0] == "SKIP"]
+        passed = [row for row in self.rows if row[0] == "PASS"]
+        print()
+        print(f"  {len(passed)} PASS, {len(failed)} FAIL, {len(skipped)} skip")
+        if failed:
+            print("\n  Falliti:")
+            for _, name, _ in failed:
+                print(f"    - {name}")
+        if skipped:
+            print("\n  Non osservabili in questa passata (non e' un fallimento):")
+            for _, name, detail in skipped:
+                print(f"    - {name}: {detail}")
+        return 1 if failed else 0
+
+
+def read_env_file(path: Path) -> None:
+    """Carica `KEY=value` da un file nell'ambiente, senza sovrascrivere."""
+    if not path.is_file():
+        return
+    for raw_line in path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        os.environ.setdefault(key.strip(), value.strip().strip("'\""))
+
+
+def credentials(args: argparse.Namespace) -> tuple[str, str]:
+    """Username e password dall'ambiente, con i due nomi in uso nel repo."""
+    read_env_file(Path(args.env_file))
+    username = (
+        args.username
+        or os.environ.get("RADOFF_USERNAME")
+        or os.environ.get("RADOFF_DEV_USERNAME")
+        or ""
+    )
+    password = os.environ.get("RADOFF_PASSWORD") or os.environ.get(
+        "RADOFF_DEV_PASSWORD", ""
+    )
+    if not username or not password:
+        msg = (
+            "Credenziali mancanti. Servono RADOFF_USERNAME e RADOFF_PASSWORD "
+            "(o RADOFF_DEV_*) nell'ambiente o nel file passato a --env-file."
+        )
+        raise SystemExit(msg)
+    return username, password
+
+
+def pick_domain(api: API, forced: str | None) -> str | None:
+    """Il dominio passato, o il primo che la discovery restituisce."""
+    if forced:
+        return forced
+    try:
+        domains = api.list_domains()
+    except Exception as err:  # noqa: BLE001
+        print(f"  Discovery non raggiungibile ({type(err).__name__}): {err}")
+        return None
+    prefixes = [
+        entry.get("domain", {}).get("prefix")
+        for entry in domains
+        if entry.get("domain", {}).get("prefix")
+    ]
+    return prefixes[0] if prefixes else None
+
+
+def check_enumeration_is_still_complete(
+    verdict: Verdict, raw_devices: list[dict[str, Any]]
+) -> None:
+    """
+    L'enumerazione che il codice conosce copre tutto cio' che dev serve.
+
+    Il controllo che giustifica il terzo stato. Se qui comparisse un valore
+    fuori da `KNOWN_CONNECTION_STATUSES`, il client lo tratterebbe come
+    "non determinabile" e terrebbe le entita' disponibili - la reazione
+    voluta - ma la classificazione sarebbe da aggiornare, ed e' questo il
+    posto dove accorgersene invece della segnalazione di un utente.
+    """
+    values = collections.Counter(
+        str(device.get("connection_status")) for device in raw_devices
+    )
+    unknown = sorted(
+        value
+        for value in values
+        if value != "None" and value.strip().lower() not in KNOWN_CONNECTION_STATUSES
+    )
+    distribution = ", ".join(
+        f"{value}: {count}" for value, count in values.most_common()
+    )
+
+    verdict.check(
+        not unknown,
+        "Ogni connection_status servito da dev e' nell'enumerazione del client",
+        f"{sum(values.values())} device - {distribution}\n"
+        f"il client conosce: {', '.join(sorted(KNOWN_CONNECTION_STATUSES))}"
+        + (f"\nfuori enumerazione: {', '.join(unknown)}" if unknown else ""),
+    )
+
+    verdict.check(
+        "None" not in values or values["None"] < sum(values.values()),
+        "connection_status e' presente nel payload",
+        f"assente su {values['None']} device su {sum(values.values())}",
+    )
+
+
+def check_status_and_connection_status_coexist(
+    verdict: Verdict, raw_devices: list[dict[str, Any]]
+) -> None:
+    """
+    I due campi sono distinti e coesistono: uno amministrativo, l'altro
+    operativo.
+
+    Questo lo misura: quanti device
+    portano entrambi i campi, e con quali valori. Il caso interessante e'
+    `status: active` con `connection_status: disconnected` - un device
+    regolarmente in servizio che in questo momento non parla: se non
+    esistesse, la distinzione sarebbe teorica.
+    """
+    both = [
+        device
+        for device in raw_devices
+        if device.get("status") is not None
+        and device.get("connection_status") is not None
+    ]
+    statuses = collections.Counter(str(device.get("status")) for device in raw_devices)
+    divergent = [
+        device
+        for device in both
+        if str(device.get("status")).lower() == "active"
+        and str(device.get("connection_status")).lower() != "connected"
+    ]
+
+    verdict.check(
+        len(both) == len(raw_devices),
+        "status e connection_status sono entrambi presenti su ogni device",
+        f"{len(both)} su {len(raw_devices)}; valori di status: "
+        f"{', '.join(f'{k}: {v}' for k, v in statuses.most_common())}",
+    )
+
+    if divergent:
+        verdict.ok(
+            "I due campi divergono davvero (status active, non connesso)",
+            f"{len(divergent)} device su {len(raw_devices)}: "
+            f"{', '.join(sorted(str(d.get('serial_number')) for d in divergent)[:5])}"
+            + (" ..." if len(divergent) > 5 else ""),
+        )
+    else:
+        verdict.skip(
+            "I due campi divergono davvero (status active, non connesso)",
+            "nessun device in questo stato adesso: la distinzione resta "
+            "documentata ma non osservata in questa passata",
+        )
+
+
+def check_the_card_reproducible_case(
+    verdict: Verdict, devices: list[RadoffDevice]
+) -> None:
+    """
+    Quale dei due AC esemplifica il device che la card indica per nome.
+
+    La card indica `57FA28` come «un sense con `telemetry: null`» e lo
+    presenta come soggetto del primo AC (connesso e muto -> entita'
+    disponibili). Dal vivo quel device e' `disconnected`, quindi esemplifica
+    il secondo (non connesso -> entita' non disponibili, per la ragione
+    giusta invece che per quella sbagliata).
+
+    Il controllo e' scritto per riportare quale dei due, non per pretenderne
+    uno: un device vero cambia stato fra la scrittura della card e la
+    verifica, e un FAIL qui direbbe soltanto che il mondo si e' mosso. Il
+    soggetto del primo AC viene cercato altrove - fra tutti i device del
+    dominio, in `check_the_first_ac_has_a_subject`.
+    """
+    silent = next(
+        (device for device in devices if device.serial_number == SILENT_DEVICE_SERIAL),
+        None,
+    )
+    if silent is None:
+        verdict.skip(
+            f"Il caso riproducibile della card ({SILENT_DEVICE_SERIAL})",
+            "device assente da questo dominio in questa passata",
+        )
+        return
+
+    state = silent.connection_state
+    if state is ConnectionState.CONNECTED:
+        which = (
+            "AC1 (connesso e muto: le sue entita' restano disponibili)"
+            if silent.stale
+            else "nessuno dei due: connesso e con telemetria, caso ordinario"
+        )
+    elif state is ConnectionState.DISCONNECTED:
+        which = "AC2 (non connesso: le sue entita' sono non disponibili)"
+    else:
+        which = "AC3 (valore non riconosciuto: disponibili, con WARNING)"
+
+    age = (
+        "mai"
+        if silent.connection_status_updated_at is None
+        else str(datetime.now(UTC) - silent.connection_status_updated_at)
+    )
+    verdict.ok(
+        f"Il caso riproducibile ({SILENT_DEVICE_SERIAL}) esemplifica {which}",
+        f"tipo '{silent.device_type}', connection_status "
+        f"'{silent.connection_status}' da {age}, stale={silent.stale}, "
+        f"letture={len(silent.readings)}, status '{silent.status}'",
+    )
+
+
+def check_the_first_ac_has_a_subject(
+    verdict: Verdict, devices: list[RadoffDevice]
+) -> None:
+    """
+    Il primo AC ha un soggetto osservabile su questo dominio, oppure no.
+
+    «Un device connesso che non trasmette mantiene le sue entita'
+    disponibili» si verifica dal vivo solo se un device connesso e muto
+    esiste. Se non esiste, il criterio non e' smentito: e' non osservabile
+    in questa passata, che e' uno SKIP e non un FAIL - il comportamento su
+    quel caso e' provocato a comando dalla suite mockata
+    (`tests/test_sensor.py`), che e' il posto giusto per verificarlo.
+    """
+    subjects = [
+        device
+        for device in devices
+        if device.connection_state is ConnectionState.CONNECTED and device.stale
+    ]
+    if not subjects:
+        verdict.skip(
+            "AC1 dal vivo: un device connesso e muto mantiene le entita' "
+            "disponibili",
+            f"nessun device connesso e senza telemetria fra i {len(devices)} "
+            f"di questo dominio adesso: il caso e' coperto dalla suite "
+            f"mockata, non da questa passata",
+        )
+        return
+
+    verdict.ok(
+        "AC1 dal vivo: un device connesso e muto mantiene le entita' " "disponibili",
+        f"{len(subjects)} device connessi e senza telemetria: "
+        + ", ".join(device.serial_number for device in subjects[:5])
+        + (" ..." if len(subjects) > 5 else ""),
+    )
+
+
+def check_availability_verdicts(verdict: Verdict, devices: list[RadoffDevice]) -> None:
+    """
+    Quante entita' questa card rende disponibili, e quante ne toglie.
+
+    Il conto sul dominio vero: i device connessi senza telemetria hanno
+    entita' disponibili (con `unknown` o l'ultimo valore noto), i device non
+    connessi non le hanno, anche se la loro ultima telemetria e' ancora nel
+    payload.
+    """
+    connected_silent = [
+        device
+        for device in devices
+        if device.connection_state is ConnectionState.CONNECTED and device.stale
+    ]
+    disconnected_with_data = [
+        device
+        for device in devices
+        if device.connection_state is ConnectionState.DISCONNECTED and not device.stale
+    ]
+    indeterminate = [
+        device
+        for device in devices
+        if device.connection_state is ConnectionState.INDETERMINATE
+    ]
+
+    verdict.ok(
+        "Effetto della card sul dominio, in device",
+        f"{len(devices)} device in tutto\n"
+        f"{len(connected_silent)} connessi e muti: prima tutte le entita' "
+        f"non disponibili, ora disponibili\n"
+        f"{len(disconnected_with_data)} non connessi con telemetria in "
+        f"payload: prima disponibili, ora no\n"
+        f"{len(indeterminate)} non determinabili: disponibili, con WARNING",
+    )
+
+
+def check_what_the_status_timestamp_measures(
+    verdict: Verdict, devices: list[RadoffDevice]
+) -> None:
+    """
+    Cosa misura `connection_status_updated_at`, misurato invece che assunto.
+
+    Il confronto e' fra due eta' sullo stesso device connesso: quella della
+    telemetria, che dice quando ha parlato l'ultima volta, e quella del
+    `connection_status`. Se il secondo campo fosse il momento dell'ultimo
+    *controllo*, non potrebbe essere molto piu' vecchio del primo: un
+    device che trasmette adesso e' stato visto adesso. Se e' il momento
+    dell'ultimo *cambio* di stato, la sua eta' e' quanto dura lo stato
+    corrente e con il primo non ha alcun rapporto.
+
+    Non e' un PASS/FAIL sulla salute di dev, ed e' deliberatamente un PASS
+    anche quando i numeri non mostrano nulla: i device potrebbero essere
+    tutti appena riconnessi. Diventa un FAIL solo se il campo resta sempre
+    piu' giovane della telemetria su un dominio che ha qualcosa da dire -
+    cioe' se la semantica e' cambiata.
+    """
+    now = datetime.now(UTC)
+    connected = [
+        device
+        for device in devices
+        if device.connection_state is ConnectionState.CONNECTED
+        and device.connection_status_updated_at is not None
+    ]
+    if not connected:
+        verdict.skip(
+            "Cosa misura connection_status_updated_at",
+            "nessun device connesso con quel timestamp in questa passata",
+        )
+        return
+
+    status_ages = {
+        device.serial_number: now - device.connection_status_updated_at
+        for device in connected
+    }
+
+    # Solo i device che hanno parlato possono dire qualcosa: su un device
+    # muto le due eta' crescono insieme e il confronto non distingue niente.
+    speaking = [
+        device
+        for device in connected
+        if device.telemetry_timestamp is not None and not device.stale
+    ]
+    evidence = [
+        (
+            device.serial_number,
+            now - device.telemetry_timestamp,
+            status_ages[device.serial_number],
+        )
+        for device in speaking
+        if device.telemetry_timestamp is not None
+        and status_ages[device.serial_number] > (now - device.telemetry_timestamp) * 10
+    ]
+
+    youngest = min(status_ages.values())
+    oldest = max(status_ages.values())
+    detail = (
+        f"{len(connected)} device connessi con timestamp di stato\n"
+        f"eta' del connection_status: da {youngest} a {oldest}\n"
+        f"{len(speaking)} di loro hanno telemetria in questa pagina"
+    )
+    if evidence:
+        detail += "\nultimo cambio, non ultimo controllo:\n" + "\n".join(
+            f"  {serial}: telemetria {telemetry_age} fa, "
+            f"connection_status {status_age} fa"
+            for serial, telemetry_age, status_age in sorted(
+                evidence, key=lambda row: -row[2].total_seconds()
+            )[:5]
+        )
+    else:
+        detail += (
+            "\nnessun device mostra lo scarto in questa passata: non lo "
+            "smentisce, non lo conferma"
+        )
+
+    verdict.ok("Cosa misura connection_status_updated_at", detail)
+
+
+def check_telemetry_timestamp_is_still_one_per_block(
+    verdict: Verdict, devices: list[RadoffDevice]
+) -> None:
+    """
+    Il limite noto e' ancora un limite: un timestamp per blocco, non per campo.
+
+    Se il backend iniziasse a servire un timestamp per campo, il ripiego
+    documentato per il radon diventerebbe inutile e `last_measured_at`
+    potrebbe dire la verita' per ciascuna grandezza. Vale controllarlo a
+    ogni passata.
+    """
+    with_data = [device for device in devices if device.readings]
+    if not with_data:
+        verdict.skip(
+            "Un solo timestamp per blocco di telemetria",
+            "nessun device con telemetria in questo dominio",
+        )
+        return
+
+    per_field = [
+        device
+        for device in with_data
+        if len({reading.measured_at for reading in device.readings.values()}) > 1
+    ]
+    verdict.check(
+        not per_field,
+        "Un solo timestamp per blocco di telemetria",
+        f"{len(with_data)} device con letture, tutti con un timestamp unico "
+        f"per l'intero blocco"
+        if not per_field
+        else f"{len(per_field)} device portano timestamp diversi per campo: "
+        f"il backend potrebbe servirli per campo, rileggere il ripiego "
+        f"documentato in Reading.measured_at",
+    )
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--username", default="")
+    parser.add_argument("--env-file", default=str(REPO_ROOT / ".env"))
+    parser.add_argument("--base-url", default=DEFAULT_BASE_URL)
+    parser.add_argument("--pool-id", default=DEFAULT_POOL_ID)
+    parser.add_argument("--client-id", default=DEFAULT_CLIENT_ID)
+    parser.add_argument("--pool-region", default="")
+    parser.add_argument("--domain-prefix", default="")
+    parser.add_argument("--verbose", action="store_true")
+    args = parser.parse_args()
+
+    logging.basicConfig(
+        level=logging.DEBUG if args.verbose else logging.WARNING,
+        format="  %(levelname)-8s %(name)s: %(message)s",
+    )
+
+    username, password = credentials(args)
+    region = args.pool_region or (
+        args.pool_id.split("_")[0] if "_" in args.pool_id else DEFAULT_POOL_REGION
+    )
+
+    print()
+    print("  Verifica dal vivo di connection_status")
+    print(f"  host      : {args.base_url}")
+    print(f"  pool      : {args.pool_id} / client {args.client_id} / {region}")
+    print()
+
+    verdict = Verdict()
+
+    api = API(
+        username=username,
+        password=password,
+        client_id=args.client_id,
+        pool_id=args.pool_id,
+        pool_region=region or DEFAULT_POOL_REGION,
+        base_url=args.base_url,
+    )
+
+    domain = pick_domain(api, args.domain_prefix or None)
+    if not domain:
+        verdict.skip(
+            "I controlli sull'API vera",
+            "nessun dominio disponibile: passare --domain-prefix",
+        )
+        return verdict.exit_code()
+
+    api.domain_prefix = domain
+    print(f"          dominio: {domain}")
+    print()
+
+    try:
+        # Il payload grezzo serve per i campi che il modello non porta
+        # (`config_status`) e per contare le assenze; il modello serve per
+        # la classificazione, cioe' per cio' che il codice decide davvero.
+        raw_page = api._get_devices_page(1)  # noqa: SLF001
+        raw_devices = [
+            device for device in raw_page.get("devices", []) if isinstance(device, dict)
+        ]
+        devices = api.get_devices()
+    except Exception as err:  # noqa: BLE001
+        hint = auth_hint(err, args.pool_id)
+        verdict.fail(
+            "I controlli sull'API vera",
+            f"{type(err).__name__}: {err}" + (f"\n{hint}" if hint else ""),
+        )
+        return verdict.exit_code()
+
+    check_enumeration_is_still_complete(verdict, raw_devices)
+    check_status_and_connection_status_coexist(verdict, raw_devices)
+    check_the_card_reproducible_case(verdict, devices)
+    check_the_first_ac_has_a_subject(verdict, devices)
+    check_availability_verdicts(verdict, devices)
+    check_what_the_status_timestamp_measures(verdict, devices)
+    check_telemetry_timestamp_is_still_one_per_block(verdict, devices)
+
+    print()
+    print("  Nota: questa passata guarda una pagina di device (page_size 200).")
+    print("  Su un dominio piu' grande i conti valgono per quella pagina, non")
+    print("  per il dominio intero: la paginazione e' verificata altrove.")
+
+    return verdict.exit_code()
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

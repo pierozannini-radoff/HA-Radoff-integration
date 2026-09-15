@@ -20,6 +20,9 @@ from homeassistant.helpers.selector import (
     NumberSelector,
     NumberSelectorConfig,
     NumberSelectorMode,
+    TextSelector,
+    TextSelectorConfig,
+    TextSelectorType,
 )
 
 from .api import (
@@ -30,8 +33,12 @@ from .api import (
     AuthUnavailableError,
 )
 from .const import (
-    CONF_DOMAIN_ID,
+    CONF_BASE_URL,
+    CONF_DOMAIN_PREFIX,
     CONF_INDEX,
+    CONFIG_ENTRY_MINOR_VERSION,
+    CONFIG_ENTRY_VERSION,
+    DEFAULT_BASE_URL,
     DEFAULT_SCAN_INTERVAL,
     DOMAIN,
     MAX_SCAN_INTERVAL,
@@ -60,40 +67,26 @@ STEP_REAUTH_CONFIRM_DATA_SCHEMA = vol.Schema(
 )
 
 
-async def validate_input(hass: HomeAssistant, data: dict[str, Any]) -> dict[str, Any]:
+async def validate_input(
+    hass: HomeAssistant,
+    data: dict[str, Any],
+    base_url: str = DEFAULT_BASE_URL,
+) -> dict[str, Any]:
     """
     Validate the user input allows us to connect, and discover the user's domains.
 
-    Card S-09: every outcome of `api.connect()`/`api.list_domains()` that
-    this module knows how to interpret is now mapped to a distinct local
-    error before it can reach the generic `except Exception` in
-    `async_step_user`/`async_step_reauth_confirm` (finding C9 - `unknown`
-    was being shown for cases that have a perfectly good, already-translated
-    message: wrong credentials, a network/Cognito-availability problem, or
-    an unsupported Cognito challenge):
+    `base_url` is the environment to validate against: a caller with an entry
+    passes that entry's own, since checking credentials against a different
+    environment from the one it polls would be checking the wrong thing.
 
-    - `AuthChallengeRequiredError` (api/auth.py): Cognito wants a challenge
-      this flow cannot complete (`NEW_PASSWORD_REQUIRED`, MFA, ...) - this is
-      the fix for finding C8: previously `api.connect()` returned `True` for
-      this case too, so a config entry could be created for an account that
-      would never be able to authenticate. Translated to
-      `UnsupportedChallengeError`, which both callers below turn into a
-      dedicated `async_abort(reason="unsupported_challenge")` - no config
-      entry is ever created for this case.
-    - `AuthInvalidError` (api/auth.py): credentials rejected outright by
-      Cognito, or no authentication data returned at all (see that module's
-      docstring). Translated to this module's `InvalidAuthError` ->
-      `errors["base"] = "invalid_auth"`.
-    - `AuthUnavailableError` (api/auth.py) / `APIConnectionError`
-      (api/exceptions.py, raised by `list_domains()` on a non-200 response):
-      neither says anything about the credentials themselves. Both translate
-      to this module's `CannotConnectError` -> `errors["base"] =
-      "cannot_connect"`, which used to be declared but never actually
-      raised (finding C9).
+    Every outcome this module can interpret becomes a distinct local error -
+    `UnsupportedChallengeError`, `InvalidAuthError`, `CannotConnectError` -
+    so none of them reaches the callers' generic clause as "unknown".
     """
     api = API(
         username=data[CONF_USERNAME],
         password=data[CONF_PASSWORD],
+        base_url=base_url,
     )
 
     try:
@@ -106,43 +99,58 @@ async def validate_input(hass: HomeAssistant, data: dict[str, Any]) -> dict[str,
     except (AuthUnavailableError, APIConnectionError) as err:
         raise CannotConnectError from err
 
-    return {"title": "Radoff", "username": data[CONF_USERNAME], "domains": domains}
+    return {
+        "title": "Radoff",
+        "username": data[CONF_USERNAME],
+        "domains": domains,
+        # The already-authenticated client, so a caller needing one more
+        # request reuses this session instead of logging in a second time.
+        "api": api,
+    }
+
+
+def domain_choices(domains: list[dict[str, Any]]) -> dict[str, str]:
+    """
+    Return `{domain_prefix: label}` for the domains of a `list_domains()` response.
+
+    Each element wraps the domain next to the caller's role in it. The value
+    persisted is `prefix`, what every domain-scoped call takes as a query
+    parameter; the label is `name`, since most prefixes are UUID fragments a
+    user would be guessing between, falling back to the prefix.
+
+    An element without a prefix is skipped rather than raising: one
+    malformed entry is no reason to refuse the rest of the list.
+    """
+    choices: dict[str, str] = {}
+
+    for element in domains:
+        domain = element.get("domain") or {}
+        prefix = domain.get("prefix")
+        if not prefix:
+            _LOGGER.debug("Skipping a domain with no prefix: %s", element)
+            continue
+        choices[prefix] = domain.get("name") or prefix
+
+    return choices
 
 
 class ConfigPatternFlow(ConfigFlow, domain=DOMAIN):
     """Handle a config flow for radoff."""
 
-    VERSION = 2
-    # Bumped by card T-06/F2 together with the entity-registry step in
-    # `__init__.py::async_migrate_entry`, so a newly created entry is not
-    # sent through a migration that has nothing to do (its entities are
-    # built with the current identifiers from the start). Minor, not major:
-    # the entry's own `data`/`options` shape is unchanged.
-    MINOR_VERSION = 2
+    VERSION = CONFIG_ENTRY_VERSION
+    MINOR_VERSION = CONFIG_ENTRY_MINOR_VERSION
 
     def __init__(self) -> None:
         """Initialize the config flow."""
         self._user_input: dict[str, Any] = {}
         self._username: str = ""
-        self._domains: list[dict[str, Any]] = []
+        self._api: API | None = None
+        self._domain_choices: dict[str, str] = {}
 
     @staticmethod
     @callback
     def async_get_options_flow(config_entry: ConfigEntry) -> RadoffOptionsFlow:
-        """
-        Create the options flow (card S-11).
-
-        `config_entry` is passed explicitly to `RadoffOptionsFlow.__init__`
-        rather than relying on `OptionsFlow` to set `self.config_entry`
-        automatically - same baseline-compatibility reasoning already
-        applied to the re-auth flow in card S-08 (see that step's note on
-        `async_update_reload_and_abort`). Note that reasoning cited a
-        minimum of 2024.6.0: `hacs.json` actually declares **2025.1.4**
-        (corrected while working on RT-2926, where the same claim would
-        have ruled out a reconfigure flow that is in fact available). The
-        explicit argument is kept anyway - it costs one line and depends on
-        nothing.
-        """
+        """Create the options flow."""
         return RadoffOptionsFlow(config_entry)
 
     async def async_step_user(
@@ -154,11 +162,8 @@ class ConfigPatternFlow(ConfigFlow, domain=DOMAIN):
             try:
                 info = await validate_input(self.hass, user_input)
             except UnsupportedChallengeError:
-                # Card S-09 / finding C8: never create a config entry for an
-                # account Cognito is asking a challenge for - abort with a
-                # dedicated, actionable reason instead of the generic
-                # invalid_auth error a bare exception would previously have
-                # produced (or, before that, no rejection at all).
+                # Never create an entry for an account Cognito is asking a
+                # challenge for: it could never authenticate.
                 return self.async_abort(reason="unsupported_challenge")
             except CannotConnectError:
                 errors["base"] = "cannot_connect"
@@ -168,18 +173,21 @@ class ConfigPatternFlow(ConfigFlow, domain=DOMAIN):
                 _LOGGER.exception("Unexpected exception")
                 errors["base"] = "unknown"
             else:
-                domains: list[dict[str, Any]] = info["domains"]
+                choices = domain_choices(info["domains"])
 
-                if not domains:
+                if not choices:
                     return self.async_abort(reason="no_domains")
 
                 self._user_input = user_input
                 self._username = info["username"]
+                self._api = info["api"]
 
-                if len(domains) == 1:
-                    return await self._async_create_entry(domains[0]["id"])
+                if len(choices) == 1:
+                    # One domain is an answer, not a question: the step is
+                    # skipped rather than shown pre-selected.
+                    return await self._async_create_entry(next(iter(choices)))
 
-                self._domains = domains
+                self._domain_choices = choices
                 return await self.async_step_domain()
 
         return self.async_show_form(
@@ -191,33 +199,55 @@ class ConfigPatternFlow(ConfigFlow, domain=DOMAIN):
     ) -> ConfigFlowResult:
         """Handle domain selection for accounts with access to more than one domain."""
         if user_input is not None:
-            return await self._async_create_entry(user_input[CONF_DOMAIN_ID])
-
-        domain_options = {
-            domain["id"]: domain.get("name") or domain["id"] for domain in self._domains
-        }
+            return await self._async_create_entry(user_input[CONF_DOMAIN_PREFIX])
 
         return self.async_show_form(
             step_id="domain",
             data_schema=vol.Schema(
-                {vol.Required(CONF_DOMAIN_ID): vol.In(domain_options)}
+                {vol.Required(CONF_DOMAIN_PREFIX): vol.In(self._domain_choices)}
             ),
         )
 
-    async def _async_create_entry(self, domain_id: str) -> ConfigFlowResult:
-        """Persist the config entry with the chosen domain_id."""
-        # Card S-09 / finding C16: normalize before using the username as the
-        # entry's unique_id, so "Mario@x" and "mario@x" are recognised as the
-        # same account (`already_configured`) instead of producing two
-        # duplicate entries. The *unnormalized* username from `self._user_input`
-        # is still what gets persisted into `data` and used to authenticate -
-        # Cognito usernames are not guaranteed case-insensitive server-side,
-        # so only the HA-local identity key is normalized here, not the
-        # credential itself.
+    async def _async_has_devices(self, domain_prefix: str) -> bool:
+        """
+        Answer whether the chosen domain holds any device at all.
+
+        A domain with no device sets up cleanly and then shows nothing, with
+        no explanation anywhere. Only an empty answer counts: any failure
+        returns `True`, because the check then has no opinion and the first
+        refresh handles a broken backend far better than this form can.
+        """
+        if self._api is None:
+            return True
+
+        self._api.domain_prefix = domain_prefix
+
+        try:
+            devices = await self.hass.async_add_executor_job(self._api.get_devices)
+        except Exception:  # noqa: BLE001 - see the docstring: no failure of
+            # this optional check may block a setup, so every one of them is
+            # caught and answered the same way.
+            _LOGGER.debug(
+                "Could not check whether domain %s has devices; "
+                "continuing with the setup",
+                domain_prefix,
+                exc_info=True,
+            )
+            return True
+
+        return bool(devices)
+
+    async def _async_create_entry(self, domain_prefix: str) -> ConfigFlowResult:
+        """Persist the config entry with the chosen domain_prefix."""
+        if not await self._async_has_devices(domain_prefix):
+            return self.async_abort(reason="no_devices")
+
+        # Normalized only as the identity key. What is persisted and
+        # authenticated with stays as typed: Cognito may be case-sensitive.
         await self.async_set_unique_id(self._username.strip().lower())
         self._abort_if_unique_id_configured()
 
-        data = {**self._user_input, CONF_DOMAIN_ID: domain_id}
+        data = {**self._user_input, CONF_DOMAIN_PREFIX: domain_prefix}
         return self.async_create_entry(
             title="Radoff", data=data, options={CONF_INDEX: True}
         )
@@ -226,53 +256,21 @@ class ConfigPatternFlow(ConfigFlow, domain=DOMAIN):
         self,
         entry_data: Mapping[str, Any],  # noqa: ARG002
     ) -> ConfigFlowResult:
-        """
-        Handle re-authentication triggered by `ConfigEntryAuthFailed` (card S-08).
-
-        Home Assistant calls this with the failing entry's own `data` as
-        `entry_data`, and - crucially - has already put the entry id in
-        `self.context["entry_id"]` (set by `ConfigEntry.async_start_reauth`,
-        which is what the coordinator calls internally when
-        `_async_update_data` raises `ConfigEntryAuthFailed`). `entry_data` is
-        not used directly: `async_step_reauth_confirm` below re-reads the
-        entry fresh from `self.context["entry_id"]` instead, so it always
-        shows the username currently on the entry rather than a snapshot
-        that could theoretically be stale.
-        """
+        """Handle re-authentication triggered by `ConfigEntryAuthFailed`."""
         return await self.async_step_reauth_confirm()
 
     async def async_step_reauth_confirm(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
         """
-        Ask for the new password and validate it (card S-08, steps 3-4).
+        Ask for the new password and validate it.
 
-        Deliberately a single-field form: username is shown (read-only, via
-        `description_placeholders`) but not editable here - changing the
-        account itself is a reconfigure flow, explicitly out of scope for
-        this card. `unique_id` is never touched in this whole flow, so
-        re-auth can never create a duplicate entry (card S-08, step 6): we
-        only ever update the password on the *same* entry found via
-        `self.context["entry_id"]`.
-
-        On success, the entry's `data` is updated in place and
-        `async_abort(reason="reauth_successful")` ends the flow - no
-        `async_create_entry` call, so no new entry, no lost entity history.
-        The reload itself is not triggered explicitly here: it already
-        happens through the `update_listener` `__init__.py` registers on
-        every config entry (`config_entry.add_update_listener(...)`), which
-        fires on any `async_update_entry` call that actually changes the
-        entry's data - this avoids depending on `async_update_reload_and_abort`.
-        S-08 justified that by a declared minimum of 2024.6.0; `hacs.json`
-        actually declares **2025.1.4**, which does have that helper (noted
-        while working on RT-2926). The listener-driven reload is kept - it
-        is what the options flow relies on too - but it is a choice, not a
-        compatibility constraint.
-
-        Card S-09 adds the same `UnsupportedChallengeError` handling used by
-        `async_step_user`: a password change that leaves the account on a
-        Cognito challenge (e.g. it now requires MFA) must abort cleanly here
-        too, rather than falling through to the generic `except Exception`.
+        A single-field form: the username is shown but not editable, since
+        changing the account is a reconfigure. `unique_id` is never touched,
+        so re-auth cannot create a duplicate entry - the password is updated
+        on the same entry and the flow aborts as successful, leaving the
+        entity history intact. The reload comes from the entry's own update
+        listener.
         """
         errors: dict[str, str] = {}
 
@@ -284,7 +282,11 @@ class ConfigPatternFlow(ConfigFlow, domain=DOMAIN):
         if user_input is not None:
             data = {**reauth_entry.data, CONF_PASSWORD: user_input[CONF_PASSWORD]}
             try:
-                await validate_input(self.hass, data)
+                await validate_input(
+                    self.hass,
+                    data,
+                    reauth_entry.options.get(CONF_BASE_URL, DEFAULT_BASE_URL),
+                )
             except UnsupportedChallengeError:
                 return self.async_abort(reason="unsupported_challenge")
             except CannotConnectError:
@@ -314,22 +316,12 @@ class ConfigPatternFlow(ConfigFlow, domain=DOMAIN):
 
 class RadoffOptionsFlow(OptionsFlow):
     """
-    Handle an options flow for radoff (card S-11).
+    Handle an options flow for radoff.
 
-    Two fields, both already consumed by `RadoffCoordinator.__init__`
-    (`coordinator.py`) before this flow existed - it read `CONF_SCAN_INTERVAL`
-    and `CONF_INDEX` from `config_entry.options` from the start, but nothing
-    could ever write either one (finding F6: `MIN_SCAN_INTERVAL` was dead
-    code, and disabling index entities required removing and re-adding the
-    integration). This flow is the missing write path; no coordinator change
-    was needed beyond passing the resolved interval through to `API` for the
-    429 message (see `coordinator.py`, `api/client.py`).
-
-    A third field for the staleness multiplier (`DEFAULT_STALE_MULTIPLIER`,
-    const.py) was considered, per this card's own "COSA FARE" ("o la sua
-    esposizione va valutata, vedi S-07"), and deliberately left out - decided
-    with Piero: no acceptance criterion requires it, and it already tracks a
-    changed scan_interval automatically via `RadoffCoordinator.stale_after`.
+    The poll interval and the index entities, plus an advanced third field
+    for the API base URL: the environment is the host, so that one value is
+    what moves an installation between environments without a code change.
+    Its bounds come from the constants, so moving those moves the form.
     """
 
     def __init__(self, config_entry: ConfigEntry) -> None:
@@ -341,13 +333,9 @@ class RadoffOptionsFlow(OptionsFlow):
     ) -> ConfigFlowResult:
         """Show and process the single options form."""
         if user_input is not None:
-            # `NumberSelector` already enforces min/max client- and
-            # server-side (see the schema below), and voluptuous re-validates
-            # server-side regardless of what the frontend sent - a value
-            # below MIN_SCAN_INTERVAL never reaches this point as a saved
-            # option (S-11 AC: "Un valore sotto il minimo viene rifiutato dal
-            # form.").
-            return self.async_create_entry(data=user_input)
+            # Voluptuous re-validates server-side whatever the frontend
+            # sent, so a value below the floor never reaches here.
+            return self.async_create_entry(data=self._merged_options(user_input))
 
         current_scan_interval = self.config_entry.options.get(
             CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL
@@ -373,7 +361,41 @@ class RadoffOptionsFlow(OptionsFlow):
             }
         )
 
+        if self.show_advanced_options:
+            # With advanced mode off the field is not in the schema at all,
+            # so a normal user's form is unchanged by its existence.
+            options_schema = options_schema.extend(
+                {
+                    vol.Optional(
+                        CONF_BASE_URL,
+                        default=self.config_entry.options.get(
+                            CONF_BASE_URL, DEFAULT_BASE_URL
+                        ),
+                    ): TextSelector(TextSelectorConfig(type=TextSelectorType.URL))
+                }
+            )
+
         return self.async_show_form(step_id="init", data_schema=options_schema)
+
+    def _merged_options(self, user_input: dict[str, Any]) -> dict[str, Any]:
+        """
+        Return the options to save, merging `user_input` onto the stored ones.
+
+        A merge, not a replacement: with advanced mode off the base URL is
+        not in `user_input`, and saving that dict as-is would drop an
+        override someone set. A URL equal to the default, or blank, is
+        removed rather than stored, so an entry that never overrode it keeps
+        following the constant when that moves.
+        """
+        merged = {**self.config_entry.options, **user_input}
+
+        base_url = str(merged.get(CONF_BASE_URL, "")).strip().rstrip("/")
+        if not base_url or base_url == DEFAULT_BASE_URL:
+            merged.pop(CONF_BASE_URL, None)
+        else:
+            merged[CONF_BASE_URL] = base_url
+
+        return merged
 
 
 class CannotConnectError(HomeAssistantError):
@@ -385,16 +407,7 @@ class InvalidAuthError(HomeAssistantError):
 
 
 class UnsupportedChallengeError(HomeAssistantError):
-    """
-    Error to indicate Cognito requires a challenge this flow cannot complete.
-
-    Card S-09 / finding C8. Carries the raw Cognito `challenge_name` (e.g.
-    `NEW_PASSWORD_REQUIRED`, `SMS_MFA`) purely for logging/diagnostics - the
-    abort reason shown to the user (`unsupported_challenge`, see
-    `strings.json`/`translations/*.json`) is deliberately generic and
-    actionable rather than naming the specific challenge, since actually
-    supporting any of them is out of scope for this card.
-    """
+    """Cognito requires a challenge this flow cannot complete."""
 
     def __init__(self, challenge_name: str) -> None:
         """Store the Cognito challenge name that triggered this abort."""

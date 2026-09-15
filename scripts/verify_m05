@@ -1,0 +1,114 @@
+#!/usr/bin/env bash
+#
+# Tutte le verifiche di polling, jitter e 429, in ordine, in un colpo solo.
+#
+#   ./scripts/verify_m05              # tutto, verifica dal vivo compresa
+#   ./scripts/verify_m05 --offline    # salta la passata su dev (nessuna rete)
+#
+# Le credenziali si leggono da .env (gitignored), come RADOFF_USERNAME /
+# RADOFF_PASSWORD: questo script non le contiene e non le stampa.
+#
+# Anche il pool Cognito di dev viene da .env, come RADOFF_DEV_POOL_ID /
+# RADOFF_DEV_CLIENT_ID: serve finche' const.py punta a un pool diverso
+# dall'ambiente di DEFAULT_BASE_URL. Sovrascrivibili dall'ambiente:
+#   M05_POOL_ID=... M05_DOMAIN_PREFIX=... ./scripts/verify_m05
+
+set -uo pipefail
+
+cd "$(dirname "$0")/.."
+
+# Il pool Cognito di dev non sta nel repo: si legge da .env (gitignored),
+# come le credenziali. `env_value` lo estrae senza eseguire il file.
+env_value() {
+    [[ -f .env ]] || return 0
+    sed -n "s/^[[:space:]]*$1[[:space:]]*=[[:space:]]*//p" .env | tail -1 | tr -d "\"'"
+}
+
+POOL_ID="${M05_POOL_ID:-$(env_value RADOFF_DEV_POOL_ID)}"
+CLIENT_ID="${M05_CLIENT_ID:-$(env_value RADOFF_DEV_CLIENT_ID)}"
+DOMAIN_PREFIX="${M05_DOMAIN_PREFIX:-875fe89b}"
+
+if [[ -z "${POOL_ID}" || -z "${CLIENT_ID}" ]]; then
+    echo
+    echo "  Mancano RADOFF_DEV_POOL_ID e RADOFF_DEV_CLIENT_ID."
+    echo "  Mettili in .env (gitignored) o esportali: il pool Cognito di dev"
+    echo "  non e' nel repo."
+    exit 2
+fi
+
+OFFLINE=0
+[[ "${1:-}" == "--offline" ]] && OFFLINE=1
+
+FAILED=()
+
+step() {
+    local name="$1"
+    shift
+    echo
+    echo "═══ ${name}"
+    echo "    \$ $*"
+    echo
+    if "$@"; then
+        echo
+        echo "    ✓ ${name}"
+    else
+        echo
+        echo "    ✗ ${name}"
+        FAILED+=("${name}")
+    fi
+}
+
+echo
+echo "  Verifiche di polling, jitter e 429"
+echo "  branch: $(git branch --show-current)"
+
+# 1. Formattazione e lint. --check non riscrive nulla: se fallisce, il
+#    comando da lanciare e' ./scripts/lint, che formatta e corregge.
+step "Formattazione (nessuna riscrittura)" ruff format --check .
+step "Lint" ruff check .
+
+# 2. La suite intera. Non solo i test di questa card: il cambio di
+#    intervallo tocca stale_after e il budget di timeout, cioe' cose che
+#    altri test asseriscono.
+step "Suite completa" python3 -m pytest -q
+
+# 3. Gli stessi criteri, isolati e con i nomi in chiaro: serve a leggere
+#    quale criterio e' coperto da quale test, non a coprire di piu'.
+step "Criteri, uno per riga" python3 -m pytest -v --no-cov -p no:randomly \
+    tests/test_coordinator.py \
+    tests/test_config_flow.py::test_the_form_refuses_an_interval_below_the_floor \
+    tests/test_config_flow.py::test_an_entry_that_never_set_an_interval_polls_at_the_default \
+    tests/test_init.py::test_a_429_on_the_schema_call_names_itself_and_retries \
+    -k "offset or backoff or 429 or interval or together"
+
+# 4. La passata dal vivo su dev. E' l'unica che tocca la rete e l'unica che
+#    puo' dire se il budget di richieste che il README promette e' ancora
+#    quello che l'API addebita.
+if [[ "${OFFLINE}" -eq 1 ]]; then
+    echo
+    echo "═══ Verifica dal vivo su dev"
+    echo "    saltata (--offline)"
+else
+    step "Verifica dal vivo su dev" python3 scripts/verify_m05_live.py \
+        --pool-id "${POOL_ID}" \
+        --client-id "${CLIENT_ID}" \
+        --domain-prefix "${DOMAIN_PREFIX}"
+fi
+
+echo
+echo "═══════════════════════════════════════════════════════════════"
+if [[ ${#FAILED[@]} -eq 0 ]]; then
+    echo "  Tutto verde."
+    echo
+    echo "  Resta una sola cosa che nessuno script puo' fare: guardare il"
+    echo "  form. ./scripts/develop, poi Impostazioni -> Dispositivi e"
+    echo "  servizi -> Radoff -> Configura, e verificare che il campo"
+    echo "  proponga 300 e rifiuti 59."
+    exit 0
+fi
+
+echo "  Falliti: ${#FAILED[@]}"
+for name in "${FAILED[@]}"; do
+    echo "    - ${name}"
+done
+exit 1

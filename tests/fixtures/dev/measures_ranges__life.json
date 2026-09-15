@@ -1,0 +1,11 @@
+{
+  "error": "Device type not found",
+  "message": "No schema found for device_type 'life'",
+  "available": [
+    "city",
+    "now",
+    "nowplus",
+    "sense",
+    "sismoff"
+  ]
+}

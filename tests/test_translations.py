@@ -1,23 +1,7 @@
 """
-Structural completeness test for cards S-15 and S-16.
+Translation completeness against the schema the API serves.
 
-pm1/pm25/pm10 shipped without a name in strings.json/translations because
-the definition of one sensor lives on four separate files (properties.py +
-strings.json + 2 translations) and nothing enforced that they stay in sync
-(analysis §8.1). This test makes that enforcement structural instead of
-relying on whoever touches `properties.py` to remember the other three
-files: for every (bucket, property) pair `properties.py::MAPPING` defines -
-including the aggregated entities S-10 introduced - it asserts a matching
-`entity.sensor.<slug>.name` exists in strings.json and in every
-translations/*.json file, and flags any leftover key that no longer maps to
-a real MAPPING entry (S-15).
-
-It also covers the `_index` sibling entities `sensor.py::INDEX_MAPPING`
-generates (S-16, C5/C13): for each one, the states an index_fn can actually
-reach on boundary values must match `INDEX_MAPPING[...]["states"]` exactly,
-and each translation file's `state` block for that entity must expose
-exactly those states - neither missing a reachable one nor keeping an
-orphaned key from a state the index_fn can no longer return.
+Covers: measure names, qualitative sibling names, states, orphaned keys.
 """
 
 import json
@@ -29,13 +13,17 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
-from custom_components.radoff.entity import reading_key_slug  # noqa: E402
-from custom_components.radoff.properties import MAPPING  # noqa: E402
-from custom_components.radoff.sensor import INDEX_MAPPING  # noqa: E402
+from .conftest import load_dev_fixture  # noqa: E402
 
 RADOFF_DIR = REPO_ROOT / "custom_components" / "radoff"
 STRINGS_PATH = RADOFF_DIR / "strings.json"
 TRANSLATIONS_DIR = RADOFF_DIR / "translations"
+
+# The catalogue's whole vocabulary: every measure of every device type, as
+# `GET /analytics/measures-ranges` returns it without a `device_type`. The
+# integration does not filter devices by type, so a user with a `sismoff`
+# must find `ch4` and `co` translated too.
+ALL_MEASURES: dict[str, dict] = load_dev_fixture("measures_ranges__all")
 
 
 def _load(path: Path) -> dict:
@@ -46,30 +34,37 @@ def _translation_paths() -> list[Path]:
     return [STRINGS_PATH, *sorted(TRANSLATIONS_DIR.glob("*.json"))]
 
 
-def _required_slugs() -> set[str]:
-    """Every entity slug a real (bucket, property) pair in MAPPING resolves to."""
+def _index_measures() -> dict[str, list[str]]:
+    """`{measure: [status, ...]}` for every measure the API bands."""
     return {
-        reading_key_slug((bucket, prop_name))
-        for bucket, props in MAPPING.items()
-        for prop_name in props
+        name: [band["status"] for band in measure["ranges"]]
+        for name, measure in ALL_MEASURES.items()
+        if measure["ranges"]
     }
 
 
-def _index_slugs() -> set[str]:
-    """The `_index` sibling slugs sensor.py generates for INDEX_MAPPING entries."""
-    return {f"{name}_index" for name in INDEX_MAPPING}
-
-
-REQUIRED_SLUGS = sorted(_required_slugs())
-ALLOWED_SLUGS = _required_slugs() | _index_slugs()
+REQUIRED_SLUGS = sorted(ALL_MEASURES)
+INDEX_MEASURES = _index_measures()
+ALLOWED_SLUGS = set(REQUIRED_SLUGS) | {f"{name}_index" for name in INDEX_MEASURES}
 TRANSLATION_PATHS = _translation_paths()
 DOCS = {path: _load(path) for path in TRANSLATION_PATHS}
 
 
 @pytest.mark.parametrize("path", TRANSLATION_PATHS, ids=lambda p: p.name)
 @pytest.mark.parametrize("slug", REQUIRED_SLUGS)
-def test_every_mapping_entry_has_a_name(path: Path, slug: str) -> None:
-    """S-15 AC: every properties.py entry (incl. S-10's aggregated ones) has a name."""
+def test_every_measure_has_a_name(path: Path, slug: str) -> None:
+    """Every measure the API serves has a translated name."""
+    sensor_entities = DOCS[path].get("entity", {}).get("sensor", {})
+    assert slug in sensor_entities, f"{path.name}: missing entity.sensor.{slug}"
+    assert sensor_entities[slug].get(
+        "name"
+    ), f"{path.name}: entity.sensor.{slug} has no non-empty 'name'"
+
+
+@pytest.mark.parametrize("path", TRANSLATION_PATHS, ids=lambda p: p.name)
+@pytest.mark.parametrize("slug", sorted(f"{name}_index" for name in INDEX_MEASURES))
+def test_every_banded_measure_has_an_index_name(path: Path, slug: str) -> None:
+    """A measure the API bands has a translated name for its sibling."""
     sensor_entities = DOCS[path].get("entity", {}).get("sensor", {})
     assert slug in sensor_entities, f"{path.name}: missing entity.sensor.{slug}"
     assert sensor_entities[slug].get(
@@ -79,41 +74,18 @@ def test_every_mapping_entry_has_a_name(path: Path, slug: str) -> None:
 
 @pytest.mark.parametrize("path", TRANSLATION_PATHS, ids=lambda p: p.name)
 def test_no_orphaned_entity_names(path: Path) -> None:
-    """Flags entity.sensor keys left over from a removed/renamed property."""
+    """No entity.sensor key is left over from a removed or renamed measure."""
     sensor_entities = set(DOCS[path].get("entity", {}).get("sensor", {}).keys())
     orphans = sensor_entities - ALLOWED_SLUGS
     assert not orphans, f"{path.name}: orphaned entity.sensor keys: {sorted(orphans)}"
 
 
-def _reachable_index_states(name: str) -> set[str]:
-    """States `INDEX_MAPPING[name]["index"]` actually returns on boundary values."""
-    index_obj = INDEX_MAPPING[name]
-    index_fn = index_obj["index"]
-    epsilon = 0.01
-    reached: set[str] = set()
-    for threshold in index_obj["thresholds"]:
-        reached.add(index_fn(threshold))
-        reached.add(index_fn(threshold + epsilon))
-    return reached
-
-
-@pytest.mark.parametrize("name", sorted(INDEX_MAPPING))
-def test_index_fn_boundary_states_match_declared_states(name: str) -> None:
-    """S-16 AC: states reachable from an index_fn are exactly its declared `states`."""
-    declared = set(INDEX_MAPPING[name]["states"])
-    reached = _reachable_index_states(name)
-    assert reached == declared, (
-        f"{name}: index_fn reachable states {sorted(reached)} != "
-        f"declared states {sorted(declared)}"
-    )
-
-
 @pytest.mark.parametrize("path", TRANSLATION_PATHS, ids=lambda p: p.name)
-@pytest.mark.parametrize("name", sorted(INDEX_MAPPING))
-def test_index_translation_states_match_declared_states(path: Path, name: str) -> None:
-    """S-16 AC: each *_index translation exposes exactly the declared states."""
+@pytest.mark.parametrize("name", sorted(INDEX_MEASURES))
+def test_index_translation_states_match_the_served_bands(path: Path, name: str) -> None:
+    """Translated states are exactly the bands the API serves."""
     slug = f"{name}_index"
-    declared = set(INDEX_MAPPING[name]["states"])
+    declared = set(INDEX_MEASURES[name])
     sensor_entities = DOCS[path].get("entity", {}).get("sensor", {})
     assert slug in sensor_entities, f"{path.name}: missing entity.sensor.{slug}"
     state_keys = set(sensor_entities[slug].get("state", {}).keys())
@@ -125,3 +97,15 @@ def test_index_translation_states_match_declared_states(path: Path, name: str) -
     assert (
         not orphaned
     ), f"{path.name}: entity.sensor.{slug}.state has orphaned keys {sorted(orphaned)}"
+
+
+@pytest.mark.parametrize("path", TRANSLATION_PATHS, ids=lambda p: p.name)
+def test_the_deleted_vocabulary_is_gone(path: Path) -> None:
+    """No `medium` state survives in any translation file."""
+    sensor_entities = DOCS[path].get("entity", {}).get("sensor", {})
+    with_medium = [
+        slug
+        for slug, entry in sensor_entities.items()
+        if "medium" in entry.get("state", {})
+    ]
+    assert not with_medium, f"{path.name}: `medium` still translated in {with_medium}"

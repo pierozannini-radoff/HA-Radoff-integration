@@ -1,8 +1,7 @@
 """Class which represent the Radoff API."""
 
-import base64
-import json
 import logging
+import random
 from datetime import UTC, datetime
 from http import HTTPStatus
 from typing import Any
@@ -12,77 +11,101 @@ import requests
 from requests.adapters import HTTPAdapter, Retry
 
 from ..const import (
+    DEFAULT_BASE_URL,
     DEFAULT_CLIENT_ID,
     DEFAULT_POOL_ID,
     DEFAULT_POOL_REGION,
     DEFAULT_SCAN_INTERVAL,
+    RATE_LIMIT_BACKOFF_JITTER,
+    RATE_LIMIT_BACKOFF_MAX,
+    RATE_LIMIT_BACKOFF_START,
     USER_AGENT,
 )
-from ..properties import MAPPING
 from .auth import AuthExpiredError, CognitoSession
-from .exceptions import APIAuthError, APIConnectionError
-from .models import DeviceFetchError, RadoffDevice, Reading, ReadingKey
+from .exceptions import (
+    APIAuthError,
+    APIConnectionError,
+    APIDeviceNotFoundError,
+    APIDomainAccessError,
+    APIRateLimitError,
+    APIServerError,
+    APIUnknownDeviceTypeError,
+    DomainNotFoundError,
+)
+from .models import (
+    KNOWN_CONNECTION_STATUSES,
+    ConnectionState,
+    RadoffDevice,
+    Reading,
+    classify_connection_status,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
-DEVICE_TYPES = ["Now+"]
+# The device type this integration is tested and supported on. Documentation
+# only: nothing filters on it, and a device of any other type is still read.
+SUPPORTED_DEVICE_TYPES = frozenset({"nowplus"})
 
-# T-02 CONFIRMED (probe run 2026-09-02 against a real account): objects in
-# `data`, `aggregatedData` and `recalculatedData` carry only `propertyName`
-# plus `value`/`aggregationValue` - no per-sample timestamp field exists at
-# all. This tuple therefore stays EMPTY BY DESIGN, not "pending": if a future
-# API version ever adds one, add its key here and `_parse_measured_at`
-# already knows how to read it (ISO-8601, with or without a trailing "Z", or
-# a Unix epoch number in seconds or milliseconds) - nothing else needs to
-# change. Until then, `Reading.measured_at` stays `None` and
-# `RadoffEntity.available` falls back to the device-level
-# `RadoffDevice.last_data_received_at` (see `_get_data` below) instead of
-# fully degrading to "the reading exists" - a real, if coarser, freshness
-# signal the same probe run found sitting one level up in the same response.
-_MEASURED_AT_KEYS: tuple[str, ...] = ()
+# API paths, the version being in the hostname. The token is accepted on
+# `/data/*` and `/analytics/*` only, and a missing route answers 403, not 404.
+DISCOVERY_PATH = "/data/user/me/domains"
+DEVICES_PATH = "/data/devices"
+
+# The per-device-type measurement schema. Not domain-scoped: a schema
+# describes a product, not a customer's estate.
+MEASURES_RANGES_PATH = "/analytics/measures-ranges"
+
+# Deliberately large: the quota counts requests, not bytes. A silent cap
+# costs one extra request, never a missing device.
+DEVICES_PAGE_SIZE = 200
+
+# Hard stop on the pagination loop: reaching 5000 devices means the backend is
+# answering with a `pagination` block that never terminates.
+MAX_DEVICE_PAGES = 25
+
+# Keys of the `telemetry` block that are not measurements: the block's own
+# instant, and the device type repeated inside it.
+_TELEMETRY_NON_MEASURE_KEYS = frozenset({"timestamp", "device_type"})
 
 # A numeric timestamp above this (~year 2100 expressed in seconds) is treated
 # as milliseconds instead of seconds.
 _EPOCH_MS_THRESHOLD = 4_102_444_800
 
-# Errors from a single per-device `GET /data/devices/{id}` that `get_devices`
-# isolates to that one device instead of letting them fail the whole poll
-# (card S-13): an HTTP-level failure on that one request (`APIAuthError` -
-# 403/429/5xx/other non-200, see `_check_response_status`) or a
-# transport-level one (`requests.exceptions.RequestException` - connection
-# error, read/connect timeout, malformed response body, ...). Deliberately
-# NOT included: `AuthExpiredError`/`AuthInvalidError`/`AuthChallengeRequiredError`
-# (all raised via `self._session.get_bearer()`, called from `_get_data`
-# below) - those are about the Cognito *session*, not this one device, so
-# `get_devices()` must let them propagate unisolated (card S-13, "COSA FARE"
-# step 6: "Un errore auth su un dispositivo NON va isolato: risale, perché
-# riguarda la sessione e non il dispositivo"). They are simply not part of
-# this tuple, so a plain `except _ISOLATABLE_DEVICE_ERRORS` below never
-# catches them - no special-casing needed.
-_ISOLATABLE_DEVICE_ERRORS = (APIAuthError, requests.exceptions.RequestException)
-
 
 def _safe_url(url: str) -> str:
-    """
-    Return `url` without its query string or fragment, safe to log.
-
-    Query strings on these endpoints do not currently carry tokens, but
-    stripping them keeps the log line safe even if that changes (see S-03/S6).
-    """
+    """Return `url` without its query string or fragment, safe to log."""
     return urlsplit(url)._replace(query="", fragment="").geturl()
 
 
 def _get_request_id(response: requests.Response) -> str | None:
-    """
-    Return a backend request id from the response headers, if present.
-
-    The exact header name used by the Radoff backend has not been confirmed
-    with the API team (tracked in T-02); this checks the header names commonly
-    used by AWS-fronted APIs and returns None rather than guessing further.
-    """
-    for header in ("x-request-id", "x-amzn-requestid", "x-amz-request-id"):
+    """Return a backend request id from the response headers, if present."""
+    for header in ("x-amzn-requestid", "x-request-id", "x-amz-request-id"):
         value = response.headers.get(header)
         if value:
+            return value
+    return None
+
+
+def _error_body(response: requests.Response) -> dict[str, Any]:
+    """
+    Return the parsed error body of a non-200 response, or `{}`.
+
+    The error body is not uniform across the API - at least three shapes
+    exist - so a missing, empty or non-JSON body must never turn a
+    classifiable HTTP status into a parse error.
+    """
+    try:
+        body = response.json()
+    except ValueError:
+        return {}
+    return body if isinstance(body, dict) else {}
+
+
+def _error_detail(body: dict[str, Any]) -> str | None:
+    """Return the backend's own error text from a parsed error body, if any."""
+    for key in ("error", "message"):
+        value = body.get(key)
+        if isinstance(value, str) and value:
             return value
     return None
 
@@ -91,21 +114,10 @@ def _parse_timestamp(raw: Any) -> datetime | None:
     """
     Best-effort parse of a single raw value as a timestamp.
 
-    Accepts either an ISO-8601 string (with or without a trailing "Z") or a
-    Unix epoch number in seconds or milliseconds. Anything else, or a value
-    that fails to parse, returns `None` rather than raising: a single bad or
-    absent timestamp must never be able to fail the whole poll (same
-    "parsing robusto con fallback a None" requirement as card S-07's step 1).
-
-    Assumes UTC when a parsed ISO-8601 string carries no explicit offset.
-    T-02 CONFIRMED (probe run 2026-09-02) that `lastDataReceivedAt` (see
-    `RadoffDevice.last_data_received_at`) never exercises that fallback in
-    practice: real values look like `"2026-09-02T14:26:40.147Z"` -
-    ISO-8601 with millisecond precision and an explicit trailing "Z", i.e.
-    already UTC, same as `lastAggregatedDataReceivedAt` and `provisionedAt`
-    sampled from the same response. The no-explicit-offset branch stays as
-    a defensive fallback for any other timestamp this integration may read
-    in the future, not because this field needs it.
+    Accepts an ISO-8601 string or a Unix epoch in seconds or milliseconds;
+    anything unparseable returns `None` rather than failing the whole poll.
+    UTC is assumed when no offset is given, because the API spells its two
+    timestamps differently and only one of them carries a "Z".
     """
     try:
         if isinstance(raw, bool):
@@ -125,26 +137,43 @@ def _parse_timestamp(raw: Any) -> datetime | None:
     return None
 
 
-def _parse_measured_at(obj: dict[str, Any]) -> datetime | None:
+def _build_readings(
+    telemetry: dict[str, Any], serial_number: str
+) -> tuple[dict[str, Reading], datetime | None]:
     """
-    Best-effort extraction of a per-sample timestamp from a reading object.
+    Turn one flat `telemetry` block into readings keyed by field name.
 
-    Tries each of `_MEASURED_AT_KEYS` in order (see that tuple's comment for
-    why it is empty today) and returns the first one that parses via
-    `_parse_timestamp`, or `None` if none does.
+    Every numeric field is read, not only the ones that become entities, so a
+    field the backend starts sending reaches diagnostics straight away.
+    `bool` is excluded before the numeric check, being an `int` subclass.
     """
-    for key in _MEASURED_AT_KEYS:
-        if key in obj:
-            parsed = _parse_timestamp(obj[key])
-            if parsed is not None:
-                return parsed
-    return None
+    measured_at = _parse_timestamp(telemetry.get("timestamp"))
+    readings: dict[str, Reading] = {}
+    skipped: list[str] = []
+
+    for name, value in telemetry.items():
+        if name in _TELEMETRY_NON_MEASURE_KEYS:
+            continue
+        if isinstance(value, bool) or not isinstance(value, int | float):
+            skipped.append(name)
+            continue
+        readings[name] = Reading(name=name, value=value, measured_at=measured_at)
+
+    # Metadata only: field names and counts, never a value or the raw payload.
+    if skipped:
+        _LOGGER.debug(
+            "Device %s: ignored %d non-numeric telemetry field(s): %s",
+            serial_number,
+            len(skipped),
+            sorted(skipped),
+        )
+
+    return readings, measured_at
 
 
 class API:
     """API platform."""
 
-    BASE_DOMAIN = "https://api.iot.radoff.life/api/v1/core"
     DEFAULT_TIMEOUT = (10, 30)
 
     def __init__(  # noqa: PLR0913
@@ -154,41 +183,34 @@ class API:
         client_id: str = DEFAULT_CLIENT_ID,
         pool_id: str = DEFAULT_POOL_ID,
         pool_region: str = DEFAULT_POOL_REGION,
-        domain_id: str = "",
+        domain_prefix: str = "",
         scan_interval: int = DEFAULT_SCAN_INTERVAL,
+        base_url: str = DEFAULT_BASE_URL,
     ) -> None:
         """
         Initialise.
 
         `client_id`, `pool_id` and `pool_region` default to this integration's
-        own Cognito app client (see const.py) and are no longer expected to be
-        supplied by the config flow or persisted in the config entry (S-02):
-        they are internal production infrastructure, not per-user secrets.
-        Callers may still override them explicitly (e.g. for a staging
-        environment or in tests), but there is no user-facing UI for that.
-
-        `domain_id` is the tenant domain already chosen for this account (persisted
-        in the config entry after the config flow's discovery/selection step). It is
-        used as-is for every subsequent call; no domain discovery happens here.
-
-        `scan_interval` (card S-11) is the poll interval currently in effect
-        for this account, in seconds, as resolved by the coordinator from
-        `config_entry.options` (or `DEFAULT_SCAN_INTERVAL` if unset). It is
-        not used to schedule anything here - `RadoffCoordinator.update_interval`
-        remains the single source of truth for that - it is only surfaced in
-        the HTTP 429 branch of `_check_response_status`, so a rate-limit error
-        can name the interval actually in effect instead of a hardcoded
-        number that may no longer match what the user configured.
-
-        Card S-12: this class no longer holds any Cognito token state
-        itself (`tokens`, `_token_expires_at`, `connected` are all gone) -
-        that responsibility, plus the refresh-before-SRP logic, now lives
-        entirely in the `CognitoSession` this constructor builds by
-        composition. Every method below that needs a bearer token asks
-        `self._session.get_bearer()` for one instead of reading `self.tokens`.
+        own Cognito app client: internal infrastructure, not per-user secrets,
+        overridable for a staging environment or in tests. `domain_prefix` is
+        the tenant domain chosen for this account and is used as-is; no
+        discovery happens here. `base_url` is the whole difference between
+        environments, the API version being part of the hostname.
+        `scan_interval` schedules nothing here - it is reported in the HTTP 429
+        branch so the error can name the interval actually in effect.
         """
-        self.domain: str = domain_id
+        self.domain_prefix: str = domain_prefix
         self.scan_interval = scan_interval
+        self.base_url = base_url.rstrip("/")
+
+        # Consecutive 429s, i.e. the exponent of the backoff. The first
+        # successful response resets it.
+        self._consecutive_rate_limits = 0
+
+        # `connection_status` values already warned about, so a domain where
+        # every device shares a new state warns once, not once per device.
+        self._unknown_connection_statuses: set[str] = set()
+
         self._session = CognitoSession(
             username=username,
             password=password,
@@ -203,21 +225,12 @@ class API:
         """Create a requests session."""
         session = requests.Session()
 
-        # Card S-13: total was 3 (three retries, four attempts total) with a
-        # 0.5s backoff factor and a (10, 30)s per-request timeout - in the
-        # worst case (every attempt hits the read timeout) that is minutes
-        # per single device request, which on its own could blow well past
-        # `update_interval`. `RadoffCoordinator.async_update_data` now caps
-        # the whole poll cycle at `UPDATE_TIMEOUT_FACTOR * update_interval`
-        # (see const.py) regardless of what happens here, so this Retry no
-        # longer has to be the only thing standing between a slow backend
-        # and an overrun cycle - reduced to total=2 (two retries, three
-        # attempts total) so a single stuck device leaves more of that
-        # overall budget for the other devices in the same poll.
+        # 429 is absent from `status_forcelist`: the quota is shared, so
+        # retrying at once makes a saturated stage worse. The 5xx entries stay.
         retry_strategy = Retry(
             total=2,
             backoff_factor=0.5,
-            status_forcelist=[429, 500, 502, 503, 504],
+            status_forcelist=[500, 502, 503, 504],
             allowed_methods=["GET", "POST"],
         )
 
@@ -237,76 +250,53 @@ class API:
         return "cloud_poller"
 
     def connect(self) -> bool:
-        """
-        Perform an initial Cognito login and return True on success.
-
-        Card S-12 moves all token state and refresh/fallback logic into
-        `CognitoSession` (`api/auth.py`); this method is kept as the thin,
-        explicit entry point `config_flow.py` uses for setup and re-auth
-        validation, where a full login is exactly what is wanted - there is
-        no existing session yet to reuse there. It shares `get_bearer()`
-        with every other caller rather than reaching into `CognitoSession`'s
-        internal `_srp_login()` directly, so a fresh `API` instance's very
-        first authentication attempt goes through the exact same code path
-        as any later reconnect (`get_devices()` below).
-
-        `coordinator.py` no longer calls this method directly (card S-12,
-        "COSA FARE": "coordinator.py: non chiama più connect/disconnect
-        direttamente") - `get_devices()` authenticates lazily via
-        `get_bearer()` instead.
-
-        Every outcome `CognitoSession.get_bearer()`/`authenticate_user()`
-        know how to classify is raised as one of `AuthInvalidError`
-        (credentials rejected outright, or no authentication data at all -
-        card S-08), `AuthChallengeRequiredError` (Cognito wants a challenge
-        this integration cannot complete, e.g. `NEW_PASSWORD_REQUIRED` or
-        MFA - card S-09/C8) or `AuthUnavailableError` (Cognito unreachable
-        or throttling - never a credentials problem, card S-09/C9) - this
-        method does not need to inspect anything itself.
-        """
+        """Perform an initial Cognito login and return True on success."""
         self._session.get_bearer()
         return True
+
+    def _url(self, path: str) -> str:
+        """Return the absolute URL of `path` on this client's environment."""
+        return f"{self.base_url}{path}"
+
+    def _domain_params(self, **extra: Any) -> dict[str, Any]:
+        """
+        Return the query params of a domain-scoped request, `domain_prefix` included.
+
+        Refuses to build params without a prefix rather than omitting it:
+        `GET /data/devices` without one answers 200 with every device of every
+        domain the account can reach, so a missing prefix is a cross-domain
+        read, not a narrower query.
+        """
+        if not self.domain_prefix:
+            msg = (
+                "Refusing to call a domain-scoped Radoff endpoint without a "
+                "domain_prefix: the API would answer with every device of "
+                "every domain this account can reach."
+            )
+            raise DomainNotFoundError(msg)
+
+        return {"domain_prefix": self.domain_prefix, **extra}
 
     def list_domains(self, bearer_token: str | None = None) -> list[dict[str, Any]]:
         """
         Return every domain the authenticated user has access to, unfiltered.
 
-        No `parentDomainId` filtering is applied here anymore (see S-01): the
-        caller (config flow) decides what to do with 1, more than 1, or 0 domains.
+        The endpoint needs nothing but the bearer token, and an account with
+        no domain answers 200 with an empty list. Each entry has the shape
+        `{"domain": {"prefix": ..., "name": ...}, "role": ...}` and is handed
+        back as-is for the caller to read.
 
-        The discovery endpoint requires a valid `x-domain` header to be sent even
-        for the very first call: it responds 401 "Missing Domain Header" without
-        one, and 401 "Authorization Validation Error" for a syntactically valid
-        but unauthorized UUID. To bootstrap this without hardcoding any
-        production UUID, we decode (without signature verification - these are
-        public claims of the caller's own token) the Cognito IdToken and read the
-        domain ids embedded in its "d_<domain-uuid>" claims, then use the first
-        one as the initial `x-domain`. This was verified empirically against the
-        real API (see card S-01).
-
-        Only ever called from the config flow (initial setup or re-auth
-        validation) - `RadoffCoordinator`'s periodic polling never calls this
-        (card S-12 AC: "Nessuna chiamata a /auth/user/me/domains dopo il
-        primo setup"): the `domain_id` it needs is the one already persisted
-        on the config entry (see S-01), and `get_devices()` below never
-        re-discovers it.
+        Called only from the config flow, where every failure has the same
+        remedy, so a non-200 stays an `APIConnectionError` instead of going
+        through the full taxonomy.
         """
         if bearer_token is None:
             bearer_token = self._session.get_bearer()
 
-        candidate_domain_ids = self._extract_domain_claims(bearer_token)
-        if not candidate_domain_ids:
-            _LOGGER.info(
-                "No domain claims found in IdToken; user has no accessible domains"
-            )
-            return []
-
-        url = f"{self.BASE_DOMAIN}/auth/user/me/domains"
+        url = self._url(DISCOVERY_PATH)
         response = self.session.get(
             url,
-            headers=self._get_headers(
-                bearer_token=bearer_token, x_domain=candidate_domain_ids[0]
-            ),
+            headers=self._get_headers(bearer_token=bearer_token),
             timeout=self.DEFAULT_TIMEOUT,
         )
 
@@ -323,300 +313,360 @@ class API:
         resp_json = response.json()
         return resp_json.get("domains", [])
 
-    def _extract_domain_claims(self, id_token: str) -> list[str]:
+    def get_devices(self) -> list[RadoffDevice]:
         """
-        Extract candidate domain ids from the "d_<uuid>" claims of an IdToken.
+        Return every device of this domain, telemetry included.
 
-        These are public (unsigned-read) claims of the caller's own Cognito
-        IdToken; no signature verification is performed or needed, as this is
-        only used to bootstrap the `x-domain` header for the discovery call, not
-        to establish trust.
+        One request per page, so any error it raises is the whole cycle's and
+        nothing is caught here. `seen_serials` drops a device already
+        collected: the ordering is stable across pages, so a repeat means the
+        list shifted mid-walk and would otherwise yield two entity sets for
+        one device.
         """
-        try:
-            payload_segment = id_token.split(".")[1]
-            padding = "=" * (-len(payload_segment) % 4)
-            payload = json.loads(base64.urlsafe_b64decode(payload_segment + padding))
-        except (IndexError, ValueError, TypeError, UnicodeDecodeError) as err:
-            _LOGGER.warning("Unable to decode IdToken claims: %s", err)
-            return []
+        devices: list[RadoffDevice] = []
+        seen_serials: set[str] = set()
+        page = 1
 
-        if not isinstance(payload, dict):
-            return []
+        while page <= MAX_DEVICE_PAGES:
+            payload = self._get_devices_page(page)
 
-        return sorted(
-            key[2:] for key in payload if isinstance(key, str) and key.startswith("d_")
-        )
-
-    def get_devices(self) -> tuple[list[RadoffDevice], list[DeviceFetchError]]:
-        """
-        Get devices on api.
-
-        Card S-12: no longer checks token expiry or calls `disconnect()`/
-        `connect()` itself - `self._session.get_bearer()` (used by
-        `_get_headers` below via each request) handles refreshing or
-        re-logging in lazily, on demand, the first time a bearer token is
-        actually needed in this call.
-
-        Card S-13 splits this into two isolated pieces:
-
-        1. The `search` call (below) stays fully blocking: a failure here
-           means the set of devices itself is unknown, so there is nothing
-           to isolate - it still raises exactly as before (S-13 AC: "Un
-           fallimento della search porta tutte le entità a unavailable,
-           come oggi").
-        2. The per-device loop that follows no longer lets one device's
-           failure raise out of this method. Each `_get_data()` call is
-           tried independently; an isolatable error (see
-           `_ISOLATABLE_DEVICE_ERRORS`) is recorded as a `DeviceFetchError`
-           and the loop moves on to the next device instead of aborting the
-           whole poll (S-13 AC: "le entità dell'altro continuano ad
-           aggiornarsi"). A session-level error (an auth exception not in
-           that tuple) is NOT caught here and propagates out of this
-           method, aborting the rest of the loop - by design, see
-           `_ISOLATABLE_DEVICE_ERRORS`'s own comment and this card's "COSA
-           FARE" step 6.
-
-        `coordinator.py::RadoffCoordinator._merge_device_errors` is what
-        turns the returned `device_errors` into `RadoffDevice` entries with
-        `stale=True`, reusing the previous poll's readings when available.
-        """
-        devices_ok: list[RadoffDevice] = []
-        device_errors: list[DeviceFetchError] = []
-
-        url = f"{self.BASE_DOMAIN}/data/devices/search"
-        post_obj = {"filter": {}, "take": 99}
-
-        response = self.session.post(
-            url,
-            headers=self._get_headers(
-                bearer_token=self._session.get_bearer(), x_domain=self.domain
-            ),
-            json=post_obj,
-            timeout=self.DEFAULT_TIMEOUT,
-        )
-
-        self._check_response_status(response=response, url=url)
-
-        devices = response.json()["devices"]
-        _LOGGER.debug("Found %d devices in response", len(devices))
-
-        for device in devices:
-            if "deviceTypeName" not in device or device["deviceTypeName"] not in (
-                DEVICE_TYPES
-            ):
-                continue
-
-            device_id = device["id"]
-            device_serial = device["serial"]
-            device_type = device["deviceTypeName"]
-            name = device["name"]
-
-            try:
-                readings, last_data_received_at = self._get_data(device_id)
-            except _ISOLATABLE_DEVICE_ERRORS as err:
-                _LOGGER.debug(
-                    "Isolated per-device fetch error for device %s (%s): %s",
-                    device_id,
-                    device_type,
-                    err,
+            raw_devices = payload.get("devices")
+            if not isinstance(raw_devices, list):
+                _LOGGER.warning(
+                    "Radoff device list page %d carried no `devices` array; "
+                    "treating it as empty",
+                    page,
                 )
-                device_errors.append(
-                    DeviceFetchError(
-                        device_id=device_id,
-                        device_serial=device_serial,
-                        device_type=device_type,
-                        name=name,
-                        error=str(err),
-                    )
-                )
-                continue
+                raw_devices = []
 
-            devices_ok.append(
-                RadoffDevice(
-                    device_id=device_id,
-                    device_serial=device_serial,
-                    device_type=device_type,
-                    name=name,
-                    readings=readings,
-                    last_data_received_at=last_data_received_at,
-                )
+            for raw_device in raw_devices:
+                if not isinstance(raw_device, dict):
+                    continue
+                device = self._build_device(raw_device)
+                if device is None or device.serial_number in seen_serials:
+                    continue
+                seen_serials.add(device.serial_number)
+                devices.append(device)
+
+            pagination = payload.get("pagination")
+            total_pages = (
+                pagination.get("total_pages") if isinstance(pagination, dict) else None
             )
-        return devices_ok, device_errors
+            if not isinstance(total_pages, int) or page >= total_pages:
+                break
+            page += 1
+        else:
+            _LOGGER.warning(
+                "Radoff device list stopped at the %d-page ceiling; the "
+                "response's `pagination.total_pages` never terminated",
+                MAX_DEVICE_PAGES,
+            )
 
-    def _get_data(
-        self, device_id: str
-    ) -> tuple[dict[ReadingKey, Reading], datetime | None]:
-        """
-        Fetch one device's readings, keyed by `(bucket, property_name)`.
+        _LOGGER.debug(
+            "Radoff device list: %d device(s) over %d page(s), "
+            "%d of them without telemetry this cycle",
+            len(devices),
+            min(page, MAX_DEVICE_PAGES),
+            sum(1 for device in devices if device.stale),
+        )
+        return devices
 
-        Card S-10 / finding C4: `MAPPING` (see `properties.py`) is now keyed
-        by `Bucket` first, so this loop walks it bucket by bucket instead of
-        over a single flat property-name namespace. `data.airqualityindex`
-        and `aggregatedData.airqualityindex` therefore land in two distinct
-        `readings` entries - `(Bucket.DATA, "airqualityindex")` and
-        `(Bucket.AGGREGATED, "airqualityindex")` - instead of one overwriting
-        the other depending on dict iteration order.
-
-        Card S-13: every exception this method can raise - `AuthExpiredError`
-        (via `get_bearer()` or a 401 from `_check_response_status`),
-        `APIAuthError` (403/429/5xx/other from `_check_response_status`), or
-        a `requests.exceptions.RequestException` (network/transport failure)
-        - is left to propagate unchanged; `get_devices()` above is the one
-        place that decides which of those get isolated to this one device.
-        """
-        readings: dict[ReadingKey, Reading] = {}
-
-        url = f"{self.BASE_DOMAIN}/data/devices/{device_id}"
+    def _get_devices_page(self, page: int) -> dict[str, Any]:
+        """Fetch one page of the device list, classified but not interpreted."""
+        url = self._url(DEVICES_PATH)
         response = self.session.get(
             url,
-            headers=self._get_headers(
-                bearer_token=self._session.get_bearer(), x_domain=self.domain
-            ),
+            headers=self._get_headers(bearer_token=self._session.get_bearer()),
+            params=self._domain_params(page=page, page_size=DEVICES_PAGE_SIZE),
             timeout=self.DEFAULT_TIMEOUT,
         )
 
         self._check_response_status(response=response, url=url)
 
-        result = response.json()
-        data = result.get("data", {})
+        body = response.json()
+        return body if isinstance(body, dict) else {}
 
-        # Metadata only: bucket names and a count of readings, never the
-        # sensor values themselves or the raw payload (see S-03/S5).
-        _LOGGER.debug(
-            "device %s: %d readings, keys %s",
-            device_id,
-            sum(len(v) for v in data.values() if isinstance(v, list)),
-            sorted(data.keys()),
+    def get_measures_ranges(self, device_type: str | None = None) -> dict[str, Any]:
+        """
+        Return the raw `measures-ranges` schema for one device type.
+
+        One call per type, made once at setup and cached: the schema
+        describes a product, and the quota it would otherwise burn is shared
+        with Radoff's own apps. Omitting `device_type` merges every type into
+        one object, which hides the measures two types disagree about. An
+        unknown type raises `APIUnknownDeviceTypeError`. The response is
+        returned raw; parsing it belongs to `schema.py`.
+        """
+        url = self._url(MEASURES_RANGES_PATH)
+        params = {} if device_type is None else {"device_type": device_type}
+        response = self.session.get(
+            url,
+            headers=self._get_headers(bearer_token=self._session.get_bearer()),
+            params=params,
+            timeout=self.DEFAULT_TIMEOUT,
         )
 
-        # Device-level freshness signal (T-02 finding, card S-07): confirmed
-        # absent per-sample, but this sibling field of the same response IS
-        # "when this device last reported anything" - coarser than a
-        # per-reading timestamp would be, but real, and what
-        # RadoffEntity.available falls back to.
-        last_data_received_at = _parse_timestamp(data.get("lastDataReceivedAt"))
+        self._check_response_status(response=response, url=url)
 
-        for bucket, bucket_mapping in MAPPING.items():
-            if bucket not in data:
-                continue
-            for obj in data[bucket]:
-                pn = obj["propertyName"]
-                if pn not in bucket_mapping:
-                    continue
+        body = response.json()
+        if not isinstance(body, dict):
+            _LOGGER.warning(
+                "Radoff measures-ranges for device type '%s' answered with "
+                "%s instead of an object; treating it as an empty schema",
+                device_type,
+                type(body).__name__,
+            )
+            return {}
+        return body
 
-                obj_map = bucket_mapping[pn]
-                av = obj["value"] if "value" in obj else obj["aggregationValue"]
-                measured_at = _parse_measured_at(obj)
-                fn = obj_map.get("normalize_fn", None)
+    def _build_device(self, raw_device: dict[str, Any]) -> RadoffDevice | None:
+        """
+        Turn one entry of the device list into a `RadoffDevice`, or skip it.
 
-                readings[(bucket, pn)] = Reading(
-                    name=pn,
-                    bucket=bucket,
-                    value=av,
-                    device_class=obj_map["deviceClass"],
-                    friendly_name=obj_map["friendlyName"],
-                    unit=obj_map["unit"],
-                    normalize_fn=fn,
-                    measured_at=measured_at,
-                )
+        `None` means one thing only: an entry with no `serial_number`, which
+        leaves the device no identity at all. Every device is built whatever
+        its type - `type` is a cache key for the schema, never an eligibility
+        test - and a missing one keeps an empty string so `device_type` stays
+        a `str` for every consumer.
+        """
+        self._log_nested_slave(raw_device)
 
-        return readings, last_data_received_at
+        raw_type = raw_device.get("type")
+        device_type = raw_type if isinstance(raw_type, str) else ""
 
-    def _get_headers(self, bearer_token: str, x_domain: str) -> dict[str, str]:
+        serial_number = raw_device.get("serial_number")
+        if not serial_number:
+            _LOGGER.warning(
+                "Skipping a %s device with no serial_number: in arch 2.0 the "
+                "serial is the only identity a device has",
+                device_type,
+            )
+            return None
+
+        self._check_connection_status(raw_device, serial_number)
+
+        telemetry = raw_device.get("telemetry")
+        if isinstance(telemetry, dict):
+            readings, telemetry_timestamp = _build_readings(telemetry, serial_number)
+            stale = False
+        else:
+            # `telemetry: null` is the shape of a device that is not
+            # reporting. Not an error, and not offline either.
+            readings, telemetry_timestamp = {}, None
+            stale = True
+            _LOGGER.debug("Device %s carries no telemetry this cycle", serial_number)
+
+        return RadoffDevice(
+            serial_number=serial_number,
+            device_type=device_type,
+            name=raw_device.get("name") or serial_number,
+            readings=readings,
+            connection_status=raw_device.get("connection_status"),
+            connection_status_updated_at=_parse_timestamp(
+                raw_device.get("connection_status_updated_at")
+            ),
+            status=raw_device.get("status"),
+            firmware_version=raw_device.get("firmware_version"),
+            room_name=raw_device.get("room_name"),
+            room_slug=raw_device.get("room_slug"),
+            building_name=raw_device.get("building_name"),
+            building_slug=raw_device.get("building_slug"),
+            domain_prefix=raw_device.get("domain_prefix"),
+            telemetry_timestamp=telemetry_timestamp,
+            stale=stale,
+        )
+
+    def _check_connection_status(
+        self, raw_device: dict[str, Any], serial_number: str
+    ) -> None:
+        """
+        Warn once about a `connection_status` value this client does not know.
+
+        Warned here, where the raw string enters the model, rather than in
+        `RadoffEntity.available`: that property is read on every state read of
+        every entity. Deduped by value, not by device. The value itself is
+        acted on elsewhere - an unrecognised one leaves the entities
+        available.
+        """
+        raw = raw_device.get("connection_status")
+        if raw is None:
+            # An absent field is not a new state, and the diagnostics dump
+            # already shows it.
+            _LOGGER.debug(
+                "Device %s carries no connection_status this cycle", serial_number
+            )
+            return
+
+        if classify_connection_status(raw) is not ConnectionState.INDETERMINATE:
+            return
+
+        if raw in self._unknown_connection_statuses:
+            return
+
+        self._unknown_connection_statuses.add(raw)
+        _LOGGER.warning(
+            "Radoff reported connection_status '%s' on device %s, a value this "
+            "version does not know (it knows %s). The device's entities are "
+            "kept available rather than reported offline; if this value is "
+            "here to stay it belongs in KNOWN_CONNECTION_STATUSES",
+            raw,
+            serial_number,
+            ", ".join(sorted(KNOWN_CONNECTION_STATUSES)),
+        )
+
+    @staticmethod
+    def _log_nested_slave(raw_device: dict[str, Any]) -> None:
+        """Report a device nested under `controller_of_device`, then ignore it."""
+        nested = raw_device.get("controller_of_device")
+        if not isinstance(nested, dict):
+            return
+
+        _LOGGER.info(
+            "Device %s controls a nested %s device (%s, domain %s) that this "
+            "version does not model: ignored",
+            raw_device.get("serial_number") or "unknown",
+            nested.get("type") or "unknown",
+            nested.get("serial_number") or "unknown",
+            nested.get("domain_prefix") or "unknown",
+        )
+
+    def _get_headers(self, bearer_token: str) -> dict[str, str]:
+        """
+        Return the headers every request carries.
+
+        There is no domain header: the domain travels as a query param.
+        `USER_AGENT` identifies this integration honestly, which is what lets
+        the backend tell its load apart from the mobile app's on a quota the
+        two share.
+        """
         return {
             "user-agent": USER_AGENT,
-            "x-domain": x_domain,
             "accept-encoding": "gzip",
             "authorization": "Bearer " + bearer_token,
             "content-type": "application/json",
         }
 
+    def _rate_limit_backoff(self) -> float:
+        """
+        Return the delay, in seconds, to honour after a 429 - and count it.
+
+        Exponential, doubling per consecutive 429 and capped, minus a jitter.
+        The response carries no `Retry-After`, so the delay is this client's
+        to choose; the jitter keeps installations rate-limited by the same
+        stage from returning in lockstep.
+        """
+        nominal = min(
+            RATE_LIMIT_BACKOFF_START * 2**self._consecutive_rate_limits,
+            RATE_LIMIT_BACKOFF_MAX,
+        )
+        self._consecutive_rate_limits += 1
+        jitter = random.uniform(0, RATE_LIMIT_BACKOFF_JITTER)  # noqa: S311
+        return nominal * (1 - jitter)
+
     def _check_response_status(
         self, response: requests.Response, url: str = ""
     ) -> bool:
-        """Check response status."""
+        """
+        Classify one response, raising one exception class per HTTP semantic.
+
+        Driven by the status, with the body read only to tell the two shapes
+        of 404 apart: the error body is not uniform enough to key a taxonomy
+        on.
+        """
         if response.status_code == HTTPStatus.OK:
+            # Any success clears the 429 streak, so the next rate limit starts
+            # its backoff from the floor again.
+            self._consecutive_rate_limits = 0
             return True
 
         safe_url = _safe_url(url or response.url)
         request_id = _get_request_id(response)
+        body = _error_body(response)
+        detail = _error_detail(body)
 
         _LOGGER.warning(
-            "API request failed: status=%d, url=%s, request_id=%s",
+            "API request failed: status=%d, url=%s, request_id=%s, detail=%s",
             response.status_code,
             safe_url,
             request_id or "n/a",
+            detail or "n/a",
         )
 
         if response.status_code == HTTPStatus.UNAUTHORIZED:
-            # Card S-08: a 401 on an already-authenticated call means the
-            # *session* behind the current token is no longer valid - it says
-            # nothing yet about whether the configured password itself is
-            # still correct. That is only known once the next reconnect
-            # attempt actually replays it through `authenticate_user()` (see
-            # `api/auth.py`), which is where a definitive `AuthInvalidError`
-            # can be raised instead. Until then this stays the recoverable
-            # case: invalidate the session's tokens (card S-12: NOT the
-            # requests.Session itself - see `CognitoSession.invalidate`'s own
-            # docstring for why recreating the HTTP transport on every
-            # expired token was unwarranted) so the next call's
-            # `get_bearer()` reconnects - preferring a refresh over a full
-            # SRP login, since the RefreshToken is deliberately left intact -
-            # and raise `AuthExpiredError` so `coordinator.py` keeps
-            # retrying (`UpdateFailed`) instead of opening the re-auth flow
-            # on every expired session.
-            #
-            # Card S-13: this is deliberately NOT one of the
-            # `_ISOLATABLE_DEVICE_ERRORS` `get_devices()` isolates per
-            # device - a 401 on a single device's GET means the whole
-            # session's token is bad, not that one device, so it must
-            # propagate and abort the rest of that poll cycle.
+            # A 401 says the session is gone, not that the password is wrong:
+            # only the next login can tell, so it must not open re-auth.
             _LOGGER.debug(
                 "Authentication token invalid (401) for domain %s, "
                 "will reconnect on next request",
-                self.domain,
+                self.domain_prefix,
             )
             self._session.invalidate()
             msg = "Authentication failed (HTTP 401 Unauthorized). Token may be expired."
             raise AuthExpiredError(msg)
 
         if response.status_code == HTTPStatus.FORBIDDEN:
-            # Deliberately NOT reclassified as AuthInvalidError by card S-08: a 403
-            # here is ambiguous (could mean the token's domain access changed,
-            # not necessarily "credentials no longer valid"), and the card's
-            # own coordinator step only names AuthInvalidError/AuthExpiredError coming
-            # from api/auth.py's Cognito handshake, not from this branch. The
-            # pre-existing over-broad "everything auth-adjacent is APIAuthError"
-            # classification for 403 (see finding F3) is tracked separately.
-            msg = "Access forbidden (HTTP 403). Check account permissions."
-            raise APIAuthError(msg)
+            # The 403 has one cause: a `domain_prefix` this account does not
+            # belong to. Never transient, so never retried.
+            _LOGGER.error(
+                "Radoff refused access to domain '%s' (HTTP 403): %s. The "
+                "account does not belong to this domain - this needs a "
+                "reconfiguration, not a retry",
+                self.domain_prefix,
+                detail or "no detail in the response body",
+            )
+            msg = (
+                f"Access to Radoff domain '{self.domain_prefix}' was refused "
+                f"(HTTP 403). This account does not belong to that domain: "
+                f"reconfigure the integration to select a domain it can reach."
+            )
+            raise APIDomainAccessError(msg)
+
+        if response.status_code == HTTPStatus.NOT_FOUND:
+            # Two different 404s, told apart by the body rather than the path.
+            # `available` appears only on the measures-ranges one.
+            available = body.get("available")
+            if isinstance(available, list):
+                msg = (
+                    f"Unknown device type (HTTP 404 on {safe_url}): "
+                    f"{detail or 'no detail in the response body'}. The API "
+                    f"lists these types as valid: {', '.join(available)}."
+                )
+                raise APIUnknownDeviceTypeError(msg, available=available)
+
+            msg = (
+                f"Device unknown or without data (HTTP 404 on {safe_url}): "
+                f"{detail or 'no detail in the response body'}."
+            )
+            raise APIDeviceNotFoundError(msg)
 
         if response.status_code == HTTPStatus.TOO_MANY_REQUESTS:
-            # Card S-11: this used to suggest raising the interval "above 60
-            # seconds" while the default itself already was 60 (finding, see
-            # analisi-codebase-radoff-ha-presa-in-carico.md §5.2 "ironia
-            # dell'error handling"). S-03 already made it stop naming a fixed
-            # number; this card goes one step further and names the interval
-            # actually configured for this entry (`self.scan_interval`, set
-            # from `config_entry.options` by the coordinator - see
-            # `API.__init__`), so the message is never wrong for this
-            # installation, and points at the option that now actually exists
-            # (before S-11, RadoffOptionsFlow did not exist, so this advice
-            # was inapplicable - finding F6).
-            msg = (
-                f"API rate limit exceeded (HTTP 429). The current polling "
-                f"interval for this account is {self.scan_interval} seconds; "
-                "increase it from the integration's options (Settings > "
-                "Devices & Services > Radoff > Configure)."
+            # The quota this protects is shared with Radoff's own apps, so
+            # the whole cycle is skipped rather than any part of it retried.
+            retry_after = self._rate_limit_backoff()
+            _LOGGER.warning(
+                "Radoff rate limit hit (HTTP 429); skipping this cycle and "
+                "backing off %.1fs (attempt %d in this streak)",
+                retry_after,
+                self._consecutive_rate_limits,
             )
-            raise APIAuthError(msg)
+            msg = (
+                f"API rate limit exceeded (HTTP 429); skipping this cycle and "
+                f"backing off {retry_after:.1f}s. The limit is per environment "
+                f"and shared with the Radoff apps. The current polling interval "
+                f"for this account is {self.scan_interval} seconds; increase it "
+                "from the integration's options (Settings > Devices & Services "
+                "> Radoff > Configure)."
+            )
+            raise APIRateLimitError(msg, retry_after=retry_after)
 
         if response.status_code >= HTTPStatus.INTERNAL_SERVER_ERROR:
+            # A degraded backend dependency answers 200 with `null` fields
+            # instead, so a 5xx really is the API itself being unavailable.
             msg = (
                 f"Radoff API server error (HTTP {response.status_code}). "
                 "This is usually temporary - will retry automatically."
             )
-            raise APIAuthError(msg)
+            raise APIServerError(msg)
 
         msg = f"API request failed with HTTP {response.status_code}."
         raise APIAuthError(msg)

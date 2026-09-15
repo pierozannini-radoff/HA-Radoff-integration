@@ -1,0 +1,49 @@
+{
+  "devices": [
+    {
+      "serial_number": "SER-0000-0001",
+      "type": "nowplus",
+      "name": "Living Room",
+      "status": "active",
+      "room_slug": "default-room",
+      "domain_prefix": "test-domain-1",
+      "created_at": "2026-09-01T10:07:42",
+      "updated_at": "2026-09-09T22:30:42",
+      "room_name": "Default room",
+      "building_slug": "default-building",
+      "building_name": "Default building",
+      "connection_status": "connected",
+      "connection_status_updated_at": "2026-09-09T10:06:41",
+      "latitude": 44.5,
+      "longitude": 11.3,
+      "notes": null,
+      "firmware_version": "0.2.8",
+      "icon_color_variant_id": null,
+      "config_status": "confirmed",
+      "managed_by_device_serial": null,
+      "controller_of_device_serial": null,
+      "color": null,
+      "icon_image": null,
+      "telemetry": {
+        "aqi_value": 1.15,
+        "device_type": "nowplus",
+        "eco2": 600.0,
+        "internal_temperature": 20.9,
+        "pm1": 3.0,
+        "pm10": 10.0,
+        "pm25": 8.0,
+        "pressure": 101325.0,
+        "relative_humidity": 45.0,
+        "tvoc": 50.0,
+        "timestamp": "2026-09-10T09:21:25.023Z"
+      },
+      "controller_of_device": null
+    }
+  ],
+  "pagination": {
+    "page": 1,
+    "page_size": 200,
+    "total": 1,
+    "total_pages": 1
+  }
+}
