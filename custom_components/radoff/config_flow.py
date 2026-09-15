@@ -127,7 +127,13 @@ def domain_choices(domains: list[dict[str, Any]]) -> dict[str, str]:
         domain = element.get("domain") or {}
         prefix = domain.get("prefix")
         if not prefix:
-            _LOGGER.debug("Skipping a domain with no prefix: %s", element)
+            # Its keys, not the element: what it holds is the API's to
+            # decide, and a domain this integration cannot use is exactly the
+            # one whose contents are unknown.
+            _LOGGER.debug(
+                "Skipping a domain with no prefix, carrying the keys %s",
+                sorted(element),
+            )
             continue
         choices[prefix] = domain.get("name") or prefix
 

@@ -157,7 +157,7 @@ def test_403_is_a_domain_access_error_distinguishable_from_a_401(
     requests_mock: Any,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """A 403 is its own class, logged as a reconfiguration, session untouched."""
+    """A 403 is its own class, names its domain at DEBUG only, session untouched."""
     register_devices(
         requests_mock,
         load_dev_fixture("error__devices_foreign_domain"),
@@ -167,7 +167,7 @@ def test_403_is_a_domain_access_error_distinguishable_from_a_401(
     api = _api(monkeypatch)
     api.connect()
 
-    with caplog.at_level(logging.ERROR, logger="custom_components.radoff.api.client"):
+    with caplog.at_level(logging.DEBUG, logger="custom_components.radoff.api.client"):
         with pytest.raises(APIDomainAccessError) as raised:
             api.get_devices()
 
@@ -179,9 +179,18 @@ def test_403_is_a_domain_access_error_distinguishable_from_a_401(
         for record in caplog.records
         if record.levelno >= logging.ERROR
     )
-    assert DOMAIN_PREFIX in logged
     assert "reconfiguration" in logged
     assert "you do not belong to domain" in logged  # the backend's own detail
+
+    # The name of the domain reaches neither the record a default log keeps
+    # nor the exception text, which travels on into `ConfigEntryError`.
+    assert DOMAIN_PREFIX not in logged
+    assert DOMAIN_PREFIX not in str(raised.value)
+    assert [
+        record
+        for record in caplog.records
+        if record.levelno == logging.DEBUG and DOMAIN_PREFIX in record.getMessage()
+    ]
 
 
 def test_404_on_the_device_list_is_a_not_found_and_costs_the_cycle(

@@ -21,6 +21,7 @@ from ..const import (
     RATE_LIMIT_BACKOFF_START,
     USER_AGENT,
 )
+from ..redact import scrub, short_serial
 from .auth import AuthExpiredError, CognitoSession
 from .exceptions import (
     APIAuthError,
@@ -211,6 +212,10 @@ class API:
         # every device shares a new state warns once, not once per device.
         self._unknown_connection_statuses: set[str] = set()
 
+        # Serials this client has built a device from, so an error body
+        # naming one is scrubbed of it like any other value of ours.
+        self._known_serials: set[str] = set()
+
         self._session = CognitoSession(
             username=username,
             password=password,
@@ -253,6 +258,10 @@ class API:
         """Perform an initial Cognito login and return True on success."""
         self._session.get_bearer()
         return True
+
+    def _scrub(self, text: str | None) -> str | None:
+        """Return text this client did not write, with its own identifiers held back."""
+        return scrub(text, self.domain_prefix, *self._known_serials) if text else text
 
     def _url(self, path: str) -> str:
         """Return the absolute URL of `path` on this client's environment."""
@@ -443,6 +452,7 @@ class API:
             )
             return None
 
+        self._known_serials.add(serial_number)
         self._check_connection_status(raw_device, serial_number)
 
         telemetry = raw_device.get("telemetry")
@@ -504,13 +514,18 @@ class API:
             return
 
         self._unknown_connection_statuses.add(raw)
+        # The device type is what says which family of devices this happens
+        # on; four digits of serial only tell two lines of one log apart,
+        # which at one line per value is all that is needed.
         _LOGGER.warning(
-            "Radoff reported connection_status '%s' on device %s, a value this "
-            "version does not know (it knows %s). The device's entities are "
-            "kept available rather than reported offline; if this value is "
-            "here to stay it belongs in KNOWN_CONNECTION_STATUSES",
+            "Radoff reported connection_status '%s' on a '%s' device (serial "
+            "%s), a value this version does not know (it knows %s). The "
+            "device's entities are kept available rather than reported "
+            "offline; if this value is here to stay it belongs in "
+            "KNOWN_CONNECTION_STATUSES",
             raw,
-            serial_number,
+            raw_device.get("type") or "unknown",
+            short_serial(serial_number),
             ", ".join(sorted(KNOWN_CONNECTION_STATUSES)),
         )
 
@@ -521,7 +536,10 @@ class API:
         if not isinstance(nested, dict):
             return
 
-        _LOGGER.info(
+        # Two serials and a domain in one line, and nothing a user could act
+        # on: a device this version does not model is read by whoever is
+        # debugging the model, at the level they turn on to do it.
+        _LOGGER.debug(
             "Device %s controls a nested %s device (%s, domain %s) that this "
             "version does not model: ignored",
             raw_device.get("serial_number") or "unknown",
@@ -582,7 +600,9 @@ class API:
         safe_url = _safe_url(url or response.url)
         request_id = _get_request_id(response)
         body = _error_body(response)
-        detail = _error_detail(body)
+        # Scrubbed here, once: this text is the backend's and every branch
+        # below either logs it or carries it into an exception message.
+        detail = self._scrub(_error_detail(body))
 
         _LOGGER.warning(
             "API request failed: status=%d, url=%s, request_id=%s, detail=%s",
@@ -608,16 +628,20 @@ class API:
             # The 403 has one cause: a `domain_prefix` this account does not
             # belong to. Never transient, so never retried.
             _LOGGER.error(
-                "Radoff refused access to domain '%s' (HTTP 403): %s. The "
-                "account does not belong to this domain - this needs a "
+                "Radoff refused access to the configured domain (HTTP 403): "
+                "%s. The account does not belong to it - this needs a "
                 "reconfiguration, not a retry",
-                self.domain_prefix,
                 detail or "no detail in the response body",
             )
+            # The name is written once, here, and travels no further: this
+            # message reaches the user through `ConfigEntryError`, which Home
+            # Assistant logs and stores at a level this integration does not
+            # choose.
+            _LOGGER.debug("The domain refused on this 403 is '%s'", self.domain_prefix)
             msg = (
-                f"Access to Radoff domain '{self.domain_prefix}' was refused "
-                f"(HTTP 403). This account does not belong to that domain: "
-                f"reconfigure the integration to select a domain it can reach."
+                "Access to the configured Radoff domain was refused (HTTP "
+                "403). This account does not belong to that domain: "
+                "reconfigure the integration to select a domain it can reach."
             )
             raise APIDomainAccessError(msg)
 

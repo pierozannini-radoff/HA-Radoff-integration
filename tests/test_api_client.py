@@ -315,7 +315,7 @@ def test_a_nested_life_is_logged_and_produces_no_device(
     requests_mock: Any,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """A nested LIFE produces no device of its own, and exactly one log line names it."""
+    """A nested LIFE produces no device of its own, and one DEBUG line names it."""
     page = _real_page()
     controller = copy.deepcopy(_devices_of(page)[REPORTING_SERIAL])
     slave = copy.deepcopy(_devices_of(page)[SILENT_SERIAL])
@@ -333,7 +333,7 @@ def test_a_nested_life_is_logged_and_produces_no_device(
     page["devices"] = [*page["devices"], controller]
     register_devices(requests_mock, page)
 
-    with caplog.at_level(logging.INFO, logger="custom_components.radoff.api.client"):
+    with caplog.at_level(logging.DEBUG, logger="custom_components.radoff.api.client"):
         devices = _api(monkeypatch).get_devices()
 
     # The controller is a device like any other; what stays out is the
@@ -347,4 +347,5 @@ def test_a_nested_life_is_logged_and_produces_no_device(
         record for record in caplog.records if "855894" in record.getMessage()
     ]
     assert len(naming_the_nested) == 1
+    assert naming_the_nested[0].levelno == logging.DEBUG
     assert "does not model" in naming_the_nested[0].getMessage()
