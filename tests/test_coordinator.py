@@ -232,7 +232,7 @@ async def test_a_device_falling_silent_only_affects_its_own_entities(
     assert living_room.attributes["last_measured_at"] != measured_at_before
 
 
-async def test_a_500_costs_the_whole_cycle(
+async def test_a_5xx_costs_the_whole_cycle(
     hass: HomeAssistant,
     monkeypatch: pytest.MonkeyPatch,
     requests_mock: Any,
