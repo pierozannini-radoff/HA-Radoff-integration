@@ -282,4 +282,5 @@ versioning conventions used in this repository.
 
 This project is licensed under the MIT License - see [LICENSE](LICENSE) for
 details. See [NOTICE](NOTICE.md) for attribution to the `integration_blueprint`
-template this repository was originally scaffolded from.
+template this repository was originally scaffolded from and to the original
+author of the integration code.
