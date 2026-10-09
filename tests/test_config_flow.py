@@ -1,8 +1,8 @@
 """
 The config flow and the options flow.
 
-Covers: auth outcomes, domain discovery and the domain step, the base URL
-option, and the polling interval bounds.
+Covers: auth outcomes and the pool they log in on, domain discovery and the
+domain step, the options form, and the polling interval bounds.
 """
 
 from __future__ import annotations
@@ -14,6 +14,7 @@ from botocore.exceptions import ClientError
 from homeassistant import config_entries
 from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResultType, InvalidData
+from pycognito.aws_srp import AWSSRP
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.radoff.api.auth import (
@@ -23,7 +24,6 @@ from custom_components.radoff.api.auth import (
 )
 from custom_components.radoff.api.client import API
 from custom_components.radoff.const import (
-    CONF_BASE_URL,
     CONF_DOMAIN_PREFIX,
     DEFAULT_BASE_URL,
     DEFAULT_SCAN_INTERVAL,
@@ -71,6 +71,35 @@ async def test_auth_happy_path_single_domain(
     # The entry's domain comes from the discovery response body
     # (domains_single.json) and is the readable `prefix`, not a UUID.
     assert result["data"][CONF_DOMAIN_PREFIX] == "home1234"
+
+
+async def test_auth_logs_in_on_the_pool_from_the_environment(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch, requests_mock: Any
+) -> None:
+    """The user step's login goes to the pool and client the environment names."""
+    monkeypatch.setenv("RADOFF_DEV_POOL_ID", "eu-central-1_EnvPool01")
+    monkeypatch.setenv("RADOFF_DEV_CLIENT_ID", "env-client-id")
+    logins: list[tuple[str, str]] = []
+
+    def _fake_authenticate_user(self: AWSSRP) -> dict[str, Any]:
+        logins.append((self.pool_id, self.client_id))
+        return auth_result(make_id_token(["11111111-1111-1111-1111-111111111111"]))
+
+    monkeypatch.setattr(AWSSRP, "authenticate_user", _fake_authenticate_user)
+    register_domains(requests_mock, load_fixture("domains_single.json"))
+    register_devices(requests_mock, load_devices_fixture("devices_one_device.json"))
+
+    result = await hass.config_entries.flow.async_init(
+        DOMAIN, context={"source": config_entries.SOURCE_USER}
+    )
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], USER_INPUT
+    )
+    await hass.async_block_till_done()
+
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert logins
+    assert set(logins) == {("eu-central-1_EnvPool01", "env-client-id")}
 
 
 async def test_auth_invalid_credentials(
@@ -445,14 +474,7 @@ async def _loaded_entry(
     patch_authenticate_user(
         monkeypatch, result=auth_result(make_id_token(["should-not-be-used"]))
     )
-    # On whichever host these options point at: an entry carrying a
-    # `base_url` override polls that one, and its first refresh has to
-    # succeed for the entry to load and its options flow to be reachable.
-    register_devices(
-        requests_mock,
-        load_fixture("devices_empty.json"),
-        base_url=options.get(CONF_BASE_URL, DEFAULT_BASE_URL),
-    )
+    register_devices(requests_mock, load_fixture("devices_empty.json"))
 
     entry = MockConfigEntry(
         domain=DOMAIN, data=config_entry_v3_data, options=options, version=3
@@ -471,85 +493,20 @@ async def _open_options(
     )
 
 
-async def test_options_flow_shows_the_base_url_only_in_advanced_mode(
+async def test_options_flow_has_no_base_url_field_in_any_mode(
     hass: HomeAssistant,
     monkeypatch: pytest.MonkeyPatch,
     requests_mock: Any,
     config_entry_v3_data: dict[str, Any],
 ) -> None:
-    """With advanced mode off the field is not in the schema at all."""
+    """The form offers no base URL, with advanced mode off or on."""
     entry = await _loaded_entry(
         hass, monkeypatch, requests_mock, config_entry_v3_data, {"generate_index": True}
     )
 
-    normal = await _open_options(hass, entry, advanced=False)
-    assert CONF_BASE_URL not in {str(key) for key in normal["data_schema"].schema}
-
-    advanced = await _open_options(hass, entry, advanced=True)
-    assert CONF_BASE_URL in {str(key) for key in advanced["data_schema"].schema}
-
-
-async def test_saving_options_without_the_field_keeps_the_base_url(
-    hass: HomeAssistant,
-    monkeypatch: pytest.MonkeyPatch,
-    requests_mock: Any,
-    config_entry_v3_data: dict[str, Any],
-) -> None:
-    """Saving options without the base URL field keeps the override already stored."""
-    other_host = "https://api.int.iot.radoff.life"
-    entry = await _loaded_entry(
-        hass,
-        monkeypatch,
-        requests_mock,
-        config_entry_v3_data,
-        {"generate_index": True, CONF_BASE_URL: other_host},
-    )
-
-    result = await _open_options(hass, entry, advanced=False)
-    result = await hass.config_entries.options.async_configure(
-        result["flow_id"], {"scan_interval": 120, "generate_index": True}
-    )
-    await hass.async_block_till_done()
-
-    assert result["type"] is FlowResultType.CREATE_ENTRY
-    assert entry.options[CONF_BASE_URL] == other_host
-    assert entry.options["scan_interval"] == 120
-
-
-@pytest.mark.parametrize(
-    "submitted",
-    [f"{DEFAULT_BASE_URL}/", ""],
-    ids=["the default with a trailing slash", "blank"],
-)
-async def test_a_base_url_equal_to_the_default_or_blank_is_not_stored(
-    hass: HomeAssistant,
-    monkeypatch: pytest.MonkeyPatch,
-    requests_mock: Any,
-    config_entry_v3_data: dict[str, Any],
-    submitted: str,
-) -> None:
-    """A base URL equal to the default, trailing slash included, or blank, is not stored."""
-    entry = await _loaded_entry(
-        hass,
-        monkeypatch,
-        requests_mock,
-        config_entry_v3_data,
-        {"generate_index": True, CONF_BASE_URL: "https://api.int.iot.radoff.life"},
-    )
-
-    result = await _open_options(hass, entry, advanced=True)
-    result = await hass.config_entries.options.async_configure(
-        result["flow_id"],
-        {
-            "scan_interval": 60,
-            "generate_index": True,
-            CONF_BASE_URL: submitted,
-        },
-    )
-    await hass.async_block_till_done()
-
-    assert result["type"] is FlowResultType.CREATE_ENTRY
-    assert CONF_BASE_URL not in entry.options
+    for advanced in (False, True):
+        result = await _open_options(hass, entry, advanced=advanced)
+        assert "base_url" not in {str(key) for key in result["data_schema"].schema}
 
 
 async def test_the_form_refuses_an_interval_below_the_floor(

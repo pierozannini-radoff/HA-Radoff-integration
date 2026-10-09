@@ -8,6 +8,7 @@ with 403, and every way each of the two flows aborts.
 from __future__ import annotations
 
 from typing import Any
+from urllib.parse import urlsplit
 
 import pytest
 from botocore.exceptions import ClientError
@@ -19,8 +20,8 @@ from homeassistant.setup import async_setup_component
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.radoff.const import (
-    CONF_BASE_URL,
     CONF_DOMAIN_PREFIX,
+    DEFAULT_BASE_URL,
     CONF_INDEX,
     DOMAIN,
     ISSUE_DOMAIN_ACCESS_DENIED,
@@ -271,24 +272,24 @@ async def test_repair_aborts_when_the_entry_is_gone(
     assert result["reason"] == "entry_not_found"
 
 
-async def test_repair_discovers_on_the_environment_the_entry_points_at(
+async def test_repair_ignores_a_leftover_base_url_option(
     hass: HomeAssistant,
     monkeypatch: pytest.MonkeyPatch,
     requests_mock: Any,
     config_entry_v1_data: dict[str, Any],
 ) -> None:
-    """The repair discovers domains on the entry's own base URL, not the default one."""
-    other_host = "https://api.int.iot.radoff.life"
+    """The repair discovers domains on the default host, whatever the options say."""
     patch_authenticate_user(monkeypatch, result=auth_result(make_id_token([DOMAIN_ID])))
     requests_mock.get(
-        f"{other_host}/data/user/me/domains", json=load_fixture("domains_single.json")
+        f"{DEFAULT_BASE_URL}/data/user/me/domains",
+        json=load_fixture("domains_single.json"),
     )
-    register_devices(
-        requests_mock, load_fixture("devices_empty.json"), base_url=other_host
-    )
+    register_devices(requests_mock, load_fixture("devices_empty.json"))
 
     entry = await _setup_broken_entry(
-        hass, config_entry_v1_data, options={CONF_BASE_URL: other_host}
+        hass,
+        config_entry_v1_data,
+        options={"base_url": "https://api.int.iot.radoff.life"},
     )
 
     result = await _start_fix_flow(hass, entry)
@@ -299,7 +300,7 @@ async def test_repair_discovers_on_the_environment_the_entry_points_at(
     assert entry.data[CONF_DOMAIN_PREFIX] == DOMAIN_PREFIX
     assert entry.state is ConfigEntryState.LOADED
     assert {request.netloc for request in requests_mock.request_history} == {
-        "api.int.iot.radoff.life"
+        urlsplit(DEFAULT_BASE_URL).netloc
     }
 
 

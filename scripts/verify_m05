@@ -9,9 +9,9 @@
 # RADOFF_PASSWORD: questo script non le contiene e non le stampa.
 #
 # Anche il pool Cognito di dev viene da .env, come RADOFF_DEV_POOL_ID /
-# RADOFF_DEV_CLIENT_ID: serve finche' const.py punta a un pool diverso
-# dall'ambiente di DEFAULT_BASE_URL. Sovrascrivibili dall'ambiente:
-#   M05_POOL_ID=... M05_DOMAIN_PREFIX=... ./scripts/verify_m05
+# RADOFF_DEV_CLIENT_ID: lo legge la passata dal vivo, come le credenziali.
+# Il dominio e' sovrascrivibile dall'ambiente:
+#   M05_DOMAIN_PREFIX=... ./scripts/verify_m05
 
 set -uo pipefail
 
@@ -24,8 +24,8 @@ env_value() {
     sed -n "s/^[[:space:]]*$1[[:space:]]*=[[:space:]]*//p" .env | tail -1 | tr -d "\"'"
 }
 
-POOL_ID="${M05_POOL_ID:-$(env_value RADOFF_DEV_POOL_ID)}"
-CLIENT_ID="${M05_CLIENT_ID:-$(env_value RADOFF_DEV_CLIENT_ID)}"
+POOL_ID="${RADOFF_DEV_POOL_ID:-$(env_value RADOFF_DEV_POOL_ID)}"
+CLIENT_ID="${RADOFF_DEV_CLIENT_ID:-$(env_value RADOFF_DEV_CLIENT_ID)}"
 DOMAIN_PREFIX="${M05_DOMAIN_PREFIX:-875fe89b}"
 
 if [[ -z "${POOL_ID}" || -z "${CLIENT_ID}" ]]; then
@@ -90,8 +90,6 @@ if [[ "${OFFLINE}" -eq 1 ]]; then
     echo "    saltata (--offline)"
 else
     step "Verifica dal vivo su dev" python3 scripts/verify_m05_live.py \
-        --pool-id "${POOL_ID}" \
-        --client-id "${CLIENT_ID}" \
         --domain-prefix "${DOMAIN_PREFIX}"
 fi
 

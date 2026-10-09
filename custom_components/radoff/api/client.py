@@ -12,14 +12,12 @@ from requests.adapters import HTTPAdapter, Retry
 
 from ..const import (
     DEFAULT_BASE_URL,
-    DEFAULT_CLIENT_ID,
-    DEFAULT_POOL_ID,
-    DEFAULT_POOL_REGION,
     DEFAULT_SCAN_INTERVAL,
     RATE_LIMIT_BACKOFF_JITTER,
     RATE_LIMIT_BACKOFF_MAX,
     RATE_LIMIT_BACKOFF_START,
     USER_AGENT,
+    cognito_settings,
 )
 from ..redact import scrub, short_serial
 from .auth import AuthExpiredError, CognitoSession
@@ -181,9 +179,9 @@ class API:
         self,
         username: str,
         password: str,
-        client_id: str = DEFAULT_CLIENT_ID,
-        pool_id: str = DEFAULT_POOL_ID,
-        pool_region: str = DEFAULT_POOL_REGION,
+        client_id: str | None = None,
+        pool_id: str | None = None,
+        pool_region: str | None = None,
         domain_prefix: str = "",
         scan_interval: int = DEFAULT_SCAN_INTERVAL,
         base_url: str = DEFAULT_BASE_URL,
@@ -191,12 +189,12 @@ class API:
         """
         Initialise.
 
-        `client_id`, `pool_id` and `pool_region` default to this integration's
-        own Cognito app client: internal infrastructure, not per-user secrets,
-        overridable for a staging environment or in tests. `domain_prefix` is
-        the tenant domain chosen for this account and is used as-is; no
-        discovery happens here. `base_url` is the whole difference between
-        environments, the API version being part of the hostname.
+        `client_id`, `pool_id` and `pool_region` default to what
+        `cognito_settings()` resolves: internal infrastructure, not per-user
+        secrets, overridable in tests. `domain_prefix` is the tenant domain
+        chosen for this account and is used as-is; no discovery happens here.
+        `base_url` is the whole difference between environments, the API
+        version being part of the hostname.
         `scan_interval` schedules nothing here - it is reported in the HTTP 429
         branch so the error can name the interval actually in effect.
         """
@@ -216,12 +214,13 @@ class API:
         # naming one is scrubbed of it like any other value of ours.
         self._known_serials: set[str] = set()
 
+        default_pool_id, default_pool_region, default_client_id = cognito_settings()
         self._session = CognitoSession(
             username=username,
             password=password,
-            client_id=client_id,
-            pool_id=pool_id,
-            pool_region=pool_region,
+            client_id=client_id or default_client_id,
+            pool_id=pool_id or default_pool_id,
+            pool_region=pool_region or default_pool_region,
         )
 
         self.session = self._create_session()

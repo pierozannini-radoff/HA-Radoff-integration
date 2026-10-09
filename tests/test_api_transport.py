@@ -114,10 +114,10 @@ def test_a_client_without_a_domain_prefix_refuses_to_call(
     assert requests_mock.request_history == []
 
 
-def test_the_base_url_option_moves_every_request(
+def test_the_base_url_argument_moves_every_request(
     monkeypatch: pytest.MonkeyPatch, requests_mock: Any
 ) -> None:
-    """An overridden base URL is where the requests go, trailing slash and all."""
+    """A base URL passed to the client is where the requests go, trailing slash and all."""
     other_host = "https://api.int.iot.radoff.life"
     register_devices(
         requests_mock, load_dev_fixture("devices__full"), base_url=other_host

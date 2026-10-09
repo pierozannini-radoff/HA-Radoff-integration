@@ -19,8 +19,7 @@ Come si esegue
 
     # se l'app client del pool dev non ha ALLOW_USER_SRP_AUTH, l'unico
     # modo di arrivare ai dati:
-    python3 scripts/verify_m03_live.py --auth-flow password \
-        --pool-id eu-west-1_XXXXXXXX --client-id XXXXXXXX
+    python3 scripts/verify_m03_live.py --auth-flow password
 
 Cosa NON verifica
 -----------------
@@ -62,9 +61,8 @@ from custom_components.radoff.api.client import (  # noqa: E402
 )
 from custom_components.radoff.const import (  # noqa: E402
     DEFAULT_BASE_URL,
-    DEFAULT_CLIENT_ID,
-    DEFAULT_POOL_ID,
-    DEFAULT_POOL_REGION,
+    ENV_CLIENT_ID,
+    ENV_POOL_ID,
     DOMAIN,
 )
 
@@ -146,6 +144,13 @@ def read_env_file(path: Path) -> None:
             continue
         key, _, value = line.partition("=")
         os.environ.setdefault(key.strip(), value.strip().strip("'\""))
+
+
+def pool_source() -> str:
+    """Da dove viene il pool Cognito del login, senza stamparne gli identificativi."""
+    if os.environ.get(ENV_POOL_ID) and os.environ.get(ENV_CLIENT_ID):
+        return f"dev, da .env ({ENV_POOL_ID} / {ENV_CLIENT_ID})"
+    return "il default di const.py"
 
 
 def credentials(args: argparse.Namespace) -> tuple[str, str]:
@@ -489,9 +494,6 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--username", default=None)
     parser.add_argument("--domain-prefix", default=None)
     parser.add_argument("--base-url", default=DEFAULT_BASE_URL)
-    parser.add_argument("--pool-id", default=DEFAULT_POOL_ID)
-    parser.add_argument("--client-id", default=DEFAULT_CLIENT_ID)
-    parser.add_argument("--pool-region", default=None)
     parser.add_argument(
         "--auth-flow",
         choices=("srp", "password"),
@@ -520,12 +522,11 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     username, password = credentials(args)
-    region = args.pool_region or args.pool_id.partition("_")[0]
 
     print()
     print("  Verifica dal vivo della chiamata dati e del modello")
     print(f"  host      : {args.base_url}")
-    print(f"  pool      : {args.pool_id} / client {args.client_id} / {region}")
+    print(f"  pool      : {pool_source()}")
     print(f"  auth flow : {args.auth_flow}")
     if args.auth_flow == "password":
         print()
@@ -538,9 +539,6 @@ def main(argv: list[str] | None = None) -> int:
     api = API(
         username=username,
         password=password,
-        client_id=args.client_id,
-        pool_id=args.pool_id,
-        pool_region=region or DEFAULT_POOL_REGION,
         base_url=args.base_url,
     )
 

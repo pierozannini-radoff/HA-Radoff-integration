@@ -22,5 +22,23 @@ fi
 ## while at the same time have Home Assistant configuration inside <root>/.devcontainer/config
 ## without resulting to symlinks.
 export PYTHONPATH="${PYTHONPATH}:${PWD}/custom_components"
+
+# The Cognito pool of the dev environment is kept out of the repository, in
+# .env. Only its two variables reach Home Assistant: the account credentials
+# in the same file are for the verification scripts, and the integration
+# takes them from its own setup form. The file is read, never executed.
+env_value() {
+    [[ -f .env ]] || return 0
+    sed -n "s/^[[:space:]]*$1[[:space:]]*=[[:space:]]*//p" .env | tail -1 | tr -d "\"'"
+}
+for name in RADOFF_DEV_POOL_ID RADOFF_DEV_CLIENT_ID; do
+    value="$(env_value "${name}")"
+    if [[ -n "${value}" ]]; then
+        export "${name}=${value}"
+    else
+        echo "${name} is not set in .env: logins will use the default Cognito pool." >&2
+    fi
+done
+
 # Start Home Assistant
 hass --config "${HASS_CONFIG_DIR}" --debug

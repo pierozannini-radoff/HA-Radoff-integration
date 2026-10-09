@@ -9,6 +9,7 @@ Which status raises which error is the other half, in `test_api_transport.py`.
 from __future__ import annotations
 
 from typing import Any
+from urllib.parse import urlsplit
 
 import pytest
 from homeassistant.config_entries import ConfigEntryState
@@ -18,8 +19,8 @@ from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.radoff.const import (
-    CONF_BASE_URL,
     CONF_DOMAIN_PREFIX,
+    DEFAULT_BASE_URL,
     DEFAULT_SCAN_INTERVAL,
     DOMAIN,
     ERROR_DOMAIN_ACCESS_DENIED,
@@ -303,19 +304,14 @@ async def test_a_403_stops_the_entry_instead_of_retrying_forever(
     assert not hass.config_entries.flow.async_progress_by_handler(DOMAIN)
 
 
-async def test_the_base_url_option_is_what_the_poll_talks_to(
+async def test_a_leftover_base_url_option_is_ignored(
     hass: HomeAssistant,
     monkeypatch: pytest.MonkeyPatch,
     requests_mock: Any,
     config_entry_v3_data: dict[str, Any],
 ) -> None:
-    """An entry with `base_url` in its options polls that host, not the default."""
-    other_host = "https://api.int.iot.radoff.life"
-    register_devices(
-        requests_mock,
-        load_devices_fixture("devices_one_device.json"),
-        base_url=other_host,
-    )
+    """An entry still carrying `base_url` in its options polls the default host."""
+    register_devices(requests_mock, load_devices_fixture("devices_one_device.json"))
 
     patch_authenticate_user(
         monkeypatch,
@@ -324,7 +320,7 @@ async def test_the_base_url_option_is_what_the_poll_talks_to(
     entry = MockConfigEntry(
         domain=DOMAIN,
         data=config_entry_v3_data,
-        options={"generate_index": True, CONF_BASE_URL: other_host},
+        options={"generate_index": True, "base_url": "https://api.int.iot.radoff.life"},
         version=3,
     )
     entry.add_to_hass(hass)
@@ -334,7 +330,7 @@ async def test_the_base_url_option_is_what_the_poll_talks_to(
 
     assert hass.states.get("sensor.living_room_temperature").state == "20.9"
     assert {request.netloc for request in requests_mock.request_history} == {
-        "api.int.iot.radoff.life"
+        urlsplit(DEFAULT_BASE_URL).netloc
     }
 
 

@@ -2,6 +2,7 @@
 
 import json
 import logging
+import os
 from pathlib import Path
 
 _LOGGER = logging.getLogger(__name__)
@@ -34,10 +35,6 @@ CONF_DOMAIN_PREFIX = "domain_prefix"
 # Base URL, and the single place a host is written down: the API version
 # lives in the hostname, so another environment is another host.
 DEFAULT_BASE_URL = "https://v2.api.dev.iot.radoff.life"
-
-# Per-entry override of `DEFAULT_BASE_URL`. In `options`, not `data`: it is
-# where to reach the API, not connection identity.
-CONF_BASE_URL = "base_url"
 
 # HTTP 429 backoff. The response carries no `Retry-After`, so the delay is
 # this client's to choose; the cap is one poll interval.
@@ -116,6 +113,27 @@ TENANT = frozenset(
 DEFAULT_POOL_ID = "eu-west-1_zD4CSIZ6i"
 DEFAULT_POOL_REGION = "eu-west-1"
 DEFAULT_CLIENT_ID = "61ckd0c4qoq0ov7mmphrj7kstj"
+
+# The pool of the environment `DEFAULT_BASE_URL` points at, read from the
+# process environment because its identifiers are kept out of the repository.
+ENV_POOL_ID = "RADOFF_DEV_POOL_ID"
+ENV_CLIENT_ID = "RADOFF_DEV_CLIENT_ID"
+
+
+def cognito_settings() -> tuple[str, str, str]:
+    """Return `(pool_id, pool_region, client_id)` for the next login."""
+    pool_id = os.environ.get(ENV_POOL_ID, "")
+    client_id = os.environ.get(ENV_CLIENT_ID, "")
+    if pool_id and client_id:
+        # A pool id is `<region>_<suffix>`.
+        return pool_id, pool_id.split("_", 1)[0], client_id
+    if pool_id or client_id:
+        _LOGGER.warning(
+            "%s is not set: ignoring %s and using the default Cognito pool",
+            ENV_CLIENT_ID if pool_id else ENV_POOL_ID,
+            ENV_POOL_ID if pool_id else ENV_CLIENT_ID,
+        )
+    return DEFAULT_POOL_ID, DEFAULT_POOL_REGION, DEFAULT_CLIENT_ID
 
 
 def _load_manifest() -> dict[str, str]:
