@@ -18,11 +18,8 @@ Come si esegue
     # RADOFF_PASSWORD - oppure RADOFF_DEV_USERNAME / RADOFF_DEV_PASSWORD
     python3 scripts/verify_m05_live.py --domain-prefix 875fe89b
 
-    # i due override di pool servono finche' const.py punta a un pool
-    # diverso dall'ambiente di DEFAULT_BASE_URL
-    python3 scripts/verify_m05_live.py \
-        --pool-id eu-west-1_XXXXXXXX --client-id XXXXXXXX \
-        --domain-prefix XXXXXXXX
+    # il pool Cognito di dev arriva da .env, come RADOFF_DEV_POOL_ID /
+    # RADOFF_DEV_CLIENT_ID; senza, il login va sul pool di default
 
 `--domain-prefix` non e' facoltativo se si vogliono tutti i controlli:
 senza, si prende il primo dominio della discovery, che su questo account e'
@@ -77,9 +74,8 @@ from custom_components.radoff.api.client import (  # noqa: E402
 )
 from custom_components.radoff.const import (  # noqa: E402
     DEFAULT_BASE_URL,
-    DEFAULT_CLIENT_ID,
-    DEFAULT_POOL_ID,
-    DEFAULT_POOL_REGION,
+    ENV_CLIENT_ID,
+    ENV_POOL_ID,
     DEFAULT_SCAN_INTERVAL,
     MIN_SCAN_INTERVAL,
     POLL_JITTER_FRACTION,
@@ -163,6 +159,13 @@ def read_env_file(path: Path) -> None:
             continue
         key, _, value = line.partition("=")
         os.environ.setdefault(key.strip(), value.strip().strip("'\""))
+
+
+def pool_source() -> str:
+    """Da dove viene il pool Cognito del login, senza stamparne gli identificativi."""
+    if os.environ.get(ENV_POOL_ID) and os.environ.get(ENV_CLIENT_ID):
+        return f"dev, da .env ({ENV_POOL_ID} / {ENV_CLIENT_ID})"
+    return "il default di const.py"
 
 
 def credentials(args: argparse.Namespace) -> tuple[str, str]:
@@ -329,9 +332,6 @@ def report_rate_limit_not_provoked(verdict: Verdict) -> None:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--base-url", default=DEFAULT_BASE_URL)
-    parser.add_argument("--pool-id", default=DEFAULT_POOL_ID)
-    parser.add_argument("--client-id", default=DEFAULT_CLIENT_ID)
-    parser.add_argument("--pool-region", default="")
     parser.add_argument("--username", default="")
     parser.add_argument("--env-file", default=str(REPO_ROOT / ".env"))
     parser.add_argument("--domain-prefix", default="")
@@ -344,12 +344,11 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     username, password = credentials(args)
-    region = args.pool_region or args.pool_id.partition("_")[0]
 
     print()
     print("  Verifica dal vivo del budget di richieste")
     print(f"  host      : {args.base_url}")
-    print(f"  pool      : {args.pool_id} / client {args.client_id} / {region}")
+    print(f"  pool      : {pool_source()}")
     print(
         f"  intervalli: minimo {MIN_SCAN_INTERVAL}s, default "
         f"{DEFAULT_SCAN_INTERVAL}s, offset fino a "
@@ -364,9 +363,6 @@ def main(argv: list[str] | None = None) -> int:
     api = API(
         username=username,
         password=password,
-        client_id=args.client_id,
-        pool_id=args.pool_id,
-        pool_region=region or DEFAULT_POOL_REGION,
         base_url=args.base_url,
     )
 

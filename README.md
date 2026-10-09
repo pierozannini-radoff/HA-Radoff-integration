@@ -10,6 +10,12 @@ Assistant sensor entities.
 > placeholder and will be corrected when the repository transfer (tracked
 > separately) is completed.
 
+> **Development environment only:** this release talks to Radoff's
+> development environment and accepts only accounts of that environment; a
+> production Radoff account cannot log in with it. The development Cognito
+> pool it logs in on is not distributed with the integration: see "Setting up
+> the development harness" in [CONTRIBUTING.md](CONTRIBUTING.md).
+
 ## What this integration does
 
 The integration authenticates against the Radoff cloud API with your Radoff

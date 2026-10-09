@@ -21,7 +21,7 @@ from .config_flow import (
     domain_choices,
     validate_input,
 )
-from .const import CONF_BASE_URL, CONF_DOMAIN_PREFIX, DEFAULT_BASE_URL
+from .const import CONF_DOMAIN_PREFIX
 
 if TYPE_CHECKING:
     from homeassistant.config_entries import ConfigEntry
@@ -107,12 +107,7 @@ class DomainRepairFlow(RepairsFlow):
         with the cause.
         """
         try:
-            info = await validate_input(
-                self.hass,
-                dict(self._config_entry.data),
-                # The environment this entry actually polls, not the default.
-                self._config_entry.options.get(CONF_BASE_URL, DEFAULT_BASE_URL),
-            )
+            info = await validate_input(self.hass, dict(self._config_entry.data))
         except (
             UnsupportedChallengeError,
             InvalidAuthError,

@@ -27,10 +27,8 @@ from .api import (
     RadoffDevice,
 )
 from .const import (
-    CONF_BASE_URL,
     CONF_DOMAIN_PREFIX,
     CONF_INDEX,
-    DEFAULT_BASE_URL,
     DEFAULT_SCAN_INTERVAL,
     DOMAIN,
     ERROR_DOMAIN_ACCESS_DENIED,
@@ -95,10 +93,6 @@ class RadoffCoordinator(DataUpdateCoordinator[RadoffData]):
             CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL
         )
 
-        # Read here rather than in the client so a change takes effect on the
-        # reload the options flow triggers.
-        self.base_url = config_entry.options.get(CONF_BASE_URL, DEFAULT_BASE_URL)
-
         super().__init__(
             hass,
             _LOGGER,
@@ -124,7 +118,6 @@ class RadoffCoordinator(DataUpdateCoordinator[RadoffData]):
             password=self.password,
             domain_prefix=self.domain_prefix,
             scan_interval=self.poll_interval,
-            base_url=self.base_url,
         )
 
         # Filled once at setup, never per poll: a schema describes a product,

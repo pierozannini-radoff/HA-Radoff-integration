@@ -20,9 +20,6 @@ from homeassistant.helpers.selector import (
     NumberSelector,
     NumberSelectorConfig,
     NumberSelectorMode,
-    TextSelector,
-    TextSelectorConfig,
-    TextSelectorType,
 )
 
 from .api import (
@@ -33,12 +30,10 @@ from .api import (
     AuthUnavailableError,
 )
 from .const import (
-    CONF_BASE_URL,
     CONF_DOMAIN_PREFIX,
     CONF_INDEX,
     CONFIG_ENTRY_MINOR_VERSION,
     CONFIG_ENTRY_VERSION,
-    DEFAULT_BASE_URL,
     DEFAULT_SCAN_INTERVAL,
     DOMAIN,
     MAX_SCAN_INTERVAL,
@@ -70,14 +65,9 @@ STEP_REAUTH_CONFIRM_DATA_SCHEMA = vol.Schema(
 async def validate_input(
     hass: HomeAssistant,
     data: dict[str, Any],
-    base_url: str = DEFAULT_BASE_URL,
 ) -> dict[str, Any]:
     """
     Validate the user input allows us to connect, and discover the user's domains.
-
-    `base_url` is the environment to validate against: a caller with an entry
-    passes that entry's own, since checking credentials against a different
-    environment from the one it polls would be checking the wrong thing.
 
     Every outcome this module can interpret becomes a distinct local error -
     `UnsupportedChallengeError`, `InvalidAuthError`, `CannotConnectError` -
@@ -86,7 +76,6 @@ async def validate_input(
     api = API(
         username=data[CONF_USERNAME],
         password=data[CONF_PASSWORD],
-        base_url=base_url,
     )
 
     try:
@@ -288,11 +277,7 @@ class ConfigPatternFlow(ConfigFlow, domain=DOMAIN):
         if user_input is not None:
             data = {**reauth_entry.data, CONF_PASSWORD: user_input[CONF_PASSWORD]}
             try:
-                await validate_input(
-                    self.hass,
-                    data,
-                    reauth_entry.options.get(CONF_BASE_URL, DEFAULT_BASE_URL),
-                )
+                await validate_input(self.hass, data)
             except UnsupportedChallengeError:
                 return self.async_abort(reason="unsupported_challenge")
             except CannotConnectError:
@@ -341,7 +326,7 @@ class RadoffOptionsFlow(OptionsFlow):
         if user_input is not None:
             # Voluptuous re-validates server-side whatever the frontend
             # sent, so a value below the floor never reaches here.
-            return self.async_create_entry(data=self._merged_options(user_input))
+            return self.async_create_entry(data=user_input)
 
         current_scan_interval = self.config_entry.options.get(
             CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL
@@ -367,41 +352,7 @@ class RadoffOptionsFlow(OptionsFlow):
             }
         )
 
-        if self.show_advanced_options:
-            # With advanced mode off the field is not in the schema at all,
-            # so a normal user's form is unchanged by its existence.
-            options_schema = options_schema.extend(
-                {
-                    vol.Optional(
-                        CONF_BASE_URL,
-                        default=self.config_entry.options.get(
-                            CONF_BASE_URL, DEFAULT_BASE_URL
-                        ),
-                    ): TextSelector(TextSelectorConfig(type=TextSelectorType.URL))
-                }
-            )
-
         return self.async_show_form(step_id="init", data_schema=options_schema)
-
-    def _merged_options(self, user_input: dict[str, Any]) -> dict[str, Any]:
-        """
-        Return the options to save, merging `user_input` onto the stored ones.
-
-        A merge, not a replacement: with advanced mode off the base URL is
-        not in `user_input`, and saving that dict as-is would drop an
-        override someone set. A URL equal to the default, or blank, is
-        removed rather than stored, so an entry that never overrode it keeps
-        following the constant when that moves.
-        """
-        merged = {**self.config_entry.options, **user_input}
-
-        base_url = str(merged.get(CONF_BASE_URL, "")).strip().rstrip("/")
-        if not base_url or base_url == DEFAULT_BASE_URL:
-            merged.pop(CONF_BASE_URL, None)
-        else:
-            merged[CONF_BASE_URL] = base_url
-
-        return merged
 
 
 class CannotConnectError(HomeAssistantError):

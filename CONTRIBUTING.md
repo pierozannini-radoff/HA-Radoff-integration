@@ -18,10 +18,14 @@ you don't have it. In short:
 1. Open the repository in the dev container (VS Code: **Dev Containers:
    Reopen in Container**), or set up a local Python 3.12 virtual environment
    and run `scripts/setup`.
-2. Run `./scripts/develop` to start Home Assistant against the local dev
+2. Put `RADOFF_DEV_POOL_ID` and `RADOFF_DEV_CLIENT_ID` in `.env` (ask a
+   maintainer for the values). `./scripts/develop` hands these two, and
+   nothing else from `.env`, to Home Assistant; without them every login goes
+   to the default Cognito pool, which the development API does not accept.
+3. Run `./scripts/develop` to start Home Assistant against the local dev
    harness (`.devcontainer/config/`).
-3. Configure a real Radoff account against your local instance to exercise
-   the integration end to end.
+4. Configure a Radoff account of the development environment against your
+   local instance to exercise the integration end to end.
 
 **Do not commit anything under `.devcontainer/config/` other than
 `configuration.yaml`.** Home Assistant writes your Radoff account credentials

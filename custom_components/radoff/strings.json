@@ -188,13 +188,11 @@
         "description": "Changing any of these options reloads the integration to apply it immediately.",
         "data": {
           "scan_interval": "Polling interval (seconds)",
-          "generate_index": "Generate index entities",
-          "base_url": "API base URL (advanced)"
+          "generate_index": "Generate index entities"
         },
         "data_description": {
           "scan_interval": "How often to poll the Radoff API, in seconds.",
-          "generate_index": "Also create a qualitative *_index sensor (e.g. Excellent, Good, ...) alongside applicable measurements.",
-          "base_url": "Which Radoff environment this configuration talks to. Leave it as it is unless Radoff support asked you to change it: in this API version the environment is the hostname, so a wrong value makes the integration stop loading. Clear the field to go back to the default."
+          "generate_index": "Also create a qualitative *_index sensor (e.g. Excellent, Good, ...) alongside applicable measurements."
         }
       }
     }

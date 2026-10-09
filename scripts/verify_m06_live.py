@@ -27,11 +27,8 @@ Come si esegue
     # RADOFF_PASSWORD - oppure RADOFF_DEV_USERNAME / RADOFF_DEV_PASSWORD
     python3 scripts/verify_m06_live.py --domain-prefix 875fe89b
 
-    # i due override di pool servono finche' const.py punta a un pool
-    # diverso dall'ambiente di DEFAULT_BASE_URL
-    python3 scripts/verify_m06_live.py \
-        --pool-id eu-west-1_XXXXXXXX --client-id XXXXXXXX \
-        --domain-prefix XXXXXXXX
+    # il pool Cognito di dev arriva da .env, come RADOFF_DEV_POOL_ID /
+    # RADOFF_DEV_CLIENT_ID; senza, il login va sul pool di default
 
 Cosa NON verifica, e perche'
 ----------------------------
@@ -83,9 +80,8 @@ from custom_components.radoff.api.models import (  # noqa: E402
 )
 from custom_components.radoff.const import (  # noqa: E402
     DEFAULT_BASE_URL,
-    DEFAULT_CLIENT_ID,
-    DEFAULT_POOL_ID,
-    DEFAULT_POOL_REGION,
+    ENV_CLIENT_ID,
+    ENV_POOL_ID,
 )
 
 # Il caso riproducibile su dev: un sense che non trasmette, e che espone
@@ -93,16 +89,7 @@ from custom_components.radoff.const import (  # noqa: E402
 SILENT_DEVICE_SERIAL = "57FA28"
 
 
-def pool_label(pool_id: str) -> str:
-    """L'ambiente a cui appartiene un pool, per spiegare un errore di auth."""
-    if pool_id == DEFAULT_POOL_ID:
-        return "prod (il default di const.py)"
-    if pool_id:
-        return "non quello di const.py, quindi un altro ambiente"
-    return "sconosciuto"
-
-
-def auth_hint(err: Exception, pool_id: str) -> str:
+def auth_hint(err: Exception) -> str:
     """
     Spiegare un fallimento di autenticazione invece di riportarlo e basta.
 
@@ -121,24 +108,23 @@ def auth_hint(err: Exception, pool_id: str) -> str:
     Nessuna chiamata in piu' per scoprirlo: un secondo tentativo su un
     altro pool sarebbe un secondo login fallito a carico dell'account.
     """
-    label = pool_label(pool_id)
+    label = pool_source()
     if isinstance(err, AuthInvalidError):
         return (
-            f"Cognito ha rifiutato le credenziali sul pool {pool_id} "
-            f"({label}).\n"
+            f"Cognito ha rifiutato le credenziali sul pool {label}.\n"
             "Le utenze dei due pool sono separate: credenziali valide su un "
             "ambiente non lo sono sull'altro.\n"
-            f"Verificare che il .env contenga l'utenza di {label}, non quella "
-            "di un altro ambiente."
+            "Verificare che il .env contenga l'utenza di quell'ambiente, "
+            "non quella di un altro."
         )
     if isinstance(err, AuthExpiredError):
         return (
-            f"L'handshake sul pool {pool_id} ({label}) e' riuscito, ma l'API "
+            f"L'handshake sul pool {label} e' riuscito, ma l'API "
             "ha risposto 401.\n"
             "E' il token a essere del pool sbagliato per questo host: l'API "
             "di dev accetta solo il pool dev (accepted_pool).\n"
-            "Passare --pool-id / --client-id del pool giusto per l'host in "
-            "uso (vedi l'intestazione qui sopra)."
+            f"Verificare {ENV_POOL_ID} / {ENV_CLIENT_ID} in .env (vedi "
+            "l'intestazione qui sopra)."
         )
     return ""
 
@@ -197,6 +183,13 @@ def read_env_file(path: Path) -> None:
             continue
         key, _, value = line.partition("=")
         os.environ.setdefault(key.strip(), value.strip().strip("'\""))
+
+
+def pool_source() -> str:
+    """Da dove viene il pool Cognito del login, senza stamparne gli identificativi."""
+    if os.environ.get(ENV_POOL_ID) and os.environ.get(ENV_CLIENT_ID):
+        return f"dev, da .env ({ENV_POOL_ID} / {ENV_CLIENT_ID})"
+    return "il default di const.py"
 
 
 def credentials(args: argparse.Namespace) -> tuple[str, str]:
@@ -573,9 +566,6 @@ def main() -> int:
     parser.add_argument("--username", default="")
     parser.add_argument("--env-file", default=str(REPO_ROOT / ".env"))
     parser.add_argument("--base-url", default=DEFAULT_BASE_URL)
-    parser.add_argument("--pool-id", default=DEFAULT_POOL_ID)
-    parser.add_argument("--client-id", default=DEFAULT_CLIENT_ID)
-    parser.add_argument("--pool-region", default="")
     parser.add_argument("--domain-prefix", default="")
     parser.add_argument("--verbose", action="store_true")
     args = parser.parse_args()
@@ -586,14 +576,11 @@ def main() -> int:
     )
 
     username, password = credentials(args)
-    region = args.pool_region or (
-        args.pool_id.split("_")[0] if "_" in args.pool_id else DEFAULT_POOL_REGION
-    )
 
     print()
     print("  Verifica dal vivo di connection_status")
     print(f"  host      : {args.base_url}")
-    print(f"  pool      : {args.pool_id} / client {args.client_id} / {region}")
+    print(f"  pool      : {pool_source()}")
     print()
 
     verdict = Verdict()
@@ -601,9 +588,6 @@ def main() -> int:
     api = API(
         username=username,
         password=password,
-        client_id=args.client_id,
-        pool_id=args.pool_id,
-        pool_region=region or DEFAULT_POOL_REGION,
         base_url=args.base_url,
     )
 
@@ -629,7 +613,7 @@ def main() -> int:
         ]
         devices = api.get_devices()
     except Exception as err:  # noqa: BLE001
-        hint = auth_hint(err, args.pool_id)
+        hint = auth_hint(err)
         verdict.fail(
             "I controlli sull'API vera",
             f"{type(err).__name__}: {err}" + (f"\n{hint}" if hint else ""),
